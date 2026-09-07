@@ -56,7 +56,9 @@ function LensNode({ data }: NodeProps) {
 const nodeTypes = { lens: LensNode };
 const NODE_KIND_LABEL: Record<string, string> = { problem: '问题', method: '方法', experiment: '实验', claim: '断言', evidence: '证据' };
 
-export function GraphView({ graph, accent }: { graph: GraphOut; accent: string }) {
+export function GraphView({ graph, accent, onClaimSelected }: {
+  graph: GraphOut; accent: string; onClaimSelected?: (claimId: string) => void;
+}) {
   const [selected, setSelected] = useState<GraphNode | null>(null);
 
   const nodes = useMemo<Node[]>(() => {
@@ -129,8 +131,14 @@ export function GraphView({ graph, accent }: { graph: GraphOut; accent: string }
           </div>
           <p className="mt-2 text-sm leading-relaxed text-slate-300">{selected.props?.text || '—'}</p>
           {selected.props?.claim_id && (
-            <div className="mt-2 inline-flex rounded-md bg-white/[0.05] px-2 py-1 font-mono text-[11px] text-slate-400">
-              claim_id: {selected.props.claim_id}
+            <div className="mt-2 inline-flex items-center gap-2">
+              <span className="inline-flex rounded-md bg-white/[0.05] px-2 py-1 font-mono text-[11px] text-slate-400">
+                claim_id: {selected.props.claim_id}
+              </span>
+              <button onClick={() => onClaimSelected?.(selected.props.claim_id as string)}
+                className="rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
+                查看该断言的证据 →
+              </button>
             </div>
           )}
         </div>

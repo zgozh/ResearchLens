@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { FileText, Table2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { FileText, Table2, Expand } from 'lucide-react';
 import type { PaperDetail } from '@/lib/types';
 import { GlassCard, Kicker } from '@/components/ui';
+import { MediaModal, type MediaItem } from '@/components/MediaModal';
 
 function highlightText(text: string, quote?: string) {
   if (!quote || !text) return <>{text}</>;
@@ -20,6 +21,7 @@ function highlightText(text: string, quote?: string) {
 
 export function PaperView({ detail, target }: { detail: PaperDetail; target?: { kind?: string; page?: number; quote?: string } }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [media, setMedia] = useState<MediaItem | null>(null);
 
   useEffect(() => {
     if (!target?.quote) return;
@@ -86,10 +88,14 @@ export function PaperView({ detail, target }: { detail: PaperDetail; target?: { 
 
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
           {detail.figures.map((f) => (
-            <GlassCard key={`fig-${f.fig_no}`} className="p-4">
+            <GlassCard key={`fig-${f.fig_no}`} onClick={() => setMedia({ type: 'figure', figure: f })}
+              className="group cursor-pointer p-4 transition-all hover:border-white/20">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-200">图 {f.fig_no}</span>
-                <span className="font-mono text-[10px] text-slate-500">p.{f.page}</span>
+                <span className="flex items-center gap-2 font-mono text-[10px] text-slate-500">
+                  p.{f.page}
+                  <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 text-slate-500 transition group-hover:text-indigo-300"><Expand className="h-3 w-3" /> 查看</span>
+                </span>
               </div>
               <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-[#0F172A] p-1">
                 <div className="[&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: f.glyph_svg }} />
@@ -101,11 +107,14 @@ export function PaperView({ detail, target }: { detail: PaperDetail; target?: { 
 
         <div className="space-y-6">
           {detail.tables.map((t) => (
-            <GlassCard key={`tbl-${t.table_no}`} className="p-6">
+            <GlassCard key={`tbl-${t.table_no}`} onClick={() => setMedia({ type: 'table', table: t })}
+              className="group cursor-pointer p-6 transition-all hover:border-white/20">
               <div className="mb-2 flex items-center gap-2">
                 <Table2 className="h-4 w-4 text-slate-500" />
                 <span className="text-sm font-semibold text-slate-200">表 {t.table_no}</span>
-                <span className="ml-auto font-mono text-[10px] text-slate-500">p.{t.page}</span>
+                <span className="ml-auto inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-slate-500 transition group-hover:text-indigo-300">
+                  p.{t.page} · <Expand className="h-3 w-3" /> 查看
+                </span>
               </div>
               <p className="mb-3 text-[12px] text-slate-500">{t.caption}</p>
               <div className="overflow-hidden rounded-lg border border-[var(--line)]">
@@ -132,6 +141,8 @@ export function PaperView({ detail, target }: { detail: PaperDetail; target?: { 
             </GlassCard>
           ))}
         </div>
+
+        <MediaModal item={media} accent={detail.accent || '#6366F1'} onClose={() => setMedia(null)} />
       </div>
     </div>
   );

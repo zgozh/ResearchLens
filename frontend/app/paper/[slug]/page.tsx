@@ -231,7 +231,10 @@ export default function Workspace() {
           </GlassCard>
         </div>
       ) : detail ? (
-        <div className="mx-auto grid max-w-[1500px] grid-cols-1 gap-0 px-5 py-5 lg:grid-cols-[minmax(0,1fr),340px]">
+        <div className={cn(
+          'mx-auto grid max-w-[1500px] grid-cols-1 gap-0 px-5 py-5',
+          view === 'claim' ? 'lg:grid-cols-[minmax(0,1fr),340px]' : 'lg:grid-cols-1',
+        )}>
           {/* Left + center */}
           <div className="min-w-0">
             {/* stage header */}
@@ -274,7 +277,7 @@ export default function Workspace() {
                     onSelect={(cid) => selectClaim(cid)}
                   />
                 )}
-                {view === 'graph' && <GraphView graph={graph} accent={accent} />}
+                {view === 'graph' && <GraphView graph={graph} accent={accent} onClaimSelected={(cid) => { selectClaim(cid); changeView('claim'); }} />}
                 {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} />}
                 {view === 'qa' && <QAView paperId={paper!.id} accent={accent} />}
                 {view === 'eval' && <EvalView evalData={evalData} accent={accent} />}
@@ -283,10 +286,12 @@ export default function Workspace() {
             </AnimatePresence>
           </div>
 
-          {/* Evidence rail */}
-          <div className="lg:pl-5">
-            <EvidenceRail claim={claimDetail} detail={detail} accent={accent} onJump={jumpToPaper} />
-          </div>
+          {/* Evidence rail (only in evidence view) */}
+          {view === 'claim' && (
+            <div className="lg:pl-5">
+              <EvidenceRail claim={claimDetail} detail={detail} accent={accent} onJump={jumpToPaper} />
+            </div>
+          )}
         </div>
       ) : null}
 

@@ -1,10 +1,12 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { FileText, ShieldCheck, ShieldAlert, Table2, Quote } from 'lucide-react';
+import { FileText, ShieldCheck, ShieldAlert, Table2, Quote, Expand } from 'lucide-react';
 import type { ClaimSummary, PaperDetail } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
+import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { cn } from '@/lib/cn';
+import { useState } from 'react';
 
 const TYPE_TONE: Record<string, 'accent'|'emerald'|'amber'|'rose'|'cyan'|'violet'> = {
   RESULT: 'emerald', METHOD: 'accent', LIMITATION: 'rose', CONTEXT: 'cyan', EXPERIMENT: 'violet',
@@ -17,6 +19,7 @@ const TYPE_LABEL: Record<string, string> = {
 export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
   detail: PaperDetail; claims: ClaimSummary[]; selectedClaimId?: string; onSelect: (id: string) => void;
 }) {
+  const [media, setMedia] = useState<MediaItem | null>(null);
   const grouped = TYPE_ORDER.map((t) => ({ type: t, list: claims.filter((c) => c.type === t) }))
     .filter((g) => g.list.length > 0);
 
@@ -67,11 +70,15 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
       <div className="space-y-4 lg:col-span-2">
         <Kicker className="mb-3">结果图表 · RESULTS</Kicker>
         {(detail.tables || []).map((t) => (
-          <GlassCard key={t.table_no} className="overflow-hidden p-4">
+          <GlassCard key={t.table_no} onClick={() => setMedia({ type: 'table', table: t })}
+            className="group cursor-pointer overflow-hidden p-4 transition-all hover:border-white/20">
             <div className="mb-2 flex items-center gap-2">
               <Table2 className="h-3.5 w-3.5 text-slate-400" />
               <span className="text-xs font-semibold text-slate-200">表 {t.table_no}</span>
               <span className="ml-auto font-mono text-[10px] text-slate-500">p.{t.page}</span>
+              <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-slate-500 transition group-hover:text-indigo-300">
+                <Expand className="h-3 w-3" /> 查看
+              </span>
             </div>
             <p className="mb-2.5 text-[11px] text-slate-500">{t.caption}</p>
             <div className="overflow-hidden rounded-lg border border-[var(--line)]">
@@ -101,11 +108,15 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
         ))}
         <div className="grid grid-cols-1 gap-4">
           {detail.figures.map((f) => (
-            <GlassCard key={f.fig_no} className="p-4">
+            <GlassCard key={f.fig_no} onClick={() => setMedia({ type: 'figure', figure: f })}
+              className="group cursor-pointer p-4 transition-all hover:border-white/20">
               <div className="mb-2 flex items-center gap-2">
                 <Quote className="h-3.5 w-3.5 text-slate-400" />
                 <span className="text-xs font-semibold text-slate-200">图 {f.fig_no}</span>
                 <span className="ml-auto font-mono text-[10px] text-slate-500">p.{f.page}</span>
+                <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-slate-500 transition group-hover:text-indigo-300">
+                  <Expand className="h-3 w-3" /> 查看
+                </span>
               </div>
               <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-[#0F172A] p-1">
                 <div className="[&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: f.glyph_svg }} />
@@ -116,6 +127,8 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
           ))}
         </div>
       </div>
+
+      <MediaModal item={media} accent={detail.accent || '#6366F1'} onClose={() => setMedia(null)} />
     </div>
   );
 }

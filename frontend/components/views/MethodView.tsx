@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Play, RotateCcw, ChevronRight, Info, FileText } from 'lucide-react';
 import type { PaperDetail, MethodStep } from '@/lib/types';
@@ -16,6 +16,7 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
   const [active, setActive] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [explored, setExplored] = useState<number | undefined>(0);
+  const heroRef = useRef<HTMLDivElement>(null);
   const total = steps.length;
 
   useEffect(() => {
@@ -110,10 +111,10 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
                 {steps[explored!].detail || '这一环节的作用可结合论文原图理解。'}
               </p>
               {hero && (
-                <div className="mt-4 rounded-xl border border-[var(--line)] bg-[#0F172A] p-2">
-                  <div className="mx-auto max-w-2xl [&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: hero.glyph_svg }} />
-                  <p className="mt-2 text-center text-[11px] text-slate-500">{hero.caption}</p>
-                </div>
+                <button onClick={() => heroRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                  className="mt-4 inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
+                  <FileText className="h-4 w-4" /> 查看论文原图（图 {hero.fig_no}）
+                </button>
               )}
             </GlassCard>
           </motion.div>
@@ -122,14 +123,16 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
 
       {/* 论文原图 */}
       {hero && (
-        <GlassCard className="p-6">
-          <Kicker>论文原图 · ORIGINAL FIGURE</Kicker>
-          <p className="mt-1 mb-4 text-sm text-slate-400">{hero.caption}</p>
-          <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[#0F172A] p-2">
-            <div className="mx-auto max-w-3xl [&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: hero.glyph_svg }} />
-          </div>
-          {hero.description && <p className="mt-3 text-[12px] text-slate-500">{hero.description}</p>}
-        </GlassCard>
+        <div ref={heroRef}>
+          <GlassCard className="p-6">
+            <Kicker>论文原图 · ORIGINAL FIGURE</Kicker>
+            <p className="mt-1 mb-4 text-sm text-slate-400">{hero.caption}</p>
+            <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[#0F172A] p-2">
+              <div className="mx-auto max-w-3xl [&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: hero.glyph_svg }} />
+            </div>
+            {hero.description && <p className="mt-3 text-[12px] text-slate-500">{hero.description}</p>}
+          </GlassCard>
+        </div>
       )}
     </div>
   );
