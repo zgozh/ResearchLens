@@ -68,8 +68,13 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```bash
 cd frontend
 npm install
-npm run dev        # 打开 http://localhost:3000
+# 若本机 8000 被占用，可先把后端跑在 8001：
+#   set NEXT_PUBLIC_API_URL=http://localhost:8001
+#   (并在后端 .env 的 CORS_ORIGINS 中加入 http://localhost:3000/3001)
+npm run dev        # 打开 http://localhost:3000（端口被占会自动换 3001）
 ```
+
+> 说明：本机 8000/3000 若已被其他服务占用，本地开发可用上述备用端口；生产一键部署一律用 Docker Compose（见下）。
 
 ## 📄 文档
 
