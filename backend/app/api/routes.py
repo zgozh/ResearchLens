@@ -29,10 +29,10 @@ from app.schemas.schemas import (
     TableOut,
 )
 from app.seed import demo_papers as demo
-from app.services import claims as claims_svc, evaluation as eval_svc
-from app.services import graph as graph_svc, presentation as pres_svc
-from app.services import parser as parser_mod, pipeline
-from app.services import qa as qa_svc
+from app.modules import claims as claims_svc, evaluation as eval_svc
+from app.modules import graph as graph_svc, scene as pres_svc
+from app.modules import parse as parser_mod, pipeline
+from app.modules import qa as qa_svc
 
 router = APIRouter(prefix="/api")
 
@@ -189,7 +189,9 @@ def job_status(job_id: int, db: Session = Depends(get_db)):
     j = db.query(models.GenerationJob).filter(models.GenerationJob.id == job_id).first()
     if not j:
         raise HTTPException(404, "job not found")
-    return {"job_id": j.id, "stage": j.stage, "status": j.status, "paper_id": j.paper_id}
+    from app.modules.pipeline import stage_label
+    return {"job_id": j.id, "stage": j.stage, "stage_label": stage_label(j.stage),
+            "status": j.status, "paper_id": j.paper_id}
 
 
 # ------------------------------------------------------------------ helpers

@@ -54,6 +54,7 @@ export default function Workspace() {
   );
   const [selectedClaimId, setSelectedClaimId] = useState<string>();
   const [claimDetail, setClaimDetail] = useState<ClaimOut>();
+  const [paperTarget, setPaperTarget] = useState<{ kind?: string; page?: number; quote?: string }>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [processing, setProcessing] = useState(false);
@@ -61,6 +62,18 @@ export default function Workspace() {
   const accent = detail?.accent || '#6366F1';
   const isUpload = detail?.source_mode === 'upload';
   const modeLabel = isUpload ? '实时抽取' : '演示模式';
+
+  const jumpToPaper = useCallback((page: number, region: string, quote: string) => {
+    const kindMap: Record<string, string> = {
+      discussion: 'discussion', method: 'method', experiments: 'experiment', experiment: 'experiment',
+      results: 'result', result: 'result', introduction: 'intro', intro: 'intro',
+    };
+    let kind: string | undefined;
+    if (kindMap[region]) kind = kindMap[region];
+    else if (/^table_/.test(region) || /^fig_/.test(region)) kind = 'result';
+    setPaperTarget({ kind, page, quote });
+    setView('paper');
+  }, []);
 
   const changeView = useCallback((v: ViewMode) => {
     setView(v);
@@ -245,14 +258,14 @@ export default function Workspace() {
                 {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} />}
                 {view === 'qa' && <QAView paperId={paper!.id} accent={accent} />}
                 {view === 'eval' && <EvalView evalData={evalData} accent={accent} />}
-                {view === 'paper' && <PaperView detail={detail} />}
+                {view === 'paper' && <PaperView detail={detail} target={paperTarget} />}
               </motion.div>
             </AnimatePresence>
           </div>
 
           {/* Evidence rail */}
           <div className="lg:pl-5">
-            <EvidenceRail claim={claimDetail} detail={detail} accent={accent} />
+            <EvidenceRail claim={claimDetail} detail={detail} accent={accent} onJump={jumpToPaper} />
           </div>
         </div>
       ) : null}

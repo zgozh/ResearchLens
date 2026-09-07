@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { ShieldCheck, ShieldAlert, FileText, Quote, Scan } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, FileText, Quote, Scan, MapPin } from 'lucide-react';
 import type { ClaimOut, PaperDetail } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { cn } from '@/lib/cn';
@@ -10,10 +10,12 @@ export function EvidenceRail({
   claim,
   detail,
   accent,
+  onJump,
 }: {
   claim?: ClaimOut;
   detail: PaperDetail;
   accent: string;
+  onJump?: (page: number, region: string, quote: string) => void;
 }) {
   if (!claim) {
     return (
@@ -65,14 +67,19 @@ export function EvidenceRail({
               transition={{ delay: i * 0.05 }}
               className="rounded-xl border border-[var(--line)] bg-white/[0.02] p-3"
             >
-              <div className="flex items-center gap-2 text-[11px]">
+              <button
+                onClick={() => onJump?.(e.page, e.region, e.quote || e.text)}
+                className="group flex w-full items-center gap-2 text-left text-[11px]"
+              >
                 <FileText className="h-3.5 w-3.5" style={{ color: accent }} />
                 <span className="font-mono text-slate-300">p.{e.page}</span>
                 <span className="rounded-md bg-white/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
                   {e.region}
                 </span>
-                <span className="ml-auto font-mono text-[10px] text-slate-600">{e.region_type}</span>
-              </div>
+                <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-slate-600 transition group-hover:text-indigo-300">
+                  <MapPin className="h-3 w-3" /> 跳转
+                </span>
+              </button>
               {e.quote && (
                 <div className="mt-2 rounded-md border-l-2 pl-2.5 text-[12px] italic text-slate-400" style={{ borderColor: accent }}>
                   “{e.quote}”

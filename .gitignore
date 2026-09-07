@@ -29,6 +29,9 @@ backend/data/*.sqlite3
 
 # Local verification artifacts
 edge_profile/
+edge_p2/
+edge_p3/
+edge_*/
 dom_check.html
 dom_*.html
 
