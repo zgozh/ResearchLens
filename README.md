@@ -14,13 +14,15 @@ ResearchLens 把一篇科研论文自动转换成**证据驱动的可交互科�
 
 ## ✨ 功能亮点
 
-- **Paper Map**：一键生成 Problem / Method / Dataset / Experiment / Result / Limitation 总览
-- **Method 动画**：论文核心算法流程自动动画化（Input → Backbone → FE → Module → Prediction）
-- **Claim → Evidence → Page**：点击实验结果，展示断言、证据、原图引用（已绑定页码）
-- **Research Graph**：React Flow 把论文构造成 Problem → Method → Experiment → Claim → Evidence 图谱
-- **AI Presenter**：科研讲解员按证据讲解当前 Scene（字幕 + 音频，Avatar 挂了也能展示）
-- **Grounded Q&A**：回答必须带 Evidence + Confidence，无证据则禁止编造
-- **ResearchLens Evaluation**：自动质量评分（Citation Coverage / Claim-Evidence Alignment / Unsupported Claim Rate ≈ 0）
+- **全中文界面**：默认语言为中文（保留关键英文术语作点缀），可直接演示
+- **放入你的论文（上传 PDF）**：拖入 PDF → 自动走 LIVE 抽取 → 进入可交互 Workspace
+- **Paper Map**：一键生成 问题/方法/数据集/实验/结果/局限 总览
+- **方法动画**：论文核心算法流程自动动画化（输入 → 骨干 → 模块 → 预测）
+- **Claim → Evidence → Page**：点击断言，展示证据、页码与原图引用
+- **Research Graph**：React Flow 把论文构造成 问题→方法→实验→断言→证据 图谱
+- **AI 讲解员（Presenter）**：按证据讲解当前场景，带浏览器语音合成（zh-CN）+ 字幕回落
+- **Grounded Q&A**：回答必须带证据 + 置信度，无证据则拒绝编造
+- **ResearchLens Evaluation**：自动质量评分（证据覆盖率 / 断言-证据对齐 / 无证据断言率 ≈ 0）
 
 ## 🖼 现场演示（Demo Mode）
 
