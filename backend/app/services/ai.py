@@ -29,7 +29,7 @@ class _Provider:
 class AIClient:
     def __init__(self) -> None:
         self._providers: List[_Provider] = self._build_providers()
-        self._timeout = httpx.Timeout(60.0, connect=10.0)
+        self._timeout = httpx.Timeout(120.0, connect=15.0)
 
     def _build_providers(self) -> List[_Provider]:
         providers: List[_Provider] = []
@@ -56,35 +56,71 @@ class AIClient:
         model: Optional[str] = None,
         temperature: float = 0.2,
         json_schema: Optional[dict] = None,
+        json_object: bool = False,
     ) -> Optional[Any]:
-        """Return parsed JSON if json_schema given, else text. None on total failure."""
-        body: Dict[str, Any] = {
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if json_schema is not None:
-            body["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "result",
-                    "strict": True,
-                    "schema": json_schema,
-                },
-            }
+        """Return parsed JSON if json_schema or json_object, else text. None on total failure.
+
+        json_object mode is faster on providers where strict `json_schema` validation is slow;
+        it asks the model for a JSON object and passes the schema as a prompt hint.
+        """
         last_err = None
         for prov in self._providers:
-            body["model"] = model or prov.model
-            try:
-                txt = self._chat_once(prov, body)
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                log.warning("provider %s failed: %s", prov.base_url, e)
-                continue
-            if txt is None:
-                continue
+            body: Dict[str, Any] = {"messages": messages, "temperature": temperature}
+            if json_object:
+                body["model"] = model or prov.model
+                hint = ("请只输出符合该 JSON Schema 的 JSON：\n"
+                        + json.dumps(json_schema or {}, ensure_ascii=False))
+                body["response_format"] = {"type": "json_object"}
+                try:
+                    txt = self._chat_once(prov, {**body, "messages": messages + [{"role": "user", "content": hint}]})
+                except Exception as e:  # noqa: BLE001
+                    last_err = e
+                    log.warning("provider %s failed: %s", prov.base_url, e)
+                    continue
+                if txt is None:
+                    continue
+                return self._parse_json(txt, json_schema or {})
             if json_schema is not None:
+                body["model"] = model or prov.model
+                # try strict json_schema, then json_object fallback
+                try:
+                    fmt = {
+                        "type": "json_schema",
+                        "json_schema": {"name": "result", "strict": True, "schema": json_schema},
+                    }
+                    txt = self._chat_once(prov, {**body, "response_format": fmt})
+                except Exception as e:  # noqa: BLE001
+                    last_err = e
+                    log.info("json_schema rejected by %s (%s); falling back to json_object", prov.base_url, e)
+                    txt = None
+                if txt is None:
+                    # json_object fallback: keep a hint of the schema in the prompt
+                    hint = ("请只输出符合该 JSON Schema 的 JSON：\n"
+                            + json.dumps(json_schema, ensure_ascii=False))
+                    fb_body = {
+                        **body,
+                        "response_format": {"type": "json_object"},
+                        "messages": messages + [{"role": "user", "content": hint}],
+                    }
+                    try:
+                        txt = self._chat_once(prov, fb_body)
+                    except Exception as e2:  # noqa: BLE001
+                        last_err = e2
+                        continue
+                if txt is None:
+                    continue
                 return self._parse_json(txt, json_schema)
-            return txt
+            else:
+                body["model"] = model or prov.model
+                try:
+                    txt = self._chat_once(prov, body)
+                except Exception as e:  # noqa: BLE001
+                    last_err = e
+                    log.warning("provider %s failed: %s", prov.base_url, e)
+                    continue
+                if txt is None:
+                    continue
+                return txt
         if last_err:
             log.error("all providers failed: %s", last_err)
         return None

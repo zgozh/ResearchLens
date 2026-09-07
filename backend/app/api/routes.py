@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
@@ -150,6 +150,35 @@ async def paper_upload(file: UploadFile = File(...), db: Session = Depends(get_d
     db.add(job)
     db.commit()
     return {"paper_id": p.id, "job_id": job.id, "status": "pending"}
+
+
+@router.post("/papers/{paper_id}/process")
+def paper_process(paper_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Trigger the LIVE pipeline (parse → claims → evidence → evaluation) in the
+    background. Returns immediately with a job id; poll /api/jobs/{id}."""
+
+    def _work():
+        from app.core.db import SessionLocal as _SessionLocal
+        s = _SessionLocal()
+        try:
+            pipeline.run_pipeline(s, paper_id)
+        finally:
+            s.close()
+
+    job = db.query(models.GenerationJob).filter(
+        models.GenerationJob.paper_id == paper_id
+    ).order_by(models.GenerationJob.id.desc()).first()
+    if job is None:
+        job = models.GenerationJob(paper_id=paper_id, stage="parse", status="running")
+        db.add(job)
+        db.commit()
+    else:
+        job.status = "running"
+        job.stage = "parse"
+        db.commit()
+    job_id = job.id
+    background_tasks.add_task(_work)
+    return {"paper_id": paper_id, "job_id": job_id, "status": "running"}
 
 
 @router.get("/jobs/{job_id}")

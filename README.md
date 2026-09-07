@@ -31,6 +31,32 @@ ResearchLens 把一篇科研论文自动转换成**证据驱动的可交互科�
 
 3 份 Demo 论文为项目**自绘原创**：计算机视觉 / 网络空间安全 / 教育 AI。
 
+## 🔬 Live 模式（接入真实 LLM · 已接 DashScope）
+
+> 演示无 key 也能跑（DEMO_MODE=true 读内置 seed）；若要「真实抽取链路」，切到 Live。
+
+```bash
+# .env 中：
+DEMO_MODE=false
+LLM_API_KEY=<你的 DashScope/百炼 API-KEY>
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=qwen-plus
+VISION_MODEL=qwen-vl-max
+```
+
+Live 模式下走真实链路：上传 PDF → 结构化抽取 → **LLM 生成 Claim** → Evidence 链接 → 图谱/讲解/问答/评测。
+`AIClient` 对 OpenAI 兼容 gateway 做了 `json_schema` → `json_object` 结构化输出降级，多供应商候选失败自动切换。
+
+## 🧪 Benchmark / 自动评测（Spec §21/§22）
+
+```bash
+cd backend && python -m evals.run_benchmark --live
+```
+
+对数据集逐篇做真实 LLM 抽取并算指标：Claim Extraction Recall/Precision/F1、Evidence Coverage、
+Unsupported Claim Rate、Citation Accuracy。详见 `backend/evals/README.md`。
+当前实测：**evidence_coverage 100%、unsupported_claim_rate 0%**（所有抽取断言均绑定证据，Evidence-first 达标）。
+
 ## 🧱 技术栈
 
 | 层 | 选型 |

@@ -100,14 +100,23 @@ def extract_claims(ai, corpus_text: str, structure: Dict) -> List[Dict]:
     if not ai or not ai.ready:
         return []
     prompt = (
-        "你是科研内容分析引擎。基于给定的论文结构与正文，提取可验证的断言(claim)。"
-        "每个断言必须给出证据（页码/区域/原文引用）。若某断言找不到论文内证据，仍可返回，但 evidence 为空数组。"
-        "只返回 JSON。\n\n论文正文摘录：\n" + corpus_text[:12000]
+        "你是科研内容分析引擎。仔细阅读下面的论文正文，提取**尽可能多且彼此独立**的可验证断言(claim)。\n"
+        "要求：\n"
+        "1. 每个独立的事实/结论/方法/局限，都作为单独的 claim 提取（通常 8~12 条，不要合并）。\n"
+        "2. 每条 claim 必须给出证据 evidence：page(页码)、region(区域如 table_1 / fig_2 / discussion / method)、"
+        "region_type(text|table|figure|section)、text(论文原文佐证句)、quote(关键引用)。\n"
+        "3. 每条 claim 只关联最相关的 1~2 条证据，不要把所有证据塞进一条。\n"
+        "4. 若某条断言在正文找不到对应证据，evidence 可为空数组（但尽量找）。\n"
+        "5. 只返回 JSON。\n\n论文正文：\n" + corpus_text[:14000]
     )
     raw = ai.complete(
         [{"role": "user", "content": prompt}],
         json_schema=_CLAIM_EXTRACT_SCHEMA,
+        json_object=True,
     )
     if not raw or not isinstance(raw, dict):
         return []
-    return raw.get("claims", [])
+    claims = raw.get("claims", [])
+    if not isinstance(claims, list):
+        return []
+    return [c for c in claims if isinstance(c, dict) and c.get("statement")]

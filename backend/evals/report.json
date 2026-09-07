@@ -1,0 +1,57 @@
+{
+  "papers": [
+    {
+      "paper": "bench_001",
+      "title": "SlimSeg-Net: An Efficient Cross-Attention Network for Real-Time Medical Image Segmentation",
+      "n_gt": 10,
+      "n_extracted": 12,
+      "covered": 4,
+      "recall": 40.0,
+      "precision": 33.3,
+      "f1": 36.4,
+      "evidence_coverage": 100.0,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 0.0,
+      "grounded_claims": 4
+    },
+    {
+      "paper": "bench_002",
+      "title": "NetGuard: Graph Contrastive Detection of Zero-Day Lateral Movement from Host Telemetry",
+      "n_gt": 10,
+      "n_extracted": 12,
+      "covered": 3,
+      "recall": 30.0,
+      "precision": 16.7,
+      "f1": 21.4,
+      "evidence_coverage": 100.0,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 0.0,
+      "grounded_claims": 2
+    },
+    {
+      "paper": "bench_003",
+      "title": "LearnFlow: A Knowledge-Graph Tutor that Personalizes Adaptive Practice from Mistake Patterns",
+      "n_gt": 10,
+      "n_extracted": 12,
+      "covered": 5,
+      "recall": 50.0,
+      "precision": 41.7,
+      "f1": 45.5,
+      "evidence_coverage": 100.0,
+      "unsupported_claim_rate": 0.0,
+      "citation_accuracy": 0.0,
+      "grounded_claims": 5
+    }
+  ],
+  "aggregate": {
+    "papers": 3,
+    "claims": 30,
+    "extracted": 36,
+    "claim_extraction_recall": 40.0,
+    "claim_extraction_precision": 30.6,
+    "claim_extraction_f1": 34.6,
+    "evidence_coverage": 100.0,
+    "citation_accuracy": 0.0,
+    "unsupported_claim_rate": 0.0
+  }
+}
