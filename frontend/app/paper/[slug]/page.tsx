@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, LayoutGrid, Workflow, FileSearch, Share2, Mic, MessageCircle, Gauge, BookOpen, ChevronRight,
 } from 'lucide-react';
-import { api } from '@/lib/api';
+import { api, sleep } from '@/lib/api';
 import type {
   ClaimOut, ClaimSummary, EvaluationOut, GraphOut, PaperDetail, PaperOut, PresentationOut, ViewMode,
 } from '@/lib/types';
@@ -26,14 +26,14 @@ import { PaperView } from '@/components/views/PaperView';
 import { cn } from '@/lib/cn';
 
 const NAV: { view: ViewMode; label: string; icon: any }[] = [
-  { view: 'map', label: 'Paper Map', icon: LayoutGrid },
-  { view: 'method', label: 'Method', icon: Workflow },
-  { view: 'claim', label: 'Evidence', icon: FileSearch },
-  { view: 'graph', label: 'Research Graph', icon: Share2 },
-  { view: 'presenter', label: 'Presenter', icon: Mic },
-  { view: 'qa', label: 'Grounded Q&A', icon: MessageCircle },
-  { view: 'eval', label: 'Evaluation', icon: Gauge },
-  { view: 'paper', label: 'Paper View', icon: BookOpen },
+  { view: 'map', label: '论文地图', icon: LayoutGrid },
+  { view: 'method', label: '方法动画', icon: Workflow },
+  { view: 'claim', label: '证据链', icon: FileSearch },
+  { view: 'graph', label: '研究图谱', icon: Share2 },
+  { view: 'presenter', label: '讲解员', icon: Mic },
+  { view: 'qa', label: '证据问答', icon: MessageCircle },
+  { view: 'eval', label: '自动评测', icon: Gauge },
+  { view: 'paper', label: '论文阅读', icon: BookOpen },
 ];
 
 export default function Workspace() {
@@ -41,6 +41,7 @@ export default function Workspace() {
   const slug = params?.slug;
   const searchParams = useSearchParams();
   const router = useRouter();
+  const paperId = searchParams.get('paper_id');
 
   const [paper, setPaper] = useState<PaperOut>();
   const [detail, setDetail] = useState<PaperDetail>();
@@ -55,41 +56,63 @@ export default function Workspace() {
   const [claimDetail, setClaimDetail] = useState<ClaimOut>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [processing, setProcessing] = useState(false);
 
   const accent = detail?.accent || '#6366F1';
+  const isUpload = detail?.source_mode === 'upload';
+  const modeLabel = isUpload ? '实时抽取' : '演示模式';
 
   const changeView = useCallback((v: ViewMode) => {
     setView(v);
-    if (slug) router.replace(`/paper/${slug}?view=${v}`, { scroll: false });
-  }, [slug, router]);
+    const qs = paperId ? `paper_id=${paperId}&view=${v}` : `view=${v}`;
+    if (slug) router.replace(`/paper/${slug}?${qs}`, { scroll: false });
+  }, [slug, paperId, router]);
 
 
   const load = useCallback(async () => {
-    if (!slug) return;
+    if (!slug && !paperId) return;
     setLoading(true);
     setError(undefined);
     try {
-      const p = await api.demoLoad(slug);
-      setPaper(p);
-      const [d, c, g, pr, ev] = await Promise.all([
-        api.paperDetail(p.id),
-        api.claims(p.id),
-        api.graph(p.id),
-        api.presentation(p.id),
-        api.evaluation(p.id),
-      ]);
+      let pid: number;
+      let p: PaperOut | undefined;
+      if (paperId) {
+        pid = Number(paperId);
+      } else if (slug) {
+        const pl = await api.demoLoad(slug);
+        pid = pl.id;
+        p = pl;
+      } else {
+        return;
+      }
+      const d = await api.paperDetail(pid);
+      setPaper(p ?? d);
       setDetail(d);
+      setGraph(await api.graph(pid));
+      setPresentation(await api.presentation(pid));
+      setEvalData(await api.evaluation(pid));
+
+      // live (uploaded) papers: claims may be empty until the async pipeline finishes
+      let c = await api.claims(pid).catch(() => []);
+      if (c.length === 0) {
+        setProcessing(true);
+        await api.processPaper(pid).catch(() => undefined);
+        for (let i = 0; i < 40; i++) {
+          await sleep(2500);
+          c = await api.claims(pid).catch(() => []);
+          if (c.length > 0) break;
+        }
+        setProcessing(false);
+        setEvalData(await api.evaluation(pid));
+      }
       setClaims(c);
-      setGraph(g);
-      setPresentation(pr);
-      setEvalData(ev);
     } catch (e: any) {
       console.error(e);
       setError(e?.message || '加载失败');
     } finally {
       setLoading(false);
     }
-  }, [slug]);
+  }, [slug, paperId]);
 
   useEffect(() => {
     load();
@@ -129,8 +152,8 @@ export default function Workspace() {
             </div>
           )}
           <div className="ml-auto flex items-center gap-3">
-            <Badge tone="emerald">demo-mode</Badge>
-            <Badge tone="slate">{detail?.domain || 'loading'}</Badge>
+            <Badge tone={isUpload ? 'cyan' : 'emerald'}>{isUpload ? '实时抽取' : '演示模式'}</Badge>
+            <Badge tone="slate">{detail?.domain || '加载中'}</Badge>
           </div>
         </div>
         {/* view nav */}
@@ -169,7 +192,7 @@ export default function Workspace() {
       ) : error ? (
         <div className="grid min-h-[60vh] place-items-center px-6">
           <GlassCard className="max-w-md p-6">
-            <Kicker>ERROR</Kicker>
+            <Kicker>出错了</Kicker>
             <p className="mt-2 text-sm text-rose-300">{error}</p>
             <Link href="/" className="mt-4 inline-block text-sm text-indigo-300">← 返回选择论文</Link>
           </GlassCard>
@@ -181,7 +204,7 @@ export default function Workspace() {
             {/* stage header */}
             <div className="mb-4 flex items-center justify-between">
               <div className="min-w-0">
-                <Kicker>VISUAL STAGE · 视觉演绎</Kicker>
+                <Kicker>视觉演绎 · VISUAL STAGE</Kicker>
                 <div className="mt-1 flex items-center gap-2">
                   <span className="text-lg font-semibold text-white">{detail.title}</span>
                 </div>
@@ -192,6 +215,13 @@ export default function Workspace() {
                 ))}
               </div>
             </div>
+
+            {processing && (
+              <div className="mb-4 flex items-center gap-2 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-[13px] text-cyan-200">
+                <Spinner className="h-4 w-4" />
+                正在调用大模型抽取结构、断言与证据，请稍候…
+              </div>
+            )}
 
             <AnimatePresence mode="wait">
               <motion.div
@@ -231,7 +261,7 @@ export default function Workspace() {
       {detail && (
         <div className="sticky bottom-0 z-30 border-t border-[var(--line)] bg-[#060a13]/85 backdrop-blur-xl">
           <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-5 py-3">
-            <div className="text-[11px] font-mono text-slate-500">NARRATIVE</div>
+            <div className="text-[11px] font-mono text-slate-500">叙事线 · TIMELINE</div>
             <div className="flex-1">
               <Timeline current={view} accent={accent} onSelect={changeView} />
             </div>

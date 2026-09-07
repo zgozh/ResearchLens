@@ -47,7 +47,7 @@ export function QAView({ paperId, accent }: { paperId: number; accent: string })
   return (
     <div className="flex h-full flex-col">
       <div className="mb-4 flex items-center gap-3">
-        <Kicker>GROUNDED Q&A · 证据驱动的问答</Kicker>
+        <Kicker>证据驱动的问答 · GROUNDED Q&amp;A</Kicker>
         <div className="ml-auto flex items-center gap-3">
           {PRESETS.map((q) => (
             <button
@@ -85,11 +85,11 @@ export function QAView({ paperId, accent }: { paperId: number; accent: string })
                 <div className="w-full">
                   <div className="mb-1.5 flex items-center gap-2">
                     {m.resp?.grounded ? (
-                      <Badge tone="emerald"><ShieldCheck className="h-3 w-3" /> grounded</Badge>
+                      <Badge tone="emerald"><ShieldCheck className="h-3 w-3" /> 有据可依</Badge>
                     ) : (
-                      <Badge tone="amber"><ShieldAlert className="h-3 w-3" /> no evidence</Badge>
+                      <Badge tone="amber"><ShieldAlert className="h-3 w-3" /> 无证据支持</Badge>
                     )}
-                    {m.resp && <span className="font-mono text-[10px] text-slate-500">confidence: {m.resp.confidence}</span>}
+                    {m.resp && <span className="font-mono text-[10px] text-slate-500">置信度 · {m.resp.confidence}</span>}
                   </div>
                   <div className="max-w-full rounded-2xl rounded-bl-md border border-[var(--line)] bg-white/[0.03] px-4 py-3 text-sm leading-relaxed text-slate-200">
                     {m.text}
@@ -120,8 +120,7 @@ export function QAView({ paperId, accent }: { paperId: number; accent: string })
             <div className="flex items-center gap-2 text-sm text-slate-400">
               <Spinner /> 检索证据中…
             </div>
-          )}
-        </div>
+          )}        </div>
         <div className="border-t border-[var(--line)] p-3">
           <form
             onSubmit={(e) => { e.preventDefault(); ask(input); }}
@@ -139,7 +138,7 @@ export function QAView({ paperId, accent }: { paperId: number; accent: string })
           </form>
           <div className="mt-2 flex items-center gap-1.5 font-mono text-[10px] text-slate-600">
             <CornerDownLeft className="h-3 w-3" />
-            Enter 发送 · 回答带 Evidence + Confidence
+            回车发送 · 回答带证据与置信度
           </div>
         </div>
       </GlassCard>

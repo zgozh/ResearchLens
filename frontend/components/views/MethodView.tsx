@@ -32,13 +32,13 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
       <GlassCard className="p-6">
         <div className="mb-5 flex items-center justify-between">
           <div>
-            <Kicker>METHOD · 算法流程动画</Kicker>
-            <p className="mt-1 text-sm text-slate-400">核心方法自动动画化 —— Input → Backbone → Module → Prediction</p>
+            <Kicker>方法动画 · METHOD</Kicker>
+            <p className="mt-1 text-sm text-slate-400">核心方法自动动画化 —— 输入 → 骨干 → 模块 → 预测</p>
           </div>
           <div className="flex items-center gap-2">
             <Btn variant="outline" onClick={play} className="text-xs">
               {active < total ? <Play className="h-3.5 w-3.5" /> : <RotateCcw className="h-3.5 w-3.5" />}
-              {active < total ? 'Play' : 'Replay'}
+              {active < total ? '播放' : '重播'}
             </Btn>
           </div>
         </div>
@@ -108,7 +108,7 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
         {active > 0 && (
           <div className="mt-4 flex items-center gap-2 font-mono text-[11px] text-slate-500">
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: steps[active - 1]?.color || accent }} />
-            Step {active}/{total} · {steps[active - 1]?.label}
+            步骤 {active}/{total} · {steps[active - 1]?.label}
           </div>
         )}
       </GlassCard>
@@ -116,7 +116,7 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
       {/* original method figure */}
       {detail.figures?.find((f) => f.importance === 'high') && (
         <GlassCard className="p-6">
-          <Kicker>ORIGINAL FIGURE · 论文原图</Kicker>
+          <Kicker>论文原图 · ORIGINAL FIGURE</Kicker>
           <p className="mt-1 mb-4 text-sm text-slate-400">
             {detail.figures.find((f) => f.importance === 'high')?.caption}
           </p>

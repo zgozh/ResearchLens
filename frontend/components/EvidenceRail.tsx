@@ -19,7 +19,7 @@ export function EvidenceRail({
     return (
       <div className="hidden lg:block">
         <GlassCard className="sticky top-4 p-5">
-          <Kicker className="mb-3">EVIDENCE · 证据</Kicker>
+          <Kicker className="mb-3">证据 · EVIDENCE</Kicker>
           <div className="grid h-40 place-items-center text-center">
             <div>
               <Scan className="mx-auto mb-3 h-8 w-8 text-slate-700" />
@@ -36,7 +36,7 @@ export function EvidenceRail({
     <div className="hidden lg:block">
       <GlassCard className="sticky top-4 max-h-[calc(100vh-6rem)] overflow-y-auto p-5">
         <div className="mb-4 flex items-center justify-between">
-          <Kicker>EVIDENCE · 证据</Kicker>
+          <Kicker>证据 · EVIDENCE</Kicker>
           <span className="font-mono text-[10px] text-slate-500">{claim.claim_id}</span>
         </div>
 
@@ -45,18 +45,18 @@ export function EvidenceRail({
           <div className="mb-2 flex items-center gap-2">
             <span className="font-mono text-[11px] text-slate-500">{claim.type}</span>
             {supported ? (
-              <Badge tone="emerald"><ShieldCheck className="h-3 w-3" /> supported</Badge>
+              <Badge tone="emerald"><ShieldCheck className="h-3 w-3" /> 已支持</Badge>
             ) : (
-              <Badge tone="amber"><ShieldAlert className="h-3 w-3" /> unsupported</Badge>
+              <Badge tone="amber"><ShieldAlert className="h-3 w-3" /> 未支持</Badge>
             )}
           </div>
           <p className="text-sm leading-relaxed text-slate-100">{claim.statement}</p>
-          <div className="mt-3 font-mono text-[11px] text-slate-500">confidence · {claim.confidence.toFixed(2)}</div>
+          <div className="mt-3 font-mono text-[11px] text-slate-500">置信度 · {claim.confidence.toFixed(2)}</div>
         </div>
 
         {/* evidence list */}
         <div className="mt-4 space-y-2.5">
-          <Kicker>SOURCES</Kicker>
+          <Kicker>来源 · SOURCES</Kicker>
           {(claim.evidence || []).map((e, i) => (
             <motion.div
               key={i}
@@ -98,11 +98,11 @@ export function EvidenceRail({
           if (!fig) return null;
           return (
             <div className="mt-4">
-              <Kicker className="mb-2">ORIGINAL FIGURE · 原图</Kicker>
+              <Kicker className="mb-2">原图 · ORIGINAL FIGURE</Kicker>
               <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[#0F172A] p-1">
                 <div className="[&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: fig.glyph_svg }} />
               </div>
-              <p className="mt-2 text-[11px] text-slate-500">Figure {fig.fig_no} · p.{fig.page}</p>
+              <p className="mt-2 text-[11px] text-slate-500">图 {fig.fig_no} · p.{fig.page}</p>
             </div>
           );
         })()}

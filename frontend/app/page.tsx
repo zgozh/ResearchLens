@@ -3,18 +3,18 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { ArrowUpRight, BookOpen, FileText, Grab, Sparkles, Workflow } from 'lucide-react';
+import { ArrowUpRight, ArrowRight, BookOpen, FileText, Sparkles, Workflow, UploadCloud } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { DemoPaperListItem } from '@/lib/types';
 import { Logo } from '@/components/Logo';
 import { Badge, GlassCard, Kicker, Spinner } from '@/components/ui';
 
 const PIPELINE = [
-  { n: '01', label: 'Multimodal Parse', sub: '正文 · 图表 · 公式' },
-  { n: '02', label: 'Structure', sub: 'Sections / Method' },
-  { n: '03', label: 'Claims', sub: '断言提取' },
-  { n: '04', label: 'Evidence', sub: '证据链接 · Gate' },
-  { n: '05', label: 'Interactive', sub: '图谱 · 讲解 · 问答' },
+  { n: '01', label: '多模态解析', sub: '正文 · 图表 · 公式' },
+  { n: '02', label: '结构抽取', sub: '章节 · 方法' },
+  { n: '03', label: '断言提取', sub: '可验证 Claim' },
+  { n: '04', label: '证据链接', sub: '页码 · 区域 · Gate' },
+  { n: '05', label: '交互展项', sub: '图谱 · 讲解 · 问答' },
 ];
 
 export default function Home() {
@@ -38,7 +38,7 @@ export default function Home() {
         <Logo />
         <div className="flex items-center gap-2 font-mono text-[11px] text-slate-500">
           <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-          {loading ? 'connecting…' : 'demo-mode · online'}
+          {loading ? '正在连接…' : '科研引擎在线'}
         </div>
       </header>
 
@@ -50,23 +50,35 @@ export default function Home() {
         >
           <div className="mx-auto mb-6 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 py-1.5 font-mono text-[11px] uppercase tracking-[0.2em] text-slate-400">
             <Sparkles className="h-3.5 w-3.5 text-indigo-300" />
-            Evidence-first Generation · 证据驱动的科研展项
+            证据驱动的科研展项
           </div>
           <h1 className="mx-auto max-w-3xl text-5xl font-semibold leading-[1.05] tracking-tight text-white sm:text-6xl">
-            Drop a paper.
+            放入一篇论文，
             <br />
-            <span className="text-gradient">Watch it become science.</span>
+            <span className="text-gradient">看它变成科学。</span>
           </h1>
           <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-slate-400">
             ResearchLens 把一篇论文自动转换成{' '}
             <span className="text-slate-200">可验证 · 可演示 · 可交互</span> 的科研成果——
-            结构、方法、证据链、研究图谱与讲解，全部受论文约束。
+            结构、方法、证据链、研究图谱与讲解，全部受论文原文约束。
           </p>
+
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+            <Link
+              href="/upload"
+              className="inline-flex items-center gap-2 rounded-2xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition hover:bg-indigo-400"
+            >
+              <UploadCloud className="h-4 w-4" />
+              放入你的论文（上传 PDF）
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+            <span className="font-mono text-[11px] text-slate-600">或从下方示例论文开始</span>
+          </div>
         </motion.div>
 
         {/* Demo papers */}
         <motion.div
-          className="mx-auto mt-14 grid max-w-4xl grid-cols-1 gap-4 text-left sm:grid-cols-3"
+          className="mx-auto mt-12 grid max-w-4xl grid-cols-1 gap-4 text-left sm:grid-cols-3"
           initial="hidden"
           animate="show"
           variants={{ show: { transition: { staggerChildren: 0.12 } } }}
@@ -100,7 +112,7 @@ export default function Home() {
                     <div className="mt-auto flex items-center justify-between pt-4">
                       <span className="font-mono text-[11px] text-slate-500">{p.year}</span>
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-indigo-300">
-                        Open
+                        打开
                         <ArrowUpRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
                       </span>
                     </div>
@@ -113,7 +125,7 @@ export default function Home() {
 
         {/* Pipeline strip */}
         <div className="mx-auto mt-16 max-w-4xl">
-          <Kicker className="mb-4 text-center">GENERATIVE AI 只负责结构化内容 · 视觉由程序渲染</Kicker>
+          <Kicker className="mb-4 text-center">生成式 AI 只负责结构化内容 · 视觉由程序渲染</Kicker>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
             {PIPELINE.map((step, i) => (
               <motion.div
@@ -133,25 +145,28 @@ export default function Home() {
         </div>
 
         {/* How it reads */}
-        <div className="mx-auto mt-16 grid max-w-4xl grid-cols-1 gap-4 text-left sm:grid-cols-3">
-          {[
-            { icon: FileText, t: '多模态论文理解', d: '正文、图表、公式、图片统一解析；结构→断言→证据。' },
-            { icon: BookOpen, t: '可解释的证据链', d: '每条断言绑定页码、区域与原文引用，无证据不进事实层。' },
-            { icon: Workflow, t: '交互式科研展项', d: '研究图谱、算法动画、讲解员与 grounded 问答。' },
-          ].map((f) => (
-            <GlassCard key={f.t} className="p-5">
-              <f.icon className="mb-3 h-5 w-5 text-slate-300" />
-              <div className="text-sm font-semibold text-white">{f.t}</div>
-              <p className="mt-1.5 text-[13px] leading-relaxed text-slate-400">{f.d}</p>
-            </GlassCard>
-          ))}
+        <div className="mx-auto mt-16 text-center">
+          <Kicker className="mb-4">RESEARCHLENS 能为你做什么</Kicker>
+          <div className="mx-auto grid max-w-4xl grid-cols-1 gap-4 text-left sm:grid-cols-3">
+            {[
+              { icon: FileText, t: '多模态论文理解', d: '正文、图表、公式、图片统一解析；结构→断言→证据。' },
+              { icon: BookOpen, t: '可解释的证据链', d: '每条断言绑定页码、区域与原文引用；无证据不进事实层。' },
+              { icon: Workflow, t: '交互式科研展项', d: '研究图谱、算法动画、讲解员与 grounded 问答。' },
+            ].map((f) => (
+              <GlassCard key={f.t} className="p-5">
+                <f.icon className="mb-3 h-5 w-5 text-slate-300" />
+                <div className="text-sm font-semibold text-white">{f.t}</div>
+                <p className="mt-1.5 text-[13px] leading-relaxed text-slate-400">{f.d}</p>
+              </GlassCard>
+            ))}
+          </div>
         </div>
 
-        <footer className="mx-auto mt-16 flex max-w-4xl items-center justify-center gap-6 border-t border-[var(--line)] py-8 font-mono text-[11px] text-slate-600">
+        <footer className="mx-auto mt-16 flex max-w-4xl flex-col items-center justify-center gap-3 border-t border-[var(--line)] py-8 font-mono text-[11px] text-slate-600 sm:flex-row sm:gap-6">
           <span>第二届「庆园杯」· 主题三 开放创新探索</span>
           <span className="flex items-center gap-1.5">
-            <Grab className="h-3 w-3" />
-            Demo Mode · 无需 API Key
+            <Sparkles className="h-3 w-3" />
+            演示模式 · 无需 API Key 即可体验
           </span>
         </footer>
       </section>

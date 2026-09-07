@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Play, Pause, SkipForward, SkipBack, Volume2 } from 'lucide-react';
+import { Play, Pause, SkipForward, SkipBack, Volume2, VolumeX } from 'lucide-react';
 import type { PresentationOut, SceneOut } from '@/lib/types';
 import { Btn, GlassCard, Kicker } from '@/components/ui';
 import { cn } from '@/lib/cn';
@@ -16,10 +16,29 @@ const KIND_TONE: Record<string, string> = {
   limitation: '#F59E0B',
 };
 
+// 浏览器语音合成（zh-CN），失败/不可用时自动回落字幕（不报错）
+function speak(text: string, enabled: boolean) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  if (!enabled || !text) return;
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'zh-CN';
+    u.rate = 0.95;
+    const voices = window.speechSynthesis.getVoices();
+    const zh = voices.find((v) => v.lang?.toLowerCase().startsWith('zh'));
+    if (zh) u.voice = zh;
+    window.speechSynthesis.speak(u);
+  } catch {
+    /* 默认回落字幕，不干预 */
+  }
+}
+
 export function PresenterView({ presentation, accent }: { presentation: PresentationOut; accent: string }) {
   const scenes = presentation.scenes || [];
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [voiceOn, setVoiceOn] = useState(true);
   const scene: SceneOut | undefined = scenes[idx];
 
   useEffect(() => {
@@ -31,6 +50,13 @@ export function PresenterView({ presentation, accent }: { presentation: Presenta
     return () => clearTimeout(id);
   }, [playing, idx, scenes.length]);
 
+  // 讲解语音：跟随场景切换（仅当说明开启且浏览器支持）
+  useEffect(() => {
+    const narr = scene?.narration || {};
+    speak((narr.script as string) || (narr.subtitle as string), voiceOn);
+    return () => { if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel(); };
+  }, [idx, voiceOn, scene?.narration?.script]);
+
   const narr = scene?.narration || {};
   const color = KIND_TONE[scene?.kind || ''] || accent;
 
@@ -38,7 +64,7 @@ export function PresenterView({ presentation, accent }: { presentation: Presenta
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[280px,1fr]">
       {/* Scene list */}
       <div className="space-y-2">
-        <Kicker className="mb-3">STORYBOARD · 分镜</Kicker>
+        <Kicker className="mb-3">分镜 · STORYBOARD</Kicker>
         <div className="space-y-2">
           {scenes.map((s, i) => (
             <button
@@ -68,7 +94,7 @@ export function PresenterView({ presentation, accent }: { presentation: Presenta
       <GlassCard className="flex flex-col overflow-hidden">
         <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-3">
           <div className="flex items-center gap-2">
-            <Kicker>AI PRESENTER · 科研讲解员</Kicker>
+            <Kicker>AI 讲解员 · PRESENTER</Kicker>
           </div>
           <div className="flex items-center gap-1.5">
             <Btn variant="ghost" className="h-8 w-8 p-0" onClick={() => { setIdx(Math.max(0, idx - 1)); setPlaying(false); }}>
@@ -76,10 +102,13 @@ export function PresenterView({ presentation, accent }: { presentation: Presenta
             </Btn>
             <Btn variant="outline" className="h-8 px-3" onClick={() => setPlaying((p) => !p)}>
               {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-              {playing ? 'Pause' : idx + 1 < scenes.length ? 'Play' : 'Replay'}
+              {playing ? '暂停' : idx + 1 < scenes.length ? '播放' : '重播'}
             </Btn>
             <Btn variant="ghost" className="h-8 w-8 p-0" onClick={() => { setIdx(Math.min(scenes.length - 1, idx + 1)); setPlaying(false); }}>
               <SkipForward className="h-4 w-4" />
+            </Btn>
+            <Btn variant="ghost" className="h-8 w-8 p-0" onClick={() => setVoiceOn((v) => !v)}>
+              {voiceOn ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
             </Btn>
           </div>
         </div>
@@ -140,14 +169,14 @@ export function PresenterView({ presentation, accent }: { presentation: Presenta
             <div className="mt-auto space-y-3">
               <div className="rounded-xl border border-[var(--line)] bg-white/[0.02] p-4">
                 <div className="mb-1.5 flex items-center gap-2 text-[11px] text-slate-500">
-                  <Volume2 className="h-3.5 w-3.5" /> NARRATION
+                  <Volume2 className="h-3.5 w-3.5" /> 讲解词 · NARRATION
                 </div>
                 <p className="text-[15px] leading-relaxed text-slate-200">{narr.script}</p>
               </div>
               {narr.subtitle && (
-                <div className="flex items-center justify-between rounded-xl bg-black/30 px-4 py-2.5 font-mono text-[13px] text-slate-300">
+                <div className="flex items-center justify-between gap-3 rounded-xl bg-black/30 px-4 py-2.5 font-mono text-[13px] text-slate-300">
                   <span className="truncate">{narr.subtitle}</span>
-                  {narr.audio_url ? <span className="ml-3 shrink-0 text-[10px] text-emerald-400">● audio</span> : null}
+                  {narr.audio_url ? <span className="ml-3 shrink-0 text-[10px] text-emerald-400">● 音频</span> : null}
                 </div>
               )}
             </div>

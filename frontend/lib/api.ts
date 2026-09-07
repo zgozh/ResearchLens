@@ -16,16 +16,24 @@ const BASE =
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     cache: 'no-store',
     ...init,
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`API ${res.status} ${path}: ${body}`);
+    const text = await res.text().catch(() => '');
+    let message = `API ${res.status}`;
+    try {
+      const j = JSON.parse(text);
+      message = j?.detail || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
   }
   return (await res.json()) as T;
 }
+
+const JSON_HEADERS: HeadersInit = { 'Content-Type': 'application/json' };
 
 export const api = {
   base: BASE,
@@ -35,6 +43,7 @@ export const api = {
     http<PaperOut>('/api/demo/load', {
       method: 'POST',
       body: JSON.stringify({ slug }),
+      headers: JSON_HEADERS,
     }),
   papers: () => http<PaperOut[]>('/api/papers'),
   paperDetail: (id: number) => http<PaperDetail>(`/api/papers/${id}`),
@@ -48,7 +57,27 @@ export const api = {
     http<AskResponse>(`/api/papers/${id}/qa`, {
       method: 'POST',
       body: JSON.stringify({ question }),
+      headers: JSON_HEADERS,
     }),
   evaluation: (id: number) =>
     http<EvaluationOut>(`/api/papers/${id}/evaluation`),
+  // --- live: upload + process ---
+  uploadPaper: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return http<{ paper_id: number; job_id: number; status: string }>('/api/papers/upload', {
+      method: 'POST',
+      body: form,
+    });
+  },
+  processPaper: (id: number) =>
+    http<{ paper_id: number; job_id: number; status: string }>(`/api/papers/${id}/process`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+      headers: JSON_HEADERS,
+    }),
 };
+
+export function sleep(ms: number) {
+  return new Promise<void>((r) => setTimeout(r, ms));
+}

@@ -6,13 +6,13 @@ import type { PaperDetail, SectionOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
 
 const KIND_LABEL: Record<string, string> = {
-  intro: 'Introduction',
-  method: 'Method',
-  experiment: 'Experiment',
-  result: 'Result',
-  discussion: 'Discussion & Limitation',
-  conclusion: 'Conclusion',
-  references: 'References',
+  intro: '引言',
+  method: '方法',
+  experiment: '实验',
+  result: '结果',
+  discussion: '讨论与局限',
+  conclusion: '结论',
+  references: '参考文献',
 };
 
 const TONE: Record<string, 'accent' | 'cyan' | 'emerald' | 'amber' | 'rose' | 'violet' | 'slate'> = {
@@ -31,19 +31,19 @@ export function MapView({ detail, accent, onOpenSection }: {
 }) {
   const map = detail.map_summary || {};
   const boxes = [
-    { key: 'problem', label: 'Problem', c: '#F43F5E' },
-    { key: 'method', label: 'Method', c: '#6366F1' },
-    { key: 'dataset', label: 'Dataset', c: '#22D3EE' },
-    { key: 'experiment', label: 'Experiment', c: '#38BDF8' },
-    { key: 'result', label: 'Result', c: '#34D399' },
-    { key: 'limitation', label: 'Limitation', c: '#F59E0B' },
+    { key: 'problem', label: '问题', c: '#F43F5E' },
+    { key: 'method', label: '方法', c: '#6366F1' },
+    { key: 'dataset', label: '数据集', c: '#22D3EE' },
+    { key: 'experiment', label: '实验', c: '#38BDF8' },
+    { key: 'result', label: '结果', c: '#34D399' },
+    { key: 'limitation', label: '局限', c: '#F59E0B' },
   ];
 
   return (
     <div className="space-y-6">
       {/* abstract */}
       <GlassCard className="p-6">
-        <Kicker>ABSTRACT</Kicker>
+        <Kicker>摘要 · ABSTRACT</Kicker>
         <p className="mt-3 text-[15px] leading-relaxed text-slate-300">{detail.abstract}</p>
         <div className="mt-4 flex flex-wrap gap-2">
           {(detail.tags || []).map((t) => (
@@ -51,15 +51,15 @@ export function MapView({ detail, accent, onOpenSection }: {
           ))}
         </div>
         <div className="mt-5 flex flex-wrap gap-6 border-t border-[var(--line)] pt-4 font-mono text-[11px] text-slate-500">
-          <span>AUTHORS · {detail.authors.join(', ')}</span>
-          <span>YEAR · {detail.year}</span>
-          <span>DOMAIN · {detail.domain}</span>
+          <span>作者 · {detail.authors.join(', ')}</span>
+          <span>年份 · {detail.year}</span>
+          <span>领域 · {detail.domain}</span>
         </div>
       </GlassCard>
 
       {/* Paper map */}
       <div>
-        <Kicker className="mb-3">PAPER MAP · 论文地图</Kicker>
+        <Kicker className="mb-3">论文地图 · PAPER MAP</Kicker>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {boxes.map((b, i) => (
             <motion.div
@@ -86,7 +86,7 @@ export function MapView({ detail, accent, onOpenSection }: {
 
       {/* Sections */}
       <div>
-        <Kicker className="mb-3">STRUCTURE · 章节结构</Kicker>
+        <Kicker className="mb-3">章节结构 · STRUCTURE</Kicker>
         <GlassCard className="divide-y divide-[var(--line)] overflow-hidden">
           {(detail.sections || []).map((s) => (
             <button

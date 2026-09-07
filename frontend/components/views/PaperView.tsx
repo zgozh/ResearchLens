@@ -9,7 +9,7 @@ export function PaperView({ detail }: { detail: PaperDetail }) {
     <div className="mx-auto max-w-3xl">
       <GlassCard className="p-8">
         {/* title */}
-        <Kicker className="mb-3">PAPER · 论文阅读</Kicker>
+        <Kicker className="mb-3">论文阅读 · PAPER</Kicker>
         <h1 className="text-2xl font-semibold leading-tight text-white">{detail.title}</h1>
         <p className="mt-1 font-mono text-[12px] text-slate-500">{detail.subtitle}</p>
         <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 font-mono text-[11px] text-slate-500">
@@ -18,7 +18,7 @@ export function PaperView({ detail }: { detail: PaperDetail }) {
           <span>{detail.domain}</span>
         </div>
         <div className="mt-5 border-t border-[var(--line)] pt-5">
-          <Kicker>ABSTRACT</Kicker>
+          <Kicker>摘要</Kicker>
           <p className="mt-2 text-[15px] leading-relaxed text-slate-300">{detail.abstract}</p>
         </div>
       </GlassCard>
@@ -43,7 +43,7 @@ export function PaperView({ detail }: { detail: PaperDetail }) {
           {detail.figures.map((f) => (
             <GlassCard key={`fig-${f.fig_no}`} className="p-4">
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-200">Figure {f.fig_no}</span>
+                <span className="text-xs font-semibold text-slate-200">图 {f.fig_no}</span>
                 <span className="font-mono text-[10px] text-slate-500">p.{f.page}</span>
               </div>
               <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-[#0F172A] p-1">
@@ -60,7 +60,7 @@ export function PaperView({ detail }: { detail: PaperDetail }) {
             <GlassCard key={`tbl-${t.table_no}`} className="p-6">
               <div className="mb-2 flex items-center gap-2">
                 <Table2 className="h-4 w-4 text-slate-500" />
-                <span className="text-sm font-semibold text-slate-200">Table {t.table_no}</span>
+                <span className="text-sm font-semibold text-slate-200">表 {t.table_no}</span>
                 <span className="ml-auto font-mono text-[10px] text-slate-500">p.{t.page}</span>
               </div>
               <p className="mb-3 text-[12px] text-slate-500">{t.caption}</p>

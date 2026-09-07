@@ -27,7 +27,7 @@ services:
     environment:
       DEMO_MODE: ${DEMO_MODE:-true}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-researchlens}:${POSTGRES_PASSWORD:-researchlens}@db:5432/${POSTGRES_DB:-researchlens}
-      CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000},http://127.0.0.1:${FRONTEND_PORT:-3000},http://localhost:${FRONTEND_PORT:-3000}
+      CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000},http://127.0.0.1:${FRONTEND_PORT:-3000}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}

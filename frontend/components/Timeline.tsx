@@ -7,14 +7,14 @@ import type { ViewMode } from '@/lib/types';
 import { cn } from '@/lib/cn';
 
 const ITEMS: { view: ViewMode; label: string; icon: any; key: string }[] = [
-  { view: 'paper', label: 'Paper', icon: FileSearch, key: 'paper' },
-  { view: 'map', label: 'Problem · Map', icon: LayoutGrid, key: 'map' },
-  { view: 'method', label: 'Method', icon: Workflow, key: 'method' },
-  { view: 'claim', label: 'Experiment · Result', icon: FileSearch, key: 'claim' },
-  { view: 'graph', label: 'Research Graph', icon: Share2, key: 'graph' },
-  { view: 'presenter', label: 'Presenter', icon: Mic, key: 'presenter' },
-  { view: 'qa', label: 'Q&A', icon: MessageCircle, key: 'qa' },
-  { view: 'eval', label: 'Evaluation', icon: Gauge, key: 'eval' },
+  { view: 'paper', label: '论文', icon: FileSearch, key: 'paper' },
+  { view: 'map', label: '问题 · 地图', icon: LayoutGrid, key: 'map' },
+  { view: 'method', label: '方法', icon: Workflow, key: 'method' },
+  { view: 'claim', label: '实验 · 结果', icon: FileSearch, key: 'claim' },
+  { view: 'graph', label: '研究图谱', icon: Share2, key: 'graph' },
+  { view: 'presenter', label: '讲解员', icon: Mic, key: 'presenter' },
+  { view: 'qa', label: '问答', icon: MessageCircle, key: 'qa' },
+  { view: 'eval', label: '评测', icon: Gauge, key: 'eval' },
 ];
 
 export function Timeline({

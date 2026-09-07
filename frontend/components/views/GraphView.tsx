@@ -114,9 +114,9 @@ export function GraphView({ graph, accent }: { graph: GraphOut; accent: string }
     <GlassCard className="p-6">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <Kicker>RESEARCH GRAPH · 研究图谱</Kicker>
+          <Kicker>研究图谱 · RESEARCH GRAPH</Kicker>
           <p className="mt-1 text-sm text-slate-400">
-            Problem → Method → Experiment → Claim → Evidence，每个断言绑定到具体证据。
+            问题 → 方法 → 实验 → 断言 → 证据，每条断言都绑定到具体证据。
           </p>
         </div>
         <div className="hidden items-center gap-3 font-mono text-[10px] text-slate-500 sm:flex">
