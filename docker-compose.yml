@@ -1,0 +1,54 @@
+# ResearchLens — 一键部署（Spec §16）
+#   cp .env.example .env
+#   docker compose up --build
+#   打开 http://localhost:3000
+#
+# 若本机 3000/8000 已被占用，可覆盖宿主端口：
+#   FRONTEND_PORT=3002 BACKEND_PORT=8003 docker compose up --build
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-researchlens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-researchlens}
+      POSTGRES_DB: ${POSTGRES_DB:-researchlens}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-researchlens}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      DEMO_MODE: ${DEMO_MODE:-true}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-researchlens}:${POSTGRES_PASSWORD:-researchlens}@db:5432/${POSTGRES_DB:-researchlens}
+      CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000},http://127.0.0.1:${FRONTEND_PORT:-3000},http://localhost:${FRONTEND_PORT:-3000}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      BACKEND_PORT: 8000
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

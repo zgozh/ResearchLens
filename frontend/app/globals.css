@@ -1,0 +1,130 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #060a13;
+  --panel: #0b1425;
+  --panel2: #0f1b31;
+  --line: rgba(148, 163, 184, 0.12);
+  --mist: #94a3b8;
+  --parchment: #e2e8f0;
+}
+
+* {
+  border-color: var(--line);
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--parchment);
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(99, 102, 241, 0.14), transparent 60%),
+    radial-gradient(900px 500px at 10% 20%, rgba(34, 211, 238, 0.08), transparent 55%),
+    var(--bg);
+}
+
+/* subtle grid */
+.grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+.glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015));
+  border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+}
+
+.glass-strong {
+  background: linear-gradient(180deg, rgba(17, 28, 51, 0.9), rgba(11, 20, 37, 0.9));
+  border: 1px solid var(--line);
+  backdrop-filter: blur(20px);
+}
+
+.hairline {
+  border: 1px solid var(--line);
+}
+
+.text-gradient {
+  background: linear-gradient(120deg, #a5b4fc 0%, #67e8f9 45%, #f0abfc 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.3);
+  background-clip: content-box;
+}
+
+/* React Flow node defaults */
+.react-flow__node {
+  font-family: inherit;
+}
+.react-flow__edge-path {
+  stroke: rgba(148, 163, 184, 0.4);
+  stroke-width: 1.5;
+}
+.react-flow__edge-text {
+  fill: #64748b;
+  font-size: 10px;
+}
+.react-flow__controls {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+.react-flow__controls-button {
+  background: #0b1425;
+  border-bottom: 1px solid var(--line);
+  color: #cbd5e1;
+}
+.react-flow__controls-button:hover {
+  background: #12203a;
+}
+.react-flow__minimap {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+.react-flow__attribution {
+  display: none;
+}
+
+/* utilities */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.dot {
+  font-size: 0;
+}

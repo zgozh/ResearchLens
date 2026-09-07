@@ -1,0 +1,27 @@
+[project]
+name = "researchlens-backend"
+version = "1.0.0"
+description = "ResearchLens — evidence-driven interactive science exhibit (README)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.7",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "psycopg[binary]>=3.2",       # Postgres driver (used in Docker/prod)
+    "pypdf>=4.3",                 # PDF text extraction (Live path)
+]
+
+[project.optional-dependencies]
+# AGPL-licensed optional parser for richer figure/table region extraction (Live only;
+# NOT used on the main path — see docs/OSS_REUSE.md §5). Install explicitly if you want it.
+vision = ["pymupdf>=1.24"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100

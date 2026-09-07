@@ -1,0 +1,86 @@
+# ResearchLens · AI 科研视界
+
+> **让一篇论文从「文档」变成「可验证、可演示、可交互的科研成果」**
+
+第二届「庆园杯」人工智能创新应用大赛 · 主题三（开放创新探索）参赛作品。
+
+ResearchLens 把一篇科研论文自动转换成**证据驱动的可交互科研展项**：
+论文结构 → 核心方法 → 实验结果 → 证据链 → 动画化讲解 → 可点击研究图谱 → AI 问答。
+
+核心创新是 **Evidence-first**：任何 AI 生成内容都必须绑定 `claim_id / source_page / source_region / source_text / confidence`，
+没有证据就不能作为「事实」展示——这正是它区别于普通「论文总结工具 / AI 文案生成器 / AI PPT 生成器」的地方。
+
+---
+
+## ✨ 功能亮点
+
+- **Paper Map**：一键生成 Problem / Method / Dataset / Experiment / Result / Limitation 总览
+- **Method 动画**：论文核心算法流程自动动画化（Input → Backbone → FE → Module → Prediction）
+- **Claim → Evidence → Page**：点击实验结果，展示断言、证据、原图引用（已绑定页码）
+- **Research Graph**：React Flow 把论文构造成 Problem → Method → Experiment → Claim → Evidence 图谱
+- **AI Presenter**：科研讲解员按证据讲解当前 Scene（字幕 + 音频，Avatar 挂了也能展示）
+- **Grounded Q&A**：回答必须带 Evidence + Confidence，无证据则禁止编造
+- **ResearchLens Evaluation**：自动质量评分（Citation Coverage / Claim-Evidence Alignment / Unsupported Claim Rate ≈ 0）
+
+## 🖼 现场演示（Demo Mode）
+
+`DEMO_MODE=true` 时**无需任何 API Key**即可完整演示：
+先拖入/选择一篇 Demo 论文 → 自动生成 Paper Map → 点击 Method 看算法动画 →
+点击实验结果看 Claim→Evidence→Page → 打开 Research Graph 图谱 → AI Presenter 讲解 →
+提问「这篇论文哪里最值得质疑？」系统基于 Discussion 证据作答。
+
+3 份 Demo 论文为项目**自绘原创**：计算机视觉 / 网络空间安全 / 教育 AI。
+
+## 🧱 技术栈
+
+| 层 | 选型 |
+| --- | --- |
+| 前端 | Next.js 14 (App Router) · React 18 · TypeScript · Tailwind v4 · Framer Motion · @xyflow/react (React Flow) · pdfjs-dist |
+| 后端 | FastAPI · Pydantic v2 · SQLAlchemy 2.x |
+| AI | OpenAI-compatible API · Vision · Structured Output · RAG（多供应商候选 + 降级） |
+| 数据 | PostgreSQL + pgvector（生产）/ SQLite（本地开发） |
+| 运行时 | Docker Compose · SSE |
+
+**约束**：不要求 CUDA / Ollama / 本地模型 / GPU；现场演示可离线（Demo Mode）。
+
+## 🚀 一键部署
+
+```bash
+cp .env.example .env
+# 如需 Live 模式，填 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL
+docker compose up --build
+```
+
+打开 `http://localhost:3000`。
+
+> 默认 `DEMO_MODE=true`，无需 API Key 即可完整体验。
+
+## 🧩 本地开发
+
+**后端**
+```bash
+cd backend
+uv sync            # 或 pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**前端**
+```bash
+cd frontend
+npm install
+npm run dev        # 打开 http://localhost:3000
+```
+
+## 📄 文档
+
+- `docs/OSS_REUSE.md` — 开源复用清单（来源 / License / 复用范围）
+- `docs/ARCHITECTURE.md` — 系统架构
+- `docs/DECISIONS.md` — 关键决策记录（ADR）
+- `docs/TASKS.md` — 任务分解
+- `docs/ASSET_LICENSES.md` — 素材版权记录
+
+## 🏆 比赛定位
+
+> **ResearchLens——面向科研成果的多模态证据理解、交互式演绎与智能讲解平台。**
+
+技术亮点：多模态论文理解 · Claim-Evidence Graph · 证据约束生成 · 交互式科研可视化 · Grounded Q&A · 自动质量评测。
