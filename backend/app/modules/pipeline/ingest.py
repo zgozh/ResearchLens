@@ -42,14 +42,19 @@ def parse_pdf(data: bytes) -> Dict:
     return {"pages": pages, "full_text": full_text, "text": full_text[:24000]}
 
 
-def extract_figures(data: bytes, max_figs: int = 6) -> List[Dict]:
-    """PyMuPDF 提取论文内真实图（base64 PNG/JPEG），过滤小图标，去重。"""
+def extract_figures(data: bytes, max_figs: int = 6, min_target: int = 3) -> List[Dict]:
+    """提取论文内真实图；若内置光栅图不足，用「整页图像」兜底（保证每篇都有可视图片）。
+
+    返回 items: {page, image_b64, caption(kind)}  （kind: raster | page）
+    """
     if not pymupdf:
         return []
     figs: List[Dict] = []
     seen = set()
+    page_seen = set()
     try:
         doc = pymupdf.open(stream=data, filetype="pdf")
+        # 1) 光栅内嵌图
         for pno in range(doc.page_count):
             page = doc[pno]
             for info in page.get_image_info(xrefs=True):
@@ -62,21 +67,47 @@ def extract_figures(data: bytes, max_figs: int = 6) -> List[Dict]:
                 except Exception:  # noqa: BLE001
                     continue
                 img = base.get("image", b"")
-                if len(img) < 3000:  # 过滤过小图标
+                if len(img) < 3000:
                     continue
                 md5 = hashlib.md5(img).hexdigest()
                 if md5 in seen:
                     continue
                 seen.add(md5)
-                figs.append({"page": pno + 1, "image_b64": base64.b64encode(img).decode("utf-8")})
+                figs.append({"page": pno + 1, "image_b64": base64.b64encode(img).decode("utf-8"),
+                             "caption": f"论文内嵌图 {len(figs) + 1}"})
                 if len(figs) >= max_figs:
                     return figs
-            if len(figs) >= max_figs:
-                break
+        # 2) 兜底：整页图像（优先含图的页，其次前几页）
+        if len(figs) < min_target:
+            candidates = list(range(doc.page_count))
+            # 优先有图片块的页
+            def page_img_count(pno):
+                try:
+                    return len(doc[pno].get_image_info(xrefs=True))
+                except Exception:  # noqa: BLE001
+                    return 0
+            candidates.sort(key=lambda p: (-page_img_count(p), p))
+            for pno in candidates:
+                if len(figs) >= min_target:
+                    break
+                if pno in page_seen:
+                    continue
+                page_seen.add(pno)
+                try:
+                    pix = doc[pno].get_pixmap(dpi=110)
+                    img = pix.tobytes("png")
+                except Exception:  # noqa: BLE001
+                    continue
+                md5 = hashlib.md5(img).hexdigest()
+                if md5 in seen:
+                    continue
+                seen.add(md5)
+                figs.append({"page": pno + 1, "image_b64": base64.b64encode(img).decode("utf-8"),
+                             "caption": f"论文整页 p.{pno + 1}"})
         doc.close()
     except Exception as e:  # noqa: BLE001
         log.warning("extract_figures failed: %s", e)
-    return figs
+    return figs[:max_figs]
 
 
 # --------------------------------------------------------------------- LLM IR
@@ -260,8 +291,8 @@ def ingest_paper_from_pdf(db: Session, data: bytes, url: str = "", title: str = 
     fig_models = []
     for i, fig in enumerate(figures, start=1):
         fig_no = i
-        f = models.Figure(paper_id=paper.id, fig_no=fig_no, caption=f"论文图 {fig_no}", page=fig["page"],
-                          image_b64=fig["image_b64"], importance="medium")
+        f = models.Figure(paper_id=paper.id, fig_no=fig_no, caption=fig.get("caption", f"论文图 {fig_no}"),
+                          page=fig["page"], image_b64=fig["image_b64"], importance="medium")
         db.add(f)
         fig_models.append(f)
         db.flush()

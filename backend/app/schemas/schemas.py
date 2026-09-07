@@ -104,6 +104,7 @@ class SceneOut(BaseModel):
     evidence_refs: List[Any] = Field(default_factory=list)
     figure_refs: List[Any] = Field(default_factory=list)
     narration: dict = Field(default_factory=dict)
+    linked: List[Any] = Field(default_factory=list)
 
 
 class PresentationOut(BaseModel):

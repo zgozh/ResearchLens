@@ -16,7 +16,7 @@ const KIND_TONE: Record<string, string> = {
 type Sel =
   | { type: 'figure'; fig_no: number }
   | { type: 'table'; table_no: number }
-  | { type: 'text'; label: string; page?: number; quote?: string; text?: string };
+  | { type: 'text'; label: string; page?: number; region?: string; quote?: string; text?: string };
 
 function parseEv(label: string): { page?: number; region?: string } {
   const pm = label.match(/p\.?(\d+)/i);
@@ -49,7 +49,10 @@ export function PresenterView({ presentation, accent, detail, claims }: {
     .filter((r) => /table|表|t\d/i.test(String(r)))
     .map((r) => { const m = String(r).match(/[tT](\d+)|表\s*(\d+)/); const n = m ? Number(m[1] || m[2]) : undefined; return n ? detail.tables.find((t) => t.table_no === n) : undefined; })
     .filter((x): x is NonNullable<typeof x> => !!x);
-  const texts = (scene?.evidence_refs || []).filter((r) => typeof r === 'string' && !/^(图|表|figure|table)/i.test(r));
+  const linkedTexts = (scene?.linked || []).filter((l: any) => l?.type === 'text');
+  const texts: any[] = linkedTexts.length
+    ? linkedTexts
+    : (scene?.evidence_refs || []).filter((r) => typeof r === 'string' && !/^(图|表|figure|table)/i.test(r));
 
   const openText = (label: string) => {
     const { page, region } = parseEv(label);
@@ -142,12 +145,18 @@ export function PresenterView({ presentation, accent, detail, claims }: {
                       <Table2 className="h-3.5 w-3.5" style={{ color }} /> 表 {t.table_no}
                     </button>
                   ))}
-                  {texts.map((r, i) => (
-                    <button key={`t${i}`} onClick={() => openText(String(r))}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] bg-white/[0.03] px-2.5 py-1 text-[12px] text-slate-300 transition hover:border-white/25 hover:text-white">
-                      <Quote className="h-3.5 w-3.5" style={{ color }} /> {r}
-                    </button>
-                  ))}
+                  {texts.map((r, i) => {
+                    const label = typeof r === 'string' ? r : `p.${r.page} · ${r.region || '原文'}`;
+                    return (
+                      <button key={`t${i}`}
+                        onClick={() => typeof r === 'string'
+                          ? setSel({ type: 'text', label, quote: label, text: label })
+                          : setSel({ type: 'text', page: r.page, region: r.region, quote: r.quote, text: r.text, label })}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] bg-white/[0.03] px-2.5 py-1 text-[12px] text-slate-300 transition hover:border-white/25 hover:text-white">
+                        <Quote className="h-3.5 w-3.5" style={{ color }} /> {label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -196,9 +205,10 @@ export function PresenterView({ presentation, accent, detail, claims }: {
                 );
               })()}
               {sel?.type === 'text' && (
-                <div className="rounded-xl border-l-2 p-3 text-[13px] leading-relaxed text-slate-300" style={{ borderColor: color }}>
+                <div className="rounded-xl border-l-2 bg-white/[0.02] p-3 text-[13px] leading-relaxed text-slate-300" style={{ borderColor: color }}>
                   <div className="mb-1 font-mono text-[11px] text-slate-500">{sel.label}{sel.page ? ` · p.${sel.page}` : ''}</div>
-                  <p>论文相关原文/证据定位，可从「证据链」查看完整原文引用。</p>
+                  {sel.quote && <p className="text-slate-200">“{sel.quote}”</p>}
+                  {sel.text && sel.text !== sel.quote && <p className="mt-1 text-slate-400">{sel.text}</p>}
                 </div>
               )}
             </motion.div>

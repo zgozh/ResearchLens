@@ -132,6 +132,7 @@ export interface SceneOut {
   evidence_refs: any[];
   figure_refs: number[];
   narration: ScenedNarration;
+  linked?: any[];
 }
 
 export interface PresentationOut {
