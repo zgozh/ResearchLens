@@ -76,6 +76,10 @@ export const api = {
       body: JSON.stringify({}),
       headers: JSON_HEADERS,
     }),
+  jobStatus: (id: number) =>
+    http<{ job_id: number; stage: string; stage_label: string; status: string; paper_id: number }>(
+      `/api/jobs/${id}`,
+    ),
 };
 
 export function sleep(ms: number) {

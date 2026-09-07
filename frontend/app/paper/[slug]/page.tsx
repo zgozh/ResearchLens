@@ -42,6 +42,7 @@ export default function Workspace() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const paperId = searchParams.get('paper_id');
+  const jobId = searchParams.get('job_id');
 
   const [paper, setPaper] = useState<PaperOut>();
   const [detail, setDetail] = useState<PaperDetail>();
@@ -58,6 +59,7 @@ export default function Workspace() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [processing, setProcessing] = useState(false);
+  const [stageLabel, setStageLabel] = useState<string>();
 
   const accent = detail?.accent || '#6366F1';
   const isUpload = detail?.source_mode === 'upload';
@@ -130,6 +132,24 @@ export default function Workspace() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 实时模式：按 job 状态展示当前处理阶段（可观测）
+  useEffect(() => {
+    if (!processing || !jobId || Number(jobId) === 0) return;
+    const id = setInterval(async () => {
+      try {
+        const j = await api.jobStatus(Number(jobId));
+        setStageLabel(j.stage_label);
+        if (j.status === 'done' || j.status === 'failed') {
+          clearInterval(id);
+          setProcessing(false);
+        }
+      } catch {
+        /* 继续轮询 */
+      }
+    }, 2500);
+    return () => clearInterval(id);
+  }, [processing, jobId]);
 
   const topClaim = useMemo(() => claims[0]?.claim_id, [claims]);
 
@@ -232,7 +252,7 @@ export default function Workspace() {
             {processing && (
               <div className="mb-4 flex items-center gap-2 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-[13px] text-cyan-200">
                 <Spinner className="h-4 w-4" />
-                正在调用大模型抽取结构、断言与证据，请稍候…
+                {stageLabel || '正在调用大模型抽取结构、断言与证据…'}
               </div>
             )}
 

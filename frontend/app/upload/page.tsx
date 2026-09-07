@@ -29,11 +29,11 @@ export default function UploadPage() {
       try {
         const up = await api.uploadPaper(file);
         setStage('正在调用大模型抽取结构与断言…');
-        const proc = await api.processPaper(up.paper_id).catch(() => ({ status: 'skipped' }));
+        const proc = await api.processPaper(up.paper_id).catch(() => ({ status: 'skipped', job_id: 0 }));
         setOk(true);
         setStage('抽取完成，正在进入科研展项…');
         setTimeout(() => {
-          router.push(`/paper/upload?paper_id=${up.paper_id}`);
+          router.push(`/paper/upload?paper_id=${up.paper_id}&job_id=${proc.job_id ?? 0}`);
         }, 700);
       } catch (e: any) {
         setError(e?.message || '上传失败');
