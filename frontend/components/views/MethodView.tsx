@@ -128,6 +128,11 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
               }}
             />
           </div>
+          {detail.figures.find((f) => f.importance === 'high')?.description && (
+            <p className="mt-3 text-[12px] text-slate-500">
+              {detail.figures.find((f) => f.importance === 'high')?.description}
+            </p>
+          )}
         </GlassCard>
       )}
 

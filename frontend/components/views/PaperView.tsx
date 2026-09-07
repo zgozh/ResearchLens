@@ -30,11 +30,22 @@ export function PaperView({ detail }: { detail: PaperDetail }) {
             <div className="mb-2 flex items-center gap-2">
               <FileText className="h-4 w-4 text-slate-500" />
               <h2 className="text-lg font-semibold text-white">{sec.heading}</h2>
-              <span className="ml-auto rounded-md bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-slate-500">
-                p.{sec.page}
-              </span>
+              <span className="ml-auto rounded-md bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-slate-500">p.{sec.page}</span>
             </div>
-            <p className="text-[14px] leading-relaxed text-slate-400">{sec.summary}</p>
+            {sec.body ? (
+              <p className="text-[14px] leading-relaxed text-slate-400">{sec.body}</p>
+            ) : (
+              <p className="text-[14px] leading-relaxed text-slate-400">{sec.summary}</p>
+            )}
+            {(sec.key_points?.length ?? 0) > 0 && (
+              <ul className="mt-3 space-y-1.5">
+                {sec.key_points.map((kp, j) => (
+                  <li key={j} className="flex items-start gap-2 text-[12px] text-slate-500">
+                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400" />{kp}
+                  </li>
+                ))}
+              </ul>
+            )}
           </GlassCard>
         ))}
 
@@ -84,6 +95,11 @@ export function PaperView({ detail }: { detail: PaperDetail }) {
                   </tbody>
                 </table>
               </div>
+              {t.key_finding && (
+                <div className="mt-2.5 rounded-lg border-l-2 border-emerald-400 bg-emerald-500/5 px-3 py-2 text-[12px] text-emerald-100/90">
+                  关键结论：{t.key_finding}
+                </div>
+              )}
             </GlassCard>
           ))}
         </div>

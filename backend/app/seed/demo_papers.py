@@ -45,16 +45,21 @@ def _persist_paper(db: Session, ir: Dict) -> None:
     db.add(paper)
     db.flush()
 
+    for pg in ir.get("pages", []):
+        db.add(models.PaperPage(paper_id=paper.id, page_no=pg.get("page_no", 1),
+                                text=pg.get("text", ""), blocks=pg.get("blocks", [])))
     for s in ir.get("sections", []):
         db.add(models.Section(paper_id=paper.id, heading=s["heading"], kind=s.get("kind", "body"),
-                              page=s.get("page", 1), summary=s.get("summary", "")))
+                              page=s.get("page", 1), summary=s.get("summary", ""),
+                              body=s.get("body", ""), key_points=s.get("key_points", [])))
     for f in ir.get("figures", []):
         db.add(models.Figure(paper_id=paper.id, fig_no=f["fig_no"], caption=f.get("caption", ""),
                              page=f.get("page", 1), glyph_svg=f.get("glyph_svg", ""),
-                             importance=f.get("importance", "medium")))
+                             importance=f.get("importance", "medium"), description=f.get("description", "")))
     for t in ir.get("tables", []):
         db.add(models.Table(paper_id=paper.id, table_no=t.get("table_no", 0), caption=t.get("caption", ""),
-                            page=t.get("page", 1), content=t.get("content", [])))
+                            page=t.get("page", 1), content=t.get("content", []),
+                            key_finding=t.get("key_finding", "")))
     for idx, c in enumerate(ir.get("claims", []), start=1):
         claim = models.Claim(
             paper_id=paper.id,
@@ -63,6 +68,7 @@ def _persist_paper(db: Session, ir: Dict) -> None:
             type=c.get("type", "RESULT"),
             confidence=c.get("confidence", 0.9),
             status="SUPPORTED" if c.get("evidence") else "UNSUPPORTED",
+            rationale=c.get("rationale", ""),
         )
         db.add(claim)
         db.flush()
@@ -83,6 +89,7 @@ def _persist_paper(db: Session, ir: Dict) -> None:
         db.add(models.Scene(paper_id=paper.id, order=sc.get("order", 0), title=sc.get("title", ""),
                             kind=sc.get("kind", ""), summary=sc.get("summary", ""),
                             steps=sc.get("steps", []), evidence_refs=sc.get("evidence_refs", []),
+                            figure_refs=sc.get("figure_refs", []),
                             narration=sc.get("narration", {})))
 
     for qa in ir.get("qa_bank", []):

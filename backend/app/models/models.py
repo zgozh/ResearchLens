@@ -57,6 +57,7 @@ class PaperPage(Base):
     paper_id: Mapped[int] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"))
     page_no: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text, default="")
+    blocks: Mapped[list] = mapped_column(JSON, default=list)  # [{type,content,region}]
     region_map: Mapped[dict] = mapped_column(JSON, default=dict)
 
     paper: Mapped["Paper"] = relationship(back_populates="pages")
@@ -71,6 +72,8 @@ class Section(Base):
     kind: Mapped[str] = mapped_column(String(32), default="body")  # intro/method/.../discussion
     page: Mapped[int] = mapped_column(Integer, default=1)
     summary: Mapped[str] = mapped_column(Text, default="")
+    body: Mapped[str] = mapped_column(Text, default="")  # 完整正文（多段）
+    key_points: Mapped[list] = mapped_column(JSON, default=list)  # 要旨列表
 
     paper: Mapped["Paper"] = relationship(back_populates="sections")
 
@@ -86,6 +89,7 @@ class Figure(Base):
     image_ref: Mapped[str] = mapped_column(String(1024), default="")
     glyph_svg: Mapped[str] = mapped_column(Text, default="")
     importance: Mapped[str] = mapped_column(String(16), default="medium")
+    description: Mapped[str] = mapped_column(Text, default="")  # 图解读
 
     paper: Mapped["Paper"] = relationship(back_populates="figures")
 
@@ -99,6 +103,7 @@ class Table(Base):
     caption: Mapped[str] = mapped_column(Text, default="")
     page: Mapped[int] = mapped_column(Integer, default=1)
     content: Mapped[list] = mapped_column(JSON, default=list)  # rows of cells
+    key_finding: Mapped[str] = mapped_column(Text, default="")  # 关键结论
 
     paper: Mapped["Paper"] = relationship(back_populates="tables")
 
@@ -113,6 +118,7 @@ class Claim(Base):
     type: Mapped[str] = mapped_column(String(32), default="RESULT")  # RESULT/METHOD/LIMITATION/CONTEXT
     confidence: Mapped[float] = mapped_column(Float, default=0.9)
     status: Mapped[str] = mapped_column(String(16), default="SUPPORTED")  # SUPPORTED | UNSUPPORTED
+    rationale: Mapped[str] = mapped_column(Text, default="")  # 为何视为断言/依据
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
     paper: Mapped["Paper"] = relationship(back_populates="claims")
@@ -166,6 +172,7 @@ class Scene(Base):
     summary: Mapped[str] = mapped_column(Text, default="")
     steps: Mapped[list] = mapped_column(JSON, default=list)  # animation steps
     evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    figure_refs: Mapped[list] = mapped_column(JSON, default=list)
     narration: Mapped[dict] = mapped_column(JSON, default=dict)  # script/tts_text/subtitle/audio_url
 
     paper: Mapped["Paper"] = relationship(back_populates="scenes")

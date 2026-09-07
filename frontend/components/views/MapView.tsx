@@ -1,33 +1,24 @@
 'use client';
 
-import { motion } from 'framer-motion';
-import { ArrowDown } from 'lucide-react';
+import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ChevronDown, FileText, Table2, Image as ImageIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import type { PaperDetail, SectionOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 const KIND_LABEL: Record<string, string> = {
-  intro: '引言',
-  method: '方法',
-  experiment: '实验',
-  result: '结果',
-  discussion: '讨论与局限',
-  conclusion: '结论',
-  references: '参考文献',
+  intro: '引言', method: '方法', experiment: '实验', result: '结果',
+  discussion: '讨论与局限', conclusion: '结论', references: '参考文献',
 };
-
-const TONE: Record<string, 'accent' | 'cyan' | 'emerald' | 'amber' | 'rose' | 'violet' | 'slate'> = {
-  intro: 'violet',
-  method: 'accent',
-  experiment: 'cyan',
-  result: 'emerald',
-  discussion: 'rose',
-  conclusion: 'slate',
+const TONE: Record<string, 'accent'|'cyan'|'emerald'|'amber'|'rose'|'violet'|'slate'> = {
+  intro: 'violet', method: 'accent', experiment: 'cyan', result: 'emerald',
+  discussion: 'rose', conclusion: 'slate',
 };
 
 export function MapView({ detail, accent, onOpenSection }: {
-  detail: PaperDetail;
-  accent: string;
-  onOpenSection?: (s: SectionOut) => void;
+  detail: PaperDetail; accent: string; onOpenSection?: (s: SectionOut) => void;
 }) {
   const map = detail.map_summary || {};
   const boxes = [
@@ -38,75 +29,121 @@ export function MapView({ detail, accent, onOpenSection }: {
     { key: 'result', label: '结果', c: '#34D399' },
     { key: 'limitation', label: '局限', c: '#F59E0B' },
   ];
+  const [openSec, setOpenSec] = useState<number | undefined>(0);
 
   return (
     <div className="space-y-6">
-      {/* abstract */}
+      {/* 摘要 + 元信息 */}
       <GlassCard className="p-6">
         <Kicker>摘要 · ABSTRACT</Kicker>
         <p className="mt-3 text-[15px] leading-relaxed text-slate-300">{detail.abstract}</p>
         <div className="mt-4 flex flex-wrap gap-2">
-          {(detail.tags || []).map((t) => (
-            <Badge key={t} tone="slate">{t}</Badge>
-          ))}
+          {(detail.tags || []).map((t) => <Badge key={t} tone="slate">{t}</Badge>)}
         </div>
-        <div className="mt-5 flex flex-wrap gap-6 border-t border-[var(--line)] pt-4 font-mono text-[11px] text-slate-500">
+        <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 border-t border-[var(--line)] pt-4 font-mono text-[11px] text-slate-500">
           <span>作者 · {detail.authors.join(', ')}</span>
           <span>年份 · {detail.year}</span>
           <span>领域 · {detail.domain}</span>
+          <span>图表 · {detail.figures?.length ?? 0} 图 / {detail.tables?.length ?? 0} 表 · 章节 {detail.sections?.length} 个</span>
         </div>
       </GlassCard>
 
-      {/* Paper map */}
+      {/* 六维卡片 */}
       <div>
         <Kicker className="mb-3">论文地图 · PAPER MAP</Kicker>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {boxes.map((b, i) => (
-            <motion.div
-              key={b.key}
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.06 }}
-            >
-              <GlassCard className="group h-full p-5" style={{ borderTopColor: b.c, borderTopWidth: 2 }}>
+            <motion.div key={b.key} initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
+              <GlassCard className="h-full p-5" style={{ borderTopColor: b.c, borderTopWidth: 2 }}>
                 <div className="flex items-center gap-2.5">
                   <span className="h-2 w-2 rounded-full" style={{ background: b.c }} />
-                  <span className="font-mono text-[11px] uppercase tracking-[0.2em]" style={{ color: b.c }}>
-                    {b.label}
-                  </span>
+                  <span className="font-mono text-[11px] uppercase tracking-[0.2em]" style={{ color: b.c }}>{b.label}</span>
                 </div>
-                <p className="mt-3 min-h-[3.2em] text-sm leading-relaxed text-slate-300">
-                  {map[b.key] || '—'}
-                </p>
+                <p className="mt-3 text-sm leading-relaxed text-slate-300">{map[b.key] || '—'}</p>
               </GlassCard>
             </motion.div>
           ))}
         </div>
       </div>
 
-      {/* Sections */}
+      {/* 章节结构树 */}
       <div>
         <Kicker className="mb-3">章节结构 · STRUCTURE</Kicker>
         <GlassCard className="divide-y divide-[var(--line)] overflow-hidden">
-          {(detail.sections || []).map((s) => (
-            <button
-              key={s.heading}
-              onClick={() => onOpenSection?.(s)}
-              className="group flex w-full items-center gap-3 px-5 py-3.5 text-left hover:bg-white/[0.03]"
-            >
-              <span className="grid h-7 w-7 place-items-center rounded-lg bg-white/[0.04] font-mono text-[11px] text-slate-400">
-                {s.page}
-              </span>
-              <div className="flex-1">
-                <div className="text-sm font-medium text-slate-100">{s.heading}</div>
-                <div className="mt-0.5 line-clamp-1 text-[12px] text-slate-500">{s.summary}</div>
+          {(detail.sections || []).map((s, i) => {
+            const open = openSec === i;
+            return (
+              <div key={s.heading}>
+                <button onClick={() => setOpenSec(open ? undefined : i)}
+                  className="group flex w-full items-center gap-3 px-5 py-3.5 text-left hover:bg-white/[0.03]">
+                  <span className="grid h-7 w-7 place-items-center rounded-lg bg-white/[0.04] font-mono text-[11px] text-slate-400">{s.page}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-slate-100">{s.heading}</div>
+                    <div className="mt-0.5 line-clamp-1 text-[12px] text-slate-500">{s.summary}</div>
+                  </div>
+                  <Badge tone={TONE[s.kind] || 'slate'}>{KIND_LABEL[s.kind] || s.kind}</Badge>
+                  <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', open && 'rotate-180')} />
+                </button>
+                <AnimateSection open={open}>
+                  <div className="space-y-3 px-5 pb-4 pl-14">
+                    {open && (
+                      <>
+                        <p className="text-[13px] leading-relaxed text-slate-300">{s.body}</p>
+                        {(s.key_points?.length ?? 0) > 0 && (
+                          <ul className="space-y-1">
+                            {s.key_points.map((kp, j) => (
+                              <li key={j} className="flex items-start gap-2 text-[12px] text-slate-400">
+                                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: accent }} />
+                                {kp}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        <button onClick={() => onOpenSection?.(s)}
+                          className="inline-flex items-center gap-1.5 text-[12px] font-medium text-indigo-300 hover:text-indigo-200">
+                          <FileText className="h-3.5 w-3.5" /> 阅读该章节正文
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </AnimateSection>
               </div>
-              <Badge tone={TONE[s.kind] || 'slate'}>{KIND_LABEL[s.kind] || s.kind}</Badge>
-              <ArrowDown className="h-3.5 w-3.5 -rotate-90 text-slate-600 transition group-hover:text-slate-300" />
-            </button>
-          ))}
+            );
+          })}
         </GlassCard>
       </div>
+
+      {/* 关键图条目 */}
+      <div>
+        <Kicker className="mb-3">关键图表 · FIGURES &amp; TABLES</Kicker>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {detail.figures.map((f) => (
+            <GlassCard key={`f${f.fig_no}`} className="p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <ImageIcon className="h-3.5 w-3.5 text-slate-500" />
+                <span className="text-xs font-semibold text-slate-200">图 {f.fig_no}</span>
+                <span className="ml-auto font-mono text-[10px] text-slate-500">p.{f.page}</span>
+              </div>
+              <div className="overflow-hidden rounded-md border border-[var(--line)] bg-[#0F172A]">
+                <div className="[&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: f.glyph_svg }} />
+              </div>
+              <p className="mt-2 line-clamp-2 text-[11px] text-slate-500">{f.caption}</p>
+            </GlassCard>
+          ))}
+        </div>
+      </div>
     </div>
+  );
+}
+
+function AnimateSection({ open, children }: { open: boolean; children: ReactNode }) {
+  return (
+    <AnimatePresence initial={false}>
+      {open && (
+        <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25 }} className="overflow-hidden">
+          {children}
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

@@ -86,9 +86,12 @@ def paper_detail(paper_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "paper not found")
     return {
         **_paper_out(p).model_dump(),
-        "sections": [SectionOut(heading=s.heading, kind=s.kind, page=s.page, summary=s.summary).model_dump() for s in p.sections],
-        "figures": [FigureOut(fig_no=f.fig_no, caption=f.caption, page=f.page, glyph_svg=f.glyph_svg, importance=f.importance).model_dump() for f in p.figures],
-        "tables": [TableOut(table_no=t.table_no, caption=t.caption, page=t.page, content=t.content).model_dump() for t in p.tables],
+        "sections": [SectionOut(heading=s.heading, kind=s.kind, page=s.page, summary=s.summary,
+                                body=s.body, key_points=s.key_points or []).model_dump() for s in p.sections],
+        "figures": [FigureOut(fig_no=f.fig_no, caption=f.caption, page=f.page, glyph_svg=f.glyph_svg,
+                              importance=f.importance, description=f.description).model_dump() for f in p.figures],
+        "tables": [TableOut(table_no=t.table_no, caption=t.caption, page=t.page, content=t.content,
+                            key_finding=t.key_finding).model_dump() for t in p.tables],
         "method_steps": p.method_steps or [],
         "accent": p.accent,
     }

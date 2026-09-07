@@ -26,6 +26,8 @@ export interface SectionOut {
   kind: string;
   page: number;
   summary: string;
+  body: string;
+  key_points: string[];
 }
 
 export interface FigureOut {
@@ -34,6 +36,7 @@ export interface FigureOut {
   page: number;
   glyph_svg: string;
   importance: string;
+  description: string;
 }
 
 export interface TableOut {
@@ -41,6 +44,7 @@ export interface TableOut {
   caption: string;
   page: number;
   content: string[][];
+  key_finding: string;
 }
 
 export interface MethodStep {
@@ -85,6 +89,7 @@ export interface ClaimOut {
   type: string;
   confidence: number;
   status: string;
+  rationale: string;
   evidence: EvidenceOut[];
 }
 
@@ -121,6 +126,7 @@ export interface SceneOut {
   summary: string;
   steps: any[];
   evidence_refs: any[];
+  figure_refs: number[];
   narration: ScenedNarration;
 }
 
@@ -138,7 +144,7 @@ export interface AskResponse {
 
 export interface EvaluationOut {
   overall_score: number;
-  metrics: Record<string, number>;
+  metrics: Record<string, any>;
 }
 
 export interface DemoPaperListItem {

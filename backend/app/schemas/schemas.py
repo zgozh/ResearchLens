@@ -33,6 +33,8 @@ class SectionOut(BaseModel):
     kind: str
     page: int
     summary: str = ""
+    body: str = ""
+    key_points: List[str] = Field(default_factory=list)
 
 
 class FigureOut(BaseModel):
@@ -41,6 +43,7 @@ class FigureOut(BaseModel):
     page: int
     glyph_svg: str = ""
     importance: str = "medium"
+    description: str = ""
 
 
 class TableOut(BaseModel):
@@ -48,6 +51,7 @@ class TableOut(BaseModel):
     caption: str
     page: int
     content: List[List[Any]] = Field(default_factory=list)
+    key_finding: str = ""
 
 
 # --- Claims / Evidence ---
@@ -68,6 +72,7 @@ class ClaimOut(BaseModel):
     type: str = "RESULT"
     confidence: float = 0.9
     status: str = "SUPPORTED"
+    rationale: str = ""
     evidence: List[EvidenceOut] = Field(default_factory=list)
 
 
@@ -94,6 +99,7 @@ class SceneOut(BaseModel):
     summary: str = ""
     steps: List[Any] = Field(default_factory=list)
     evidence_refs: List[Any] = Field(default_factory=list)
+    figure_refs: List[Any] = Field(default_factory=list)
     narration: dict = Field(default_factory=dict)
 
 

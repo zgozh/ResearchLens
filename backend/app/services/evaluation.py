@@ -7,7 +7,7 @@ the unsupported-claim rate.
 """
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict
 
 from sqlalchemy.orm import Session, selectinload
 
@@ -71,7 +71,7 @@ def compute_evaluation(db: Session, paper_id: int) -> models.Evaluation:
     grounded_qas = [q for q in qas if q.evidence_refs]
     answer_grounding = len(grounded_qas) / len(qas) if qas else 0.0
 
-    metrics: Dict[str, float] = {
+    metrics: Dict[str, Any] = {
         "citation_coverage": round(citation_coverage * 100, 1),
         "claim_evidence_alignment": round(alignment * 100, 1),
         "unsupported_claim_rate": round(unsupported_rate * 100, 1),
@@ -82,6 +82,18 @@ def compute_evaluation(db: Session, paper_id: int) -> models.Evaluation:
         "num_supported": len(supported),
         "num_unsupported": len(unsupported),
     }
+
+    # 双维度评测（参考 Paper2Video：面向观众/面向作者）
+    audience = {
+        "faithful": round(0.6 * citation_coverage + 0.4 * alignment, 1),
+        "accessible": round(0.6 * structure_accuracy + 0.4 * answer_grounding, 1),
+    }
+    author = {
+        "contribution": round(100 * len(supported) / n, 1) if n else 0.0,
+        "visibility": round(0.5 * visual_consistency + 0.5 * citation_coverage, 1),
+    }
+    metrics["audience"] = audience  # type: ignore[assignment]
+    metrics["author"] = author  # type: ignore[assignment]
 
     # overall (unsupported rate inverted so higher = better)
     overall = (

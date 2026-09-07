@@ -27,11 +27,12 @@ def ev(page: int, region: str, region_type: str = "text", text: str = "", quote:
     }
 
 
-def fig(fig_no: int, page: int, caption: str, svg: str, importance: str = "medium") -> dict:
+def fig(fig_no: int, page: int, caption: str, svg: str, importance: str = "medium", description: str = "") -> dict:
     return {
         "fig_no": fig_no,
         "caption": caption,
         "page": page,
         "glyph_svg": svg,
         "importance": importance,
+        "description": description,
     }

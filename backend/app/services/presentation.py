@@ -24,6 +24,7 @@ def get_presentation(db: Session, paper_id: int) -> dict:
                 "summary": s.summary,
                 "steps": s.steps if s.steps is not None else [],
                 "evidence_refs": s.evidence_refs if s.evidence_refs is not None else [],
+                "figure_refs": s.figure_refs if s.figure_refs is not None else [],
                 "narration": s.narration or {},
             }
             for s in scenes

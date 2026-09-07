@@ -49,6 +49,7 @@ def get_claim(db: Session, paper_id: int, claim_id: str) -> ClaimOut | None:
         type=c.type,
         confidence=c.confidence,
         status=c.status,
+        rationale=c.rationale or "",
         evidence=[
             EvidenceOut(
                 id=e.id, page=e.page, region=e.region, region_type=e.region_type,
