@@ -80,6 +80,17 @@ export const api = {
     http<{ job_id: number; stage: string; stage_label: string; status: string; paper_id: number }>(
       `/api/jobs/${id}`,
     ),
+  // --- model selection (DashScope) ---
+  models: () => http<{ models: string[]; active: string }>('/api/models'),
+  setModel: (model: string) =>
+    http<{ active: string }>('/api/models', { method: 'POST', body: JSON.stringify({ model }), headers: JSON_HEADERS }),
+  // --- real paper by URL (background ingest) ---
+  paperFromUrl: (url: string, title?: string) =>
+    http<{ paper_id: number; status: string; slug: string }>('/api/papers/from-url', {
+      method: 'POST',
+      body: JSON.stringify({ url, title }),
+      headers: JSON_HEADERS,
+    }),
 };
 
 export function sleep(ms: number) {

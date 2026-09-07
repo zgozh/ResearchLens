@@ -35,6 +35,7 @@ export interface FigureOut {
   caption: string;
   page: number;
   glyph_svg: string;
+  image_b64: string;
   importance: string;
   description: string;
 }
@@ -156,6 +157,7 @@ export interface DemoPaperListItem {
   tags: string[];
   abstract: string;
   accent: string;
+  source_mode: string;
 }
 
 export type ViewMode =

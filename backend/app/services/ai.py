@@ -67,7 +67,7 @@ class AIClient:
         for prov in self._providers:
             body: Dict[str, Any] = {"messages": messages, "temperature": temperature}
             if json_object:
-                body["model"] = model or prov.model
+                body["model"] = model or self._resolve_model(prov)
                 hint = ("请只输出符合该 JSON Schema 的 JSON：\n"
                         + json.dumps(json_schema or {}, ensure_ascii=False))
                 body["response_format"] = {"type": "json_object"}
@@ -81,7 +81,7 @@ class AIClient:
                     continue
                 return self._parse_json(txt, json_schema or {})
             if json_schema is not None:
-                body["model"] = model or prov.model
+                body["model"] = model or self._resolve_model(prov)
                 # try strict json_schema, then json_object fallback
                 try:
                     fmt = {
@@ -111,7 +111,7 @@ class AIClient:
                     continue
                 return self._parse_json(txt, json_schema)
             else:
-                body["model"] = model or prov.model
+                body["model"] = model or self._resolve_model(prov)
                 try:
                     txt = self._chat_once(prov, body)
                 except Exception as e:  # noqa: BLE001
@@ -124,6 +124,11 @@ class AIClient:
         if last_err:
             log.error("all providers failed: %s", last_err)
         return None
+
+    def _resolve_model(self, prov: _Provider) -> str:
+        """优先级：调用方显式 model > 运行时选择的模型 > Provider 默认模型。"""
+        from app.core.runtime import get_active_model
+        return get_active_model() or prov.model
 
     def _chat_once(self, prov: _Provider, body: Dict[str, Any]) -> Optional[str]:
         payload = {**body, "model": body.get("model", prov.model)}

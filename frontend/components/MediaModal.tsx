@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { X, Table2, Image as ImageIcon, Quote, FileText } from 'lucide-react';
 import type { FigureOut, TableOut } from '@/lib/types';
 import { Kicker } from '@/components/ui';
+import { FigureImage } from '@/components/FigureImage';
 
 export type MediaItem =
   | { type: 'figure'; figure: FigureOut }
@@ -35,7 +36,7 @@ export function MediaModal({ item, onClose, accent }: { item: MediaItem | null; 
             {item.type === 'figure' ? (
               <>
                 <div className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[#0F172A] p-3">
-                  <div className="mx-auto max-w-3xl [&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: item.figure.glyph_svg }} />
+                  <FigureImage image_b64={item.figure.image_b64} glyph_svg={item.figure.glyph_svg} caption={item.figure.caption} className="mx-auto max-w-3xl" />
                 </div>
                 <p className="mt-4 text-[13px] leading-relaxed text-slate-300">{item.figure.caption}</p>
                 {item.figure.description && (

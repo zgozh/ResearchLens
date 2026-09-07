@@ -33,6 +33,8 @@ from app.modules import claims as claims_svc, evaluation as eval_svc
 from app.modules import graph as graph_svc, scene as pres_svc
 from app.modules import parse as parser_mod, pipeline
 from app.modules import qa as qa_svc
+from app.modules.pipeline.ingest import ingest_paper_from_pdf
+from app.core import runtime
 
 router = APIRouter(prefix="/api")
 
@@ -45,8 +47,82 @@ def health():
 
 # ------------------------------------------------------------------ demo
 @router.get("/demo", response_model=List[DemoPaperListItem])
-def demo_list():
-    return [DemoPaperListItem(**m) for m in demo.get_demo_metas()]
+def demo_list(db: Session = Depends(get_db)):
+    demo.load_demo_papers(db)  # 确保示例论文存在
+    rows = (
+        db.query(models.Paper)
+        .filter(models.Paper.source_mode.in_(["demo", "real"]))
+        .order_by(models.Paper.source_mode.asc(), models.Paper.id.asc())
+        .all()
+    )
+    return [
+        DemoPaperListItem(
+            slug=p.slug, title=p.title, subtitle=p.subtitle, domain=p.domain, year=p.year,
+            tags=p.tags or [], abstract=(p.abstract or "")[:420], accent=p.accent,
+            source_mode=p.source_mode,
+        )
+        for p in rows
+    ]
+
+
+@router.get("/models")
+def models_list():
+    return {"models": runtime.DASHSCOPE_MODELS, "active": runtime.get_active_model()}
+
+
+class ModelBody(BaseModel):
+    model: str
+
+
+@router.post("/models")
+def models_set(body: ModelBody):
+    runtime.set_active_model(body.model)
+    return {"active": runtime.get_active_model()}
+
+
+class FromUrlBody(BaseModel):
+    url: str
+    title: str = ""
+
+
+@router.post("/papers/from-url")
+def paper_from_url(body: FromUrlBody, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """下载真实公开论文 PDF 并后台完整抽取；立即返回 paper_id，前端轮询。"""
+    import re
+    import time as _t
+    import httpx as _httpx
+
+    title = body.title.strip() or "Real Paper"
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-").lower()[:48] or f"real_{int(_t.time())}"
+
+    pdf_path = None
+    try:
+        r = _httpx.get(body.url, timeout=120, follow_redirects=True,
+                       headers={"User-Agent": "Mozilla/5.0 (ResearchLens)", "Accept": "application/pdf,*/*"})
+        r.raise_for_status()
+        pdf_path = parser_mod.save_upload(parser_mod.default_upload_dir(), f"{slug}.pdf", r.content)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"下载失败：{e}")
+
+    p = models.Paper(slug=slug, title=title, source_mode="real", status="pending", accent="#22D3EE",
+                     abstract="真实公开论文 · " + body.url, pdf_url=str(pdf_path))
+    db.add(p)
+    db.commit()
+    pid = p.id
+
+    def _work():
+        from app.core.db import SessionLocal as _SL
+        s = _SL()
+        try:
+            data = pdf_path.read_bytes() if pdf_path and pdf_path.exists() else b""
+            ingest_paper_from_pdf(s, data, body.url, title)
+        except Exception:  # noqa: BLE001
+            import traceback; traceback.print_exc()
+        finally:
+            s.close()
+
+    background_tasks.add_task(_work)
+    return {"paper_id": pid, "status": "processing", "slug": slug}
 
 
 class LoadDemoBody(BaseModel):
@@ -89,7 +165,7 @@ def paper_detail(paper_id: int, db: Session = Depends(get_db)):
         "sections": [SectionOut(heading=s.heading, kind=s.kind, page=s.page, summary=s.summary,
                                 body=s.body, key_points=s.key_points or []).model_dump() for s in p.sections],
         "figures": [FigureOut(fig_no=f.fig_no, caption=f.caption, page=f.page, glyph_svg=f.glyph_svg,
-                              importance=f.importance, description=f.description).model_dump() for f in p.figures],
+                              image_b64=f.image_b64, importance=f.importance, description=f.description).model_dump() for f in p.figures],
         "tables": [TableOut(table_no=t.table_no, caption=t.caption, page=t.page, content=t.content,
                             key_finding=t.key_finding).model_dump() for t in p.tables],
         "method_steps": p.method_steps or [],

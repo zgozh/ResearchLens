@@ -88,6 +88,7 @@ class Figure(Base):
     page: Mapped[int] = mapped_column(Integer, default=1)
     image_ref: Mapped[str] = mapped_column(String(1024), default="")
     glyph_svg: Mapped[str] = mapped_column(Text, default="")
+    image_b64: Mapped[str] = mapped_column(Text, default="")  # 真实论文图（base64 PNG）
     importance: Mapped[str] = mapped_column(String(16), default="medium")
     description: Mapped[str] = mapped_column(Text, default="")  # 图解读
 

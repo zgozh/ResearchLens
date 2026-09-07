@@ -107,11 +107,10 @@ export default function Workspace() {
       setPresentation(await api.presentation(pid));
       setEvalData(await api.evaluation(pid));
 
-      // live (uploaded) papers: claims may be empty until the async pipeline finishes
+      // live (real/uploaded) papers: content is filled by background ingest/process — poll
       let c = await api.claims(pid).catch(() => []);
       if (c.length === 0) {
         setProcessing(true);
-        await api.processPaper(pid).catch(() => undefined);
         for (let i = 0; i < 40; i++) {
           await sleep(2500);
           c = await api.claims(pid).catch(() => []);

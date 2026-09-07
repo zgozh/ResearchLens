@@ -42,6 +42,7 @@ class FigureOut(BaseModel):
     caption: str
     page: int
     glyph_svg: str = ""
+    image_b64: str = ""
     importance: str = "medium"
     description: str = ""
 
@@ -137,3 +138,4 @@ class DemoPaperListItem(BaseModel):
     tags: List[str] = Field(default_factory=list)
     abstract: str = ""
     accent: str = ""
+    source_mode: str = "demo"

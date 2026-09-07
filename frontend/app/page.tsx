@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { ArrowUpRight, ArrowRight, BookOpen, FileText, Sparkles, Workflow, UploadCloud } from 'lucide-react';
+import { ArrowUpRight, ArrowRight, BookOpen, FileText, Sparkles, Workflow, UploadCloud, Cpu } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { DemoPaperListItem } from '@/lib/types';
 import { Logo } from '@/components/Logo';
@@ -20,6 +20,8 @@ const PIPELINE = [
 export default function Home() {
   const [papers, setPapers] = useState<DemoPaperListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [models, setModels] = useState<string[]>([]);
+  const [activeModel, setActiveModel] = useState('');
 
   useEffect(() => {
     api
@@ -27,7 +29,42 @@ export default function Home() {
       .then(setPapers)
       .catch((e) => console.error('demoList', e))
       .finally(() => setLoading(false));
+    api
+      .models()
+      .then((m) => { setModels(m.models || []); setActiveModel(m.active || ''); })
+      .catch(() => {});
   }, []);
+
+  const setModel = async (model: string) => {
+    setActiveModel(model);
+    try { await api.setModel(model); } catch (e) { console.error('setModel', e); }
+  };
+
+  const real = papers.filter((p) => p.source_mode === 'real');
+  const demo = papers.filter((p) => p.source_mode !== 'real');
+
+  const PaperCard = ({ p, real }: { p: DemoPaperListItem; real?: boolean }) => (
+    <Link href={`/paper/${p.slug}`} className="group block h-full">
+      <GlassCard className="flex h-full flex-col p-5 transition-all duration-300 group-hover:-translate-y-1 group-hover:border-white/20"
+        style={{ boxShadow: `0 24px 60px -30px ${p.accent}55` }}>
+        <div className="mb-4 flex items-center justify-between">
+          <span className="grid h-9 w-9 place-items-center rounded-xl" style={{ background: `${p.accent}22`, border: `1px solid ${p.accent}44` }}>
+            <FileText className="h-4.5 w-4.5" style={{ color: p.accent }} />
+          </span>
+          <div className="flex items-center gap-1.5">
+            {real && <Badge tone="cyan">真实论文</Badge>}
+            <Badge tone="slate">{p.domain}</Badge>
+          </div>
+        </div>
+        <h3 className="text-sm font-semibold leading-snug text-white">{p.title}</h3>
+        <p className="mt-2 line-clamp-2 font-mono text-[11px] text-slate-500">{p.abstract}</p>
+        <div className="mt-auto flex items-center justify-between pt-4">
+          <span className="font-mono text-[11px] text-slate-500">{p.year}</span>
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-indigo-300">打开 <ArrowUpRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" /></span>
+        </div>
+      </GlassCard>
+    </Link>
+  );
 
   return (
     <main className="grid-bg relative min-h-screen overflow-hidden">
@@ -36,9 +73,20 @@ export default function Home() {
 
       <header className="relative z-10 mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
         <Logo />
-        <div className="flex items-center gap-2 font-mono text-[11px] text-slate-500">
-          <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-          {loading ? '正在连接…' : '科研引擎在线'}
+        <div className="flex items-center gap-3">
+          {models.length > 0 && (
+            <label className="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-3 py-1.5">
+              <Cpu className="h-3.5 w-3.5 text-slate-400" />
+              <select value={activeModel} onChange={(e) => setModel(e.target.value)}
+                className="bg-transparent text-xs text-slate-300 outline-none">
+                {models.map((m) => <option key={m} value={m} className="bg-[#0b1425]">{m}</option>)}
+              </select>
+            </label>
+          )}
+          <div className="flex items-center gap-2 font-mono text-[11px] text-slate-500">
+            <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+            {loading ? '正在连接…' : '科研引擎在线'}
+          </div>
         </div>
       </header>
 
@@ -64,63 +112,40 @@ export default function Home() {
           </p>
 
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-            <Link
-              href="/upload"
-              className="inline-flex items-center gap-2 rounded-2xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition hover:bg-indigo-400"
-            >
-              <UploadCloud className="h-4 w-4" />
-              放入你的论文（上传 PDF）
+            <Link href="/upload" className="inline-flex items-center gap-2 rounded-2xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition hover:bg-indigo-400">
+              <UploadCloud className="h-4 w-4" /> 放入你的论文（上传 PDF / 粘贴网址）
               <ArrowRight className="h-4 w-4" />
             </Link>
-            <span className="font-mono text-[11px] text-slate-600">或从下方示例论文开始</span>
+            <span className="font-mono text-[11px] text-slate-600">或从下方（真实公开 / 示例）论文开始</span>
           </div>
         </motion.div>
 
-        {/* Demo papers */}
-        <motion.div
-          className="mx-auto mt-12 grid max-w-4xl grid-cols-1 gap-4 text-left sm:grid-cols-3"
-          initial="hidden"
-          animate="show"
-          variants={{ show: { transition: { staggerChildren: 0.12 } } }}
-        >
-          {loading ? (
-            <div className="col-span-3 flex justify-center py-16">
-              <Spinner />
-            </div>
-          ) : (
-            papers.map((p) => (
-              <motion.div
-                key={p.slug}
-                variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } }}
-              >
-                <Link href={`/paper/${p.slug}`} className="group block h-full">
-                  <GlassCard
-                    className="flex h-full flex-col p-5 transition-all duration-300 group-hover:-translate-y-1 group-hover:border-white/20"
-                    style={{ boxShadow: `0 24px 60px -30px ${p.accent}55` }}
-                  >
-                    <div className="mb-4 flex items-center justify-between">
-                      <span
-                        className="grid h-9 w-9 place-items-center rounded-xl"
-                        style={{ background: `${p.accent}22`, border: `1px solid ${p.accent}44` }}
-                      >
-                        <FileText className="h-4.5 w-4.5" style={{ color: p.accent }} />
-                      </span>
-                      <Badge tone="slate">{p.domain}</Badge>
-                    </div>
-                    <h3 className="text-sm font-semibold leading-snug text-white">{p.title}</h3>
-                    <p className="mt-2 font-mono text-[11px] text-slate-500">{p.subtitle}</p>
-                    <div className="mt-auto flex items-center justify-between pt-4">
-                      <span className="font-mono text-[11px] text-slate-500">{p.year}</span>
-                      <span className="inline-flex items-center gap-1 text-xs font-medium text-indigo-300">
-                        打开
-                        <ArrowUpRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
-                      </span>
-                    </div>
-                  </GlassCard>
-                </Link>
+        {/* 真实公开论文 */}
+        {real.length > 0 && (
+          <div className="mx-auto mt-12 max-w-4xl text-left">
+            <Kicker className="mb-3">真实公开论文 · REAL PAPERS（AI 真实抽取）</Kicker>
+            <motion.div className="grid grid-cols-1 gap-4 sm:grid-cols-3" initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }}>
+              {real.map((p) => (
+                <motion.div key={p.slug} variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } }}>
+                  <PaperCard p={p} real />
+                </motion.div>
+              ))}
+            </motion.div>
+          </div>
+        )}
+
+        {/* 示例论文 */}
+        <motion.div className="mx-auto mt-10 max-w-4xl text-left" initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }}>
+          <Kicker className="mb-3">示例论文 · DEMO PAPERS（含程序化图 / 原图）</Kicker>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {loading ? (
+              <div className="flex justify-center py-16 col-span-3"><Spinner /></div>
+            ) : demo.map((p) => (
+              <motion.div key={p.slug} variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } }}>
+                <PaperCard p={p} />
               </motion.div>
-            ))
-          )}
+            ))}
+          </div>
         </motion.div>
 
         {/* Pipeline strip */}
