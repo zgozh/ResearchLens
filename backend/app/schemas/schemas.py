@@ -26,6 +26,8 @@ class PaperOut(BaseModel):
     source_mode: str = "demo"
     status: str = "ready"
     map_summary: dict = Field(default_factory=dict)
+    pdf_url: str = ""
+    method_steps: List[Any] = Field(default_factory=list)
 
 
 class SectionOut(BaseModel):

@@ -229,7 +229,7 @@ def extract_method_steps(ai, text: str) -> List[Dict]:
 def _slug_from_title(title: str) -> str:
     import re
     s = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-").lower()
-    return s[:48] or "paper"
+    return s[:120] or "paper"
 
 
 def ingest_paper_from_pdf(db: Session, data: bytes, url: str = "", title: str = "") -> int:

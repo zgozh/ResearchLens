@@ -276,4 +276,5 @@ def _paper_out(p: models.Paper) -> PaperOut:
         id=p.id, slug=p.slug, title=p.title, subtitle=p.subtitle, authors=p.authors or [],
         year=p.year, domain=p.domain, abstract=p.abstract or "", tags=p.tags or [],
         source_mode=p.source_mode, status=p.status, map_summary=p.map_summary or {},
+        pdf_url=p.pdf_url or "", method_steps=p.method_steps or [],
     )

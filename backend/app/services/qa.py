@@ -73,24 +73,22 @@ def _retrieve_evidence(db: Session, paper_id: int, question: str, top_k: int) ->
 
 
 def _build_context(db: Session, paper_id: int) -> str:
-    pages = (
-        db.query(models.PaperPage)
-        .filter(models.PaperPage.paper_id == paper_id)
-        .order_by(models.PaperPage.page_no.asc())
+    sections = (
+        db.query(models.Section)
+        .filter(models.Section.paper_id == paper_id)
+        .order_by(models.Section.page.asc())
         .all()
     )
     parts = []
-    for pg in pages:
-        if pg.text:
-            parts.append(f"[p.{pg.page_no}] {pg.text}")
-    # 若没页面文本，退回章节 body
-    if not parts:
-        sections = db.query(models.Section).filter(models.Section.paper_id == paper_id).all()
-        for s in sections:
-            if s.body:
-                parts.append(f"[{s.heading}|p.{s.page}] {s.body}")
+    for s in sections:
+        body = (s.body or s.summary or "").strip()
+        if body:
+            parts.append(f"[{s.heading} | p.{s.page}] {body}")
+    claims = db.query(models.Claim).filter(models.Claim.paper_id == paper_id).all()
+    for c in claims:
+        parts.append(f"[{c.claim_id}·{c.type}] {c.statement}")
     ctx = "\n".join(parts)
-    return ctx[:14000]
+    return ctx[:10000]
 
 
 def _answer_with_model(ai, db: Session, paper_id: int, question: str, top_k: int) -> AskResponse:
