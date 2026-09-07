@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { ArrowUpRight, ArrowRight, BookOpen, FileText, Sparkles, Workflow, UploadCloud, Cpu } from 'lucide-react';
+import { ArrowUpRight, ArrowRight, BookOpen, FileText, Sparkles, Workflow, UploadCloud } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { DemoPaperListItem } from '@/lib/types';
 import { Logo } from '@/components/Logo';
@@ -20,8 +20,6 @@ const PIPELINE = [
 export default function Home() {
   const [papers, setPapers] = useState<DemoPaperListItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [models, setModels] = useState<string[]>([]);
-  const [activeModel, setActiveModel] = useState('');
 
   useEffect(() => {
     api
@@ -29,16 +27,7 @@ export default function Home() {
       .then(setPapers)
       .catch((e) => console.error('demoList', e))
       .finally(() => setLoading(false));
-    api
-      .models()
-      .then((m) => { setModels(m.models || []); setActiveModel(m.active || ''); })
-      .catch(() => {});
   }, []);
-
-  const setModel = async (model: string) => {
-    setActiveModel(model);
-    try { await api.setModel(model); } catch (e) { console.error('setModel', e); }
-  };
 
   const real = papers.filter((p) => p.source_mode === 'real');
   const demo = papers.filter((p) => p.source_mode !== 'real');
@@ -73,20 +62,9 @@ export default function Home() {
 
       <header className="relative z-10 mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
         <Logo />
-        <div className="flex items-center gap-3">
-          {models.length > 0 && (
-            <label className="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-3 py-1.5">
-              <Cpu className="h-3.5 w-3.5 text-slate-400" />
-              <select value={activeModel} onChange={(e) => setModel(e.target.value)}
-                className="bg-transparent text-xs text-slate-300 outline-none">
-                {models.map((m) => <option key={m} value={m} className="bg-[#0b1425]">{m}</option>)}
-              </select>
-            </label>
-          )}
-          <div className="flex items-center gap-2 font-mono text-[11px] text-slate-500">
-            <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-            {loading ? '正在连接…' : '科研引擎在线'}
-          </div>
+        <div className="flex items-center gap-2 font-mono text-[11px] text-slate-500">
+          <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+          {loading ? '正在连接…' : '科研引擎在线'}
         </div>
       </header>
 

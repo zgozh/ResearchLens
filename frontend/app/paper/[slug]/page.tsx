@@ -30,7 +30,7 @@ const NAV: { view: ViewMode; label: string; icon: any }[] = [
   { view: 'method', label: '方法动画', icon: Workflow },
   { view: 'claim', label: '证据链', icon: FileSearch },
   { view: 'graph', label: '研究图谱', icon: Share2 },
-  { view: 'presenter', label: '讲解员', icon: Mic },
+  { view: 'presenter', label: '讲解', icon: Mic },
   { view: 'qa', label: '证据问答', icon: MessageCircle },
   { view: 'eval', label: '自动评测', icon: Gauge },
   { view: 'paper', label: '论文阅读', icon: BookOpen },
@@ -277,7 +277,7 @@ export default function Workspace() {
                   />
                 )}
                 {view === 'graph' && <GraphView graph={graph} accent={accent} onClaimSelected={(cid) => { selectClaim(cid); changeView('claim'); }} />}
-                {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} />}
+                {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} detail={detail} claims={claims} />}
                 {view === 'qa' && <QAView paperId={paper!.id} accent={accent} />}
                 {view === 'eval' && <EvalView evalData={evalData} accent={accent} />}
                 {view === 'paper' && <PaperView detail={detail} target={paperTarget} />}

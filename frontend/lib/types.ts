@@ -19,6 +19,7 @@ export interface PaperOut {
   source_mode: string;
   status: string;
   map_summary: Record<string, string>;
+  pdf_url?: string;
 }
 
 export interface SectionOut {
@@ -53,6 +54,8 @@ export interface MethodStep {
   label: string;
   phase?: string;
   detail?: string;
+  text?: string;
+  figure_ref?: number;
   color?: string;
 }
 

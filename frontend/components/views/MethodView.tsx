@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Play, RotateCcw, ChevronRight, Info, FileText } from 'lucide-react';
 import type { PaperDetail, MethodStep } from '@/lib/types';
 import { Badge, Btn, GlassCard, Kicker } from '@/components/ui';
+import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { cn } from '@/lib/cn';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -16,8 +17,10 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
   const [active, setActive] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [explored, setExplored] = useState<number | undefined>(0);
+  const [media, setMedia] = useState<MediaItem | null>(null);
   const heroRef = useRef<HTMLDivElement>(null);
   const total = steps.length;
+  const stepFigure = detail.figures.find((f) => f.fig_no === steps[explored ?? -1]?.figure_ref);
 
   useEffect(() => {
     if (!playing) return;
@@ -108,12 +111,19 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
               </div>
               <p className="mt-2 flex items-start gap-2 text-[14px] leading-relaxed text-slate-300">
                 <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
-                {steps[explored!].detail || '这一环节的作用可结合论文原图理解。'}
+                {steps[explored!].text || steps[explored!].detail || '这一环节的作用可结合论文原图理解。'}
               </p>
-              {hero && (
+              {/* 关联图（可点击放大） */}
+              {stepFigure && (
+                <button onClick={() => setMedia({ type: 'figure', figure: stepFigure })}
+                  className="mt-4 inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
+                  <FileText className="h-4 w-4" /> 查看关联图（图 {stepFigure.fig_no}）
+                </button>
+              )}
+              {hero && !stepFigure && (
                 <button onClick={() => heroRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
                   className="mt-4 inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
-                  <FileText className="h-4 w-4" /> 查看论文原图（图 {hero.fig_no}）
+                  <FileText className="h-4 w-4" /> 查看方法原图（图 {hero.fig_no}）
                 </button>
               )}
             </GlassCard>
@@ -134,6 +144,7 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
           </GlassCard>
         </div>
       )}
+      <MediaModal item={media} accent={accent} onClose={() => setMedia(null)} />
     </div>
   );
 }

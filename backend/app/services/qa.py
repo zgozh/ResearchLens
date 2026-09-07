@@ -73,45 +73,46 @@ def _retrieve_evidence(db: Session, paper_id: int, question: str, top_k: int) ->
 
 
 def _build_context(db: Session, paper_id: int) -> str:
-    sections = (
-        db.query(models.Section)
-        .filter(models.Section.paper_id == paper_id)
-        .order_by(models.Section.page.asc())
+    pages = (
+        db.query(models.PaperPage)
+        .filter(models.PaperPage.paper_id == paper_id)
+        .order_by(models.PaperPage.page_no.asc())
         .all()
     )
-    blocks = []
-    for s in sections:
-        body = (s.body or s.summary or "").strip()
-        if body:
-            blocks.append(f"[{s.heading} | p.{s.page}] {body}")
-    claims = db.query(models.Claim).filter(models.Claim.paper_id == paper_id).all()
-    for c in claims:
-        blocks.append(f"[断言 {c.claim_id} | {c.type}] {c.statement}")
-    ctx = "\n".join(blocks)
-    return ctx[:9000]
+    parts = []
+    for pg in pages:
+        if pg.text:
+            parts.append(f"[p.{pg.page_no}] {pg.text}")
+    # 若没页面文本，退回章节 body
+    if not parts:
+        sections = db.query(models.Section).filter(models.Section.paper_id == paper_id).all()
+        for s in sections:
+            if s.body:
+                parts.append(f"[{s.heading}|p.{s.page}] {s.body}")
+    ctx = "\n".join(parts)
+    return ctx[:14000]
 
 
 def _answer_with_model(ai, db: Session, paper_id: int, question: str, top_k: int) -> AskResponse:
     context = _build_context(db, paper_id)
     prompt = (
-        "你是科研论文讲解员。下面是论文的章节与断言原文。请仅依据论文内容，用中文回答问题，"
-        "并在回答末尾标注所引用的证据，格式如【证据 p.页码/区域】；如果论文没有涉及该问题，"
-        "请直接回答：论文未提供直接依据。不要编造，不要加入论文外的知识。\n\n"
+        "你是科研论文讲解员。请用中文回答用户问题。若论文有相关内容，请依据论文回答并标注证据（格式【证据 p.页码/区域】）；"
+        "若论文没有直接说明，请基于论文内容给出合理分析，并注明【基于论文的推断】。"
+        "不要回答『论文未提供直接依据』这类搪塞，尽量给出有帮助的回答。\n\n"
         f"论文内容：\n{context}\n\n问题：{question}\n\n回答："
     )
-    ans = ai.complete([{"role": "user", "content": prompt}], temperature=0.2)
+    ans = ai.complete([{"role": "user", "content": prompt}], temperature=0.3)
     if not ans:
         return AskResponse(answer="暂时无法回答，请稍后再试。", grounded=False, confidence="Low",
                            evidence=[], note="模型调用失败。")
     text = ans.strip()
-    grounded = ("未提供直接依据" not in text) and ("论文没有" not in text[:30])
+    is_generic = ("未提供直接依据" in text) or ("无法回答" in text[:20])
+    grounded = not is_generic
 
     evs = [_ev_from_model(e) for e in _retrieve_evidence(db, paper_id, question, top_k)]
-    # 尽量从答案里抽取页码，补充证据
     m = re.search(r"p\.(\d+)", text)
     cited_page = int(m.group(1)) if m else None
     if cited_page and not evs:
-        # 找到该页的章节作为证据
         sec = db.query(models.Section).filter(models.Section.paper_id == paper_id,
                                               models.Section.page == cited_page).first()
         if sec:
@@ -119,7 +120,7 @@ def _answer_with_model(ai, db: Session, paper_id: int, question: str, top_k: int
                                text=sec.summary or sec.heading, quote="", confidence=0.9)]
     confidence = "High" if (grounded and (evs or cited_page)) else ("Medium" if grounded else "Low")
     return AskResponse(answer=text, grounded=grounded, confidence=confidence, evidence=evs,
-                       note="由真实大模型基于论文内容作答。" if grounded else "未在论文中找到直接依据。")
+                       note="由真实大模型基于论文内容作答。" if grounded else "未在论文中找到直接依据，以上为该问题的通用回答。")
 
 
 def answer_question(db: Session, paper_id: int, question: str, top_k: int = 5) -> AskResponse:

@@ -108,8 +108,8 @@ def extract_sections(ai, text: str) -> List[Dict]:
         return []
     prompt = (
         "你是论文结构分析引擎。阅读论文，提取章节（引言/方法/实验/结果/讨论/结论）。"
-        "每章节给 heading、kind、page(估计页码)、summary(一句话)、body(该章节 2~3 句正文)、key_points(3 个要旨列表)。"
-        "只返回 JSON。\n\n论文：\n" + text
+        "所有输出用中文。每章节给 heading(中文或原名)、kind、page(估计页码)、summary(一句话)、"
+        "body(该章节 4~6 句的中文正文，覆盖关键内容)、key_points(3 个中文要旨)。只返回 JSON。\n\n论文：\n" + text
     )
     raw = ai.complete([{"role": "user", "content": prompt}], json_schema=_SECTIONS_SCHEMA, json_object=True)
     if not isinstance(raw, dict):
@@ -199,9 +199,11 @@ _STEPS_SCHEMA = {
                     "label": {"type": "string"},
                     "phase": {"type": "string"},
                     "detail": {"type": "string"},
+                    "text": {"type": "string"},
+                    "figure_ref": {"type": "integer"},
                     "color": {"type": "string"},
                 },
-                "required": ["label", "phase", "detail", "color"],
+                "required": ["label", "phase", "detail", "text", "color"],
             },
         }
     },
@@ -213,8 +215,9 @@ def extract_method_steps(ai, text: str) -> List[Dict]:
     if not ai or not ai.ready:
         return []
     prompt = (
-        "把论文方法提炼为核心算法流程步骤（4~6 步），每步给 label、phase(如 input/encoder/module/decoder/output)、detail、color(六位hex)。"
-        "只返回 JSON。\n\n论文方法相关：\n" + text[-6000:]
+        "把论文方法提炼为核心算法流程步骤（4~6 步），所有输出用中文。每步给 label(中文)、phase(如 input/encoder/module/decoder/output)、"
+        "detail(一句话)、text(2~3 句中文说明该步骤做什么、为什么)、figure_ref(若该方法图在论文里，给对应图号，否则省略)、"
+        "color(六位hex)。只返回 JSON。\n\n论文方法相关：\n" + text[-7000:]
     )
     raw = ai.complete([{"role": "user", "content": prompt}], json_schema=_STEPS_SCHEMA, json_object=True)
     if not isinstance(raw, dict):
@@ -285,8 +288,8 @@ def ingest_paper_from_pdf(db: Session, data: bytes, url: str = "", title: str = 
                                    region_type=e.get("region_type", "text"), text=e.get("text", ""),
                                    quote=e.get("quote", "")))
 
-    # graph (derived)
-    _add_graph(db, paper.id, claims)
+    # graph (derived, with real content)
+    _add_graph(db, paper.id, claims, paper.map_summary)
 
     # scenes
     scenes = extract_scenes(ai, text) if ai and ai.ready else []
@@ -324,11 +327,12 @@ def _fill_map(m: Dict, kind: str, summary: str) -> None:
         m[key] = summary
 
 
-def _add_graph(db: Session, paper_id: int, claims: List[Dict]) -> None:
+def _add_graph(db: Session, paper_id: int, claims: List[Dict], pmap: Optional[Dict] = None) -> None:
+    pmap = pmap or {}
     nodes = [
-        {"id": "g_problem", "kind": "problem", "label": "问题", "props": {"text": "问题/背景"}},
-        {"id": "g_method", "kind": "method", "label": "方法", "props": {"text": "方法"}},
-        {"id": "g_exp", "kind": "experiment", "label": "实验", "props": {"text": "实验"}},
+        {"id": "g_problem", "kind": "problem", "label": "问题", "props": {"text": pmap.get("problem") or "研究问题与背景"}},
+        {"id": "g_method", "kind": "method", "label": "方法", "props": {"text": pmap.get("method") or "方法"}},
+        {"id": "g_exp", "kind": "experiment", "label": "实验", "props": {"text": pmap.get("experiment") or pmap.get("dataset") or "实验"}},
     ]
     edges = [{"source": "g_problem", "target": "g_method", "label": "针对"},
              {"source": "g_method", "target": "g_exp", "label": "评测于"}]

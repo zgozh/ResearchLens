@@ -40,11 +40,17 @@ export function MapView({ detail, accent, onOpenSection }: {
         <div className="mt-4 flex flex-wrap gap-2">
           {(detail.tags || []).map((t) => <Badge key={t} tone="slate">{t}</Badge>)}
         </div>
-        <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 border-t border-[var(--line)] pt-4 font-mono text-[11px] text-slate-500">
+        <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-[var(--line)] pt-4 font-mono text-[11px] text-slate-500">
           <span>作者 · {detail.authors.join(', ')}</span>
           <span>年份 · {detail.year}</span>
           <span>领域 · {detail.domain}</span>
           <span>图表 · {detail.figures?.length ?? 0} 图 / {detail.tables?.length ?? 0} 表 · 章节 {detail.sections?.length} 个</span>
+          {detail.pdf_url && (
+            <a href={detail.pdf_url} target="_blank" rel="noreferrer"
+               className="inline-flex items-center gap-1 text-indigo-300 hover:text-indigo-200">
+              <ImageIcon className="h-3.5 w-3.5" /> 查看论文官网 ↗
+            </a>
+          )}
         </div>
       </GlassCard>
 
