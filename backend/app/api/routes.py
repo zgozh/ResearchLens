@@ -168,7 +168,7 @@ def paper_detail(paper_id: int, db: Session = Depends(get_db)):
         "figures": [FigureOut(fig_no=f.fig_no, caption=f.caption, page=f.page, glyph_svg=f.glyph_svg,
                               image_b64=f.image_b64, importance=f.importance, description=f.description).model_dump() for f in p.figures],
         "tables": [TableOut(table_no=t.table_no, caption=t.caption, page=t.page, content=t.content,
-                            key_finding=t.key_finding).model_dump() for t in p.tables],
+                            table_html=t.table_html or "", key_finding=t.key_finding).model_dump() for t in p.tables],
         "method_steps": p.method_steps or [],
         "pages": [{"page_no": pg.page_no, "text": (pg.text or "")[:4000]} for pg in sorted(p.pages, key=lambda x: x.page_no)],
         "accent": p.accent,

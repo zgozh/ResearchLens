@@ -65,6 +65,7 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [claimDetail, setClaimDetail] = useState<ClaimOut | null>(null);
   const [loadingClaim, setLoadingClaim] = useState(false);
+  const [expandEv, setExpandEv] = useState(false);
 
   const nodes = useMemo<Node[]>(() => {
     const perKind: Record<string, number> = {};
@@ -93,6 +94,7 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
   const onNodeClick = (_: any, node: Node) => {
     const found = graph.nodes.find((n) => n.id === node.id) || null;
     setSelected(found);
+    setExpandEv(false);
     // 断言节点：同步拉取完整证据，供图谱内直接弹看
     if (found?.kind === 'claim' && found.props?.claim_id && paperId) {
       setLoadingClaim(true);
@@ -166,20 +168,20 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
                           <Quote className="h-3 w-3 text-slate-600" />
                           <span className="font-mono">p.{e.page} · {e.region}</span>
                         </div>
-                        <p className="mt-1 line-clamp-2 text-[11.5px] text-slate-300">{e.quote || e.text}</p>
+                        <p className={cn('mt-1 text-[11.5px] text-slate-300', !expandEv && 'line-clamp-2')}>{e.quote || e.text}</p>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-              <div className="flex items-center gap-2">
-                <button onClick={() => onClaimSelected?.(selected.props!.claim_id as string)}
-                  className="rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
-                  在证据链中查看 →
+              <div className="flex flex-wrap items-center gap-2">
+                <button onClick={() => setExpandEv((v) => !v)}
+                  className="rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/10">
+                  {expandEv ? '收起证据' : '在本页展开证据'}
                 </button>
                 {claimDetail && claimDetail.evidence?.length > 0 && (
                   <button onClick={() => onClaimSelected?.(selected.props!.claim_id as string, 0)}
-                    className="inline-flex items-center gap-1 rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/10">
+                    className="inline-flex items-center gap-1 rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
                     <ArrowRight className="h-3 w-3" /> 定位到该证据
                   </button>
                 )}

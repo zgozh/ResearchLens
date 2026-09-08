@@ -46,6 +46,7 @@ export interface TableOut {
   caption: string;
   page: number;
   content: string[][];
+  table_html?: string;
   key_finding: string;
 }
 

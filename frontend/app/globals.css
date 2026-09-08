@@ -128,3 +128,50 @@ body {
 .dot {
   font-size: 0;
 }
+
+/* 原始论文表格（MinerU HTML）样式 */
+.rl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.rl-table th,
+.rl-table td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.rl-table th {
+  background: rgba(255, 255, 255, 0.04);
+  color: #e2e8f0;
+  font-weight: 600;
+}
+.rl-table td {
+  color: #94a3b8;
+}
+.rl-table tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.01);
+}
+.rl-table caption {
+  caption-side: top;
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: left;
+  padding-bottom: 6px;
+}
+
+/* 论文正文里的行内公式 / 关键标记 */
+.rl-inline-math,
+.rl-math {
+  font-family: 'KaTeX_Main', 'Times New Roman', 'STIXGeneral', serif;
+  color: #e2e8f0;
+}
+.rl-math-block {
+  display: block;
+  text-align: center;
+  padding: 6px 0;
+  overflow-x: auto;
+  color: #e2e8f0;
+}

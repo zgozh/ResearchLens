@@ -54,6 +54,7 @@ class TableOut(BaseModel):
     caption: str
     page: int
     content: List[List[Any]] = Field(default_factory=list)
+    table_html: str = ""
     key_finding: str = ""
 
 

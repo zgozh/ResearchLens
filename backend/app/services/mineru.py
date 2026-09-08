@@ -186,6 +186,55 @@ def _group_pages(content_list: List[Dict]) -> List[Dict]:
     return pages
 
 
+def _bbox_width(bbox) -> float:
+    """bbox 形如 [x0,y0,x1,y1]，返回宽度；异常返回 0。"""
+    try:
+        if not bbox or len(bbox) < 4:
+            return 0.0
+        return float(bbox[2]) - float(bbox[0])
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _is_content_figure(item: Dict) -> bool:
+    """过滤噪声图：作者头像 / 二维码 / 期刊 logo 等。
+
+    判据：MinerU 的 content_list 里，真实内容图（流程图/曲线图/架构图）通常
+    - 有非空题注（chart_caption/image_caption），或
+    - bbox 宽度较大（≥ 300px，占满正文栏）。
+    而二维码/头像/logo 多为「小图 + 无题注」。二者皆不满足则丢弃。
+    """
+    typ = item.get("type")
+    if typ not in ("image", "chart"):
+        return False
+    cap = _as_text(item.get("chart_caption") or item.get("image_caption") or item.get("content"))
+    if cap:
+        return True
+    # 无题注：仅当宽度足够大（正文级图）才保留，否则视为噪声
+    if _bbox_width(item.get("bbox")) >= 300:
+        return True
+    return False
+
+
+def _clean_caption(item: Dict) -> str:
+    """拼合题注：取清晰的中/英题注段，去掉多余碎片（如 Axis 标签文本）。"""
+    caps = []
+    for key in ("chart_caption", "image_caption"):
+        v = item.get(key)
+        if isinstance(v, list):
+            caps.extend(str(x).strip() for x in v if str(x).strip())
+        elif isinstance(v, str) and v.strip():
+            caps.append(v.strip())
+    content = _as_text(item.get("content"))
+    if content and content not in caps:
+        caps.append(content)
+    if not caps:
+        return ""
+    # 题注可能含多段（Axis 标签 + 图题），取最长的一段为主（图题通常最长、含 Fig./图 N）
+    caps.sort(key=lambda s: len(s), reverse=True)
+    return caps[0]
+
+
 def parse_result(zip_bytes: bytes) -> Dict:
     """从 MinerU 结果 zip 解析出可入库 IR。"""
     if not zip_bytes:
@@ -217,29 +266,32 @@ def parse_result(zip_bytes: bytes) -> Dict:
             images_map[n] = z.read(n)
     fig_no = 0
     for item in content_list:
-        if item.get("type") in ("image", "chart"):
-            cap = _as_text(item.get("chart_caption") or item.get("image_caption") or item.get("content"))
-            ipath = item.get("img_path") or item.get("image_path") or ""
-            img = images_map.get(ipath.split("/")[-1]) if ipath else None
-            if not img and ipath:
-                img = images_map.get(f"images/{ipath.rsplit('/',1)[-1]}")
-            if img:
-                fig_no += 1
-                figures.append({
-                    "fig_no": fig_no,
-                    "caption": cap or f"图 {fig_no}",
-                    "page": (item.get("page_idx") or 0) + 1,
-                    "image_b64": base64.b64encode(img).decode("utf-8"),
-                })
+        if item.get("type") not in ("image", "chart"):
+            continue
+        if not _is_content_figure(item):
+            continue  # 过滤二维码 / 作者头像 / logo
+        cap = _clean_caption(item)
+        ipath = item.get("img_path") or item.get("image_path") or ""
+        img = images_map.get(ipath.split("/")[-1]) if ipath else None
+        if not img and ipath:
+            img = images_map.get(f"images/{ipath.rsplit('/',1)[-1]}")
+        if img:
+            fig_no += 1
+            figures.append({
+                "fig_no": fig_no,
+                "caption": cap or f"图 {fig_no}",
+                "page": (item.get("page_idx") or 0) + 1,
+                "image_b64": base64.b64encode(img).decode("utf-8"),
+            })
 
-    # 表：取 table 条目
+    # 表：取 table 条目（保留原始 HTML，前端优先渲染原表）
     tables: List[Dict] = []
     tbl_no = 0
     for item in content_list:
         if item.get("type") == "table":
             body = item.get("table_body") or ""
             matrix = _html_table_to_matrix(body)
-            if not matrix:
+            if not matrix and not body:
                 continue
             tbl_no += 1
             tables.append({
@@ -247,6 +299,7 @@ def parse_result(zip_bytes: bytes) -> Dict:
                 "caption": _as_text(item.get("table_caption")) or f"表 {tbl_no}",
                 "page": (item.get("page_idx") or 0) + 1,
                 "content": matrix,
+                "table_html": body,
                 "key_finding": _as_text(item.get("table_footnote")),
             })
 

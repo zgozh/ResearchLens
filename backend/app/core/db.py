@@ -48,6 +48,32 @@ def init_db() -> None:
     from app import models  # noqa: F401  (register ORM)
 
     Base.metadata.create_all(bind=engine)
+    _migrate_columns()
+
+
+def _migrate_columns() -> None:
+    """轻量列迁移：为已存在的表补上新增列（SQLite/Postgres 通用）。
+    create_all 不会 ALTER 已有表，这里给后来新增的列做 ALTER TABLE ADD COLUMN。"""
+    from sqlalchemy import inspect, text
+
+    columns = {
+        "tables": [("table_html", "TEXT")],
+    }
+    try:
+        insp = inspect(engine)
+        existing_tables = set(insp.get_table_names())
+        with engine.begin() as conn:
+            for table, adds in columns.items():
+                if table not in existing_tables:
+                    continue
+                existing_cols = {c["name"] for c in insp.get_columns(table)}
+                for col, dtype in adds:
+                    if col not in existing_cols:
+                        conn.execute(text(
+                            f'ALTER TABLE "{table}" ADD COLUMN "{col}" {dtype} DEFAULT \'\''
+                        ))
+    except Exception:  # noqa: BLE001  (迁移失败不应阻断启动)
+        pass
 
 
 def get_db() -> Iterator[Session]:

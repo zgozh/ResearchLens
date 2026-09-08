@@ -103,7 +103,8 @@ class Table(Base):
     table_no: Mapped[int] = mapped_column(Integer)
     caption: Mapped[str] = mapped_column(Text, default="")
     page: Mapped[int] = mapped_column(Integer, default=1)
-    content: Mapped[list] = mapped_column(JSON, default=list)  # rows of cells
+    content: Mapped[list] = mapped_column(JSON, default=list)  # rows of cells（矩阵，兼容旧的表格渲染）
+    table_html: Mapped[str] = mapped_column(Text, default="")  # MinerU 原始表 HTML（优先展示原始表）
     key_finding: Mapped[str] = mapped_column(Text, default="")  # 关键结论
 
     paper: Mapped["Paper"] = relationship(back_populates="tables")

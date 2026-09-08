@@ -344,10 +344,11 @@ def ingest_paper_from_pdf(db: Session, data: bytes, url: str = "", title: str = 
         fig_models.append(f)
         db.flush()
 
-    # tables（MinerU 结构化表格）
+    # tables（MinerU 结构化表格，保留原始 HTML）
     for t in mineru_tables[:12]:
         db.add(models.Table(paper_id=paper.id, table_no=t.get("table_no", 0), caption=t.get("caption", ""),
                             page=t.get("page", 1), content=t.get("content", []),
+                            table_html=t.get("table_html", ""),
                             key_finding=t.get("key_finding", "")))
 
     # sections

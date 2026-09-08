@@ -7,6 +7,7 @@ import type { ClaimSummary, PaperDetail, PresentationOut, SceneOut } from '@/lib
 import { Badge, Btn, GlassCard, Kicker } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { FigureImage } from '@/components/FigureImage';
+import { TableRender } from '@/components/TableRender';
 
 const KIND_TONE: Record<string, string> = {
   intro: '#8B5CF6', problem: '#F43F5E', method: '#6366F1', experiment: '#38BDF8',
@@ -201,11 +202,8 @@ export function PresenterView({ presentation, accent, detail, claims }: {
                       <span className="text-sm font-semibold text-white">表 {t.table_no}</span>
                       <span className="ml-auto font-mono text-[10px] text-slate-500">p.{t.page}</span>
                     </div>
-                    <div className="overflow-hidden rounded-xl border border-[var(--line)]">
-                      <table className="w-full text-left text-[12px]">
-                        <thead><tr className="bg-white/[0.04]">{(t.content[0] || []).map((h, i) => <th key={i} className="px-2.5 py-1.5 font-medium text-slate-200">{h}</th>)}</tr></thead>
-                        <tbody>{t.content.slice(1).map((row, ri) => <tr key={ri} className="border-t border-[var(--line)]">{row.map((cell, ci) => <td key={ci} className="px-2.5 py-1.5 text-slate-300">{cell}</td>)}</tr>)}</tbody>
-                      </table>
+                    <div className="overflow-hidden rounded-xl border border-[var(--line)] p-1">
+                      <TableRender table={t} className="rl-table text-[12px]" />
                     </div>
                   </div>
                 );

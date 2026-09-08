@@ -6,6 +6,8 @@ import type { PaperDetail } from '@/lib/types';
 import { GlassCard, Kicker } from '@/components/ui';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { FigureImage } from '@/components/FigureImage';
+import { TableRender } from '@/components/TableRender';
+import { MathText } from '@/components/MathText';
 import { cn } from '@/lib/cn';
 
 function highlightText(text: string, quote?: string) {
@@ -91,7 +93,9 @@ export function PaperView({ detail, target }: { detail: PaperDetail; target?: { 
                   <div className="mb-2 flex items-center gap-2">
                     <span className="rounded-md bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-slate-500">p.{pg.page_no}</span>
                   </div>
-                  <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-slate-400">{pg.text}</p>
+                  <div className="whitespace-pre-wrap text-[14px] leading-relaxed text-slate-400">
+                    <MathText text={pg.text} className="text-[14px]" />
+                  </div>
                 </div>
               ))}
             </div>
@@ -163,21 +167,8 @@ export function PaperView({ detail, target }: { detail: PaperDetail; target?: { 
                 </span>
               </div>
               <p className="mb-3 text-[12px] text-slate-500">{t.caption}</p>
-              <div className="overflow-hidden rounded-lg border border-[var(--line)]">
-                <table className="w-full text-left text-[13px]">
-                  <thead>
-                    <tr className="bg-white/[0.04]">
-                      {(t.content[0] || []).map((h, i) => <th key={i} className="px-3 py-2 font-medium text-slate-200">{h}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {t.content.slice(1).map((row, ri) => (
-                      <tr key={ri} className="border-t border-[var(--line)]">
-                        {row.map((cell, ci) => <td key={ci} className="px-3 py-2 text-slate-400">{cell}</td>)}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="overflow-hidden rounded-lg border border-[var(--line)] p-1">
+                <TableRender table={t} className="rl-table" />
               </div>
               {t.key_finding && (
                 <div className="mt-2.5 rounded-lg border-l-2 border-emerald-400 bg-emerald-500/5 px-3 py-2 text-[12px] text-emerald-100/90">

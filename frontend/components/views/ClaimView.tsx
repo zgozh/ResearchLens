@@ -6,6 +6,7 @@ import type { ClaimSummary, PaperDetail } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { FigureImage } from '@/components/FigureImage';
+import { TableRender } from '@/components/TableRender';
 import { cn } from '@/lib/cn';
 import { useState } from 'react';
 
@@ -82,23 +83,8 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
               </span>
             </div>
             <p className="mb-2.5 text-[11px] text-slate-500">{t.caption}</p>
-            <div className="overflow-hidden rounded-lg border border-[var(--line)]">
-              <table className="w-full text-left text-[12px]">
-                <thead>
-                  <tr className="bg-white/[0.04]">
-                    {(t.content[0] || []).map((h, i) => <th key={i} className="px-2.5 py-1.5 font-medium text-slate-300">{h}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {t.content.slice(1).map((row, ri) => (
-                    <tr key={ri} className="border-t border-[var(--line)]">
-                      {row.map((cell, ci) => (
-                        <td key={ci} className={cn('px-2.5 py-1.5 text-slate-400', ci === 0 && 'text-slate-200')}>{cell}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="overflow-hidden rounded-lg border border-[var(--line)] p-1">
+              <TableRender table={t} className="rl-table text-[12px]" />
             </div>
             {t.key_finding && (
               <div className="mt-2.5 rounded-lg border-l-2 border-emerald-400 bg-emerald-500/5 px-3 py-2 text-[12px] text-emerald-100/90">

@@ -5,6 +5,7 @@ import { X, Table2, Image as ImageIcon, Quote, FileText } from 'lucide-react';
 import type { FigureOut, TableOut } from '@/lib/types';
 import { Kicker } from '@/components/ui';
 import { FigureImage } from '@/components/FigureImage';
+import { TableRender } from '@/components/TableRender';
 
 export type MediaItem =
   | { type: 'figure'; figure: FigureOut }
@@ -48,21 +49,8 @@ export function MediaModal({ item, onClose, accent }: { item: MediaItem | null; 
             ) : (
               <>
                 <p className="mb-3 text-[13px] text-slate-400">{item.table.caption}</p>
-                <div className="overflow-hidden rounded-2xl border border-[var(--line)]">
-                  <table className="w-full text-left text-[14px]">
-                    <thead>
-                      <tr className="bg-white/[0.04]">
-                        {(item.table.content[0] || []).map((h, i) => <th key={i} className="px-3 py-2.5 font-medium text-slate-200">{h}</th>)}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {item.table.content.slice(1).map((row, ri) => (
-                        <tr key={ri} className="border-t border-[var(--line)] hover:bg-white/[0.03]">
-                          {row.map((cell, ci) => <td key={ci} className="px-3 py-2.5 text-slate-300">{cell}</td>)}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="overflow-hidden rounded-2xl border border-[var(--line)] p-1">
+                  <TableRender table={item.table} className="rl-table text-[14px]" />
                 </div>
                 {item.table.key_finding && (
                   <div className="mt-3 flex items-start gap-2 rounded-xl border-l-2 border-emerald-400 bg-emerald-500/5 px-3 py-2.5 text-[13px] text-emerald-100/90">
