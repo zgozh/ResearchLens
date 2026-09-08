@@ -64,6 +64,7 @@ export interface PaperDetail extends PaperOut {
   figures: FigureOut[];
   tables: TableOut[];
   method_steps: MethodStep[];
+  pages?: { page_no: number; text: string }[];
   accent: string;
 }
 

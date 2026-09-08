@@ -22,11 +22,15 @@ interface Msg {
   resp?: AskResponse;
 }
 
-export function QAView({ paperId, accent, detail, onJump }: {
+export function QAView({ paperId, accent, detail, onJump, messages, onMessagesChange }: {
   paperId: number; accent: string; detail?: PaperDetail;
   onJump?: (page: number, region: string, quote: string) => void;
+  messages?: Msg[]; onMessagesChange?: (m: Msg[]) => void;
 }) {
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [localMessages, setLocalMessages] = useState<Msg[]>([]);
+  const isControlled = !!messages;
+  const msgs = isControlled ? messages! : localMessages;
+  const setMsgs = isControlled ? (m: Msg[]) => onMessagesChange?.(m) : setLocalMessages;
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [media, setMedia] = useState<MediaItem | null>(null);
@@ -34,15 +38,16 @@ export function QAView({ paperId, accent, detail, onJump }: {
 
   const ask = async (q: string) => {
     if (!q.trim() || loading) return;
-    setMessages((m) => [...m, { role: 'user', text: q }]);
+    setMsgs([...msgs, { role: 'user', text: q }]);
     setInput('');
     setLoading(true);
     try {
       const r = await api.qa(paperId, q);
-      setMessages((m) => [...m, { role: 'assistant', text: r.answer, resp: r }]);
+      setMsgs([...msgs, { role: 'user', text: q }, { role: 'assistant', text: r.answer, resp: r }]);
     } catch (e) {
-      setMessages((m) => [
-        ...m,
+      setMsgs([
+        ...msgs,
+        { role: 'user', text: q },
         { role: 'assistant', text: '出错了，请稍后再试。', resp: { answer: '', grounded: false, confidence: 'Low', evidence: [], note: '' } },
       ]);
     } finally {
@@ -72,7 +77,7 @@ export function QAView({ paperId, accent, detail, onJump }: {
 
       <GlassCard className="flex min-h-[480px] flex-col">
         <div className="flex-1 space-y-5 overflow-y-auto p-5">
-          {messages.length === 0 && (
+          {msgs.length === 0 && (
             <div className="grid h-full place-items-center text-center">
               <div>
                 <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-2xl" style={{ background: `${accent}1c` }}>
@@ -84,7 +89,7 @@ export function QAView({ paperId, accent, detail, onJump }: {
             </div>
           )}
 
-          {messages.map((m, i) => (
+          {msgs.map((m, i) => (
             <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="flex">
               {m.role === 'user' ? (
                 <div className="ml-auto max-w-[75%] rounded-2xl rounded-br-md bg-indigo-500 px-4 py-2.5 text-sm text-white">

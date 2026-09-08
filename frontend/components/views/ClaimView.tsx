@@ -5,6 +5,7 @@ import { FileText, ShieldCheck, ShieldAlert, Table2, Quote, Expand } from 'lucid
 import type { ClaimSummary, PaperDetail } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
+import { FigureImage } from '@/components/FigureImage';
 import { cn } from '@/lib/cn';
 import { useState } from 'react';
 
@@ -119,7 +120,7 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
                 </span>
               </div>
               <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-[#0F172A] p-1">
-                <div className="[&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: f.glyph_svg }} />
+                <FigureImage image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
               </div>
               <p className="mt-2 text-[11px] text-slate-500">{f.caption}</p>
               {f.description && <p className="mt-1 text-[11px] text-slate-600">{f.description}</p>}

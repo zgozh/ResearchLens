@@ -7,6 +7,7 @@ import type { PaperDetail, MethodStep } from '@/lib/types';
 import { Badge, Btn, GlassCard, Kicker } from '@/components/ui';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { RichText } from '@/components/RichText';
+import { FigureImage } from '@/components/FigureImage';
 import { cn } from '@/lib/cn';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -164,7 +165,7 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
             <Kicker>论文原图 · ORIGINAL FIGURE</Kicker>
             <p className="mt-1 mb-4 text-sm text-slate-400">{hero.caption}</p>
             <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[#0F172A] p-2">
-              <div className="mx-auto max-w-3xl [&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: hero.glyph_svg }} />
+              <FigureImage image_b64={hero.image_b64} glyph_svg={hero.glyph_svg} caption={hero.caption} />
             </div>
             {hero.description && <p className="mt-3 text-[12px] text-slate-500">{hero.description}</p>}
           </GlassCard>

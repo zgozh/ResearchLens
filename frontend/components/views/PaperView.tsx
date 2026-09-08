@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { FileText, Table2, Expand } from 'lucide-react';
+import { FileText, Table2, Expand, BookOpen, ScrollText } from 'lucide-react';
 import type { PaperDetail } from '@/lib/types';
 import { GlassCard, Kicker } from '@/components/ui';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
+import { FigureImage } from '@/components/FigureImage';
+import { cn } from '@/lib/cn';
 
 function highlightText(text: string, quote?: string) {
   if (!quote || !text) return <>{text}</>;
@@ -22,6 +24,7 @@ function highlightText(text: string, quote?: string) {
 export function PaperView({ detail, target }: { detail: PaperDetail; target?: { kind?: string; page?: number; quote?: string } }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [media, setMedia] = useState<MediaItem | null>(null);
+  const [mode, setMode] = useState<'structured' | 'fulltext'>('structured');
 
   useEffect(() => {
     if (!target?.quote) return;
@@ -55,10 +58,48 @@ export function PaperView({ detail, target }: { detail: PaperDetail; target?: { 
           <Kicker>摘要</Kicker>
           <p className="mt-2 text-[15px] leading-relaxed text-slate-300">{detail.abstract}</p>
         </div>
+        <div className="mt-4 flex items-center gap-2 border-t border-[var(--line)] pt-4">
+          <div className="flex rounded-xl border border-[var(--line)] bg-white/[0.03] p-0.5">
+            <button onClick={() => setMode('structured')}
+              className={cn('inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium transition',
+                mode === 'structured' ? 'bg-indigo-500/25 text-white' : 'text-slate-400 hover:text-slate-200')}>
+              <BookOpen className="h-3.5 w-3.5" /> 结构化导读
+            </button>
+            <button onClick={() => setMode('fulltext')}
+              className={cn('inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium transition',
+                mode === 'fulltext' ? 'bg-indigo-500/25 text-white' : 'text-slate-400 hover:text-slate-200')}>
+              <ScrollText className="h-3.5 w-3.5" /> 全文原文
+            </button>
+          </div>
+          <span className="ml-auto font-mono text-[10px] text-slate-600">
+            {mode === 'structured' ? '章节 · 要点 · 图表' : `${detail.pages?.length || 0} 页原文本`}
+          </span>
+        </div>
       </GlassCard>
 
       <div className="mt-6 space-y-6">
-        {detail.sections.map((sec, si) => {
+        {/* 全文原文模式 */}
+        {mode === 'fulltext' && (
+          <GlassCard className="p-6">
+            <Kicker className="mb-3">论文原文 · FULL TEXT（按页）</Kicker>
+            {(!detail.pages || detail.pages.length === 0) && (
+              <p className="text-[13px] text-slate-500">未提取到原文文本（示例论文为程序化内容）。</p>
+            )}
+            <div className="space-y-5">
+              {(detail.pages || []).map((pg) => (
+                <div key={pg.page_no} className="rounded-xl border border-[var(--line)] bg-white/[0.02] p-4">
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="rounded-md bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-slate-500">p.{pg.page_no}</span>
+                  </div>
+                  <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-slate-400">{pg.text}</p>
+                </div>
+              ))}
+            </div>
+          </GlassCard>
+        )}
+
+        {/* 结构化导读：章节 */}
+        {mode === 'structured' && detail.sections.map((sec, si) => {
           const isTarget = targetIndex === si || sec.kind === target?.kind;
           const targetId = isTarget ? `sec-${sec.kind}` : undefined;
           return (
@@ -86,8 +127,10 @@ export function PaperView({ detail, target }: { detail: PaperDetail; target?: { 
           );
         })}
 
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-          {detail.figures.map((f) => (
+        {/* 结构化导读：图 */}
+        {mode === 'structured' && (
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            {detail.figures.map((f) => (
             <GlassCard key={`fig-${f.fig_no}`} onClick={() => setMedia({ type: 'figure', figure: f })}
               className="group cursor-pointer p-4 transition-all hover:border-white/20">
               <div className="mb-2 flex items-center justify-between">
@@ -98,13 +141,16 @@ export function PaperView({ detail, target }: { detail: PaperDetail; target?: { 
                 </span>
               </div>
               <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-[#0F172A] p-1">
-                <div className="[&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: f.glyph_svg }} />
+                <FigureImage image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
               </div>
               <p className="mt-2 text-[11px] text-slate-500">{f.caption}</p>
             </GlassCard>
           ))}
-        </div>
+          </div>
+        )}
 
+        {/* 结构化导读：表 */}
+        {mode === 'structured' && (
         <div className="space-y-6">
           {detail.tables.map((t) => (
             <GlassCard key={`tbl-${t.table_no}`} onClick={() => setMedia({ type: 'table', table: t })}
@@ -141,6 +187,7 @@ export function PaperView({ detail, target }: { detail: PaperDetail; target?: { 
             </GlassCard>
           ))}
         </div>
+        )}
 
         <MediaModal item={media} accent={detail.accent || '#6366F1'} onClose={() => setMedia(null)} />
       </div>

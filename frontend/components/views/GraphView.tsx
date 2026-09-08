@@ -13,9 +13,11 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Circle, GitBranch, FlaskConical, Target, FileSearch, X } from 'lucide-react';
-import type { GraphOut, GraphNode } from '@/lib/types';
+import { Circle, GitBranch, FlaskConical, Target, FileSearch, X, Quote, ArrowRight } from 'lucide-react';
+import type { GraphOut, GraphNode, ClaimOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
+import { api } from '@/lib/api';
+import { cn } from '@/lib/cn';
 
 const KIND_X: Record<string, number> = { problem: 0, method: 1, experiment: 2, claim: 3, evidence: 4 };
 const KIND_COLOR: Record<string, string> = {
@@ -56,10 +58,13 @@ function LensNode({ data }: NodeProps) {
 const nodeTypes = { lens: LensNode };
 const NODE_KIND_LABEL: Record<string, string> = { problem: '问题', method: '方法', experiment: '实验', claim: '断言', evidence: '证据' };
 
-export function GraphView({ graph, accent, onClaimSelected }: {
-  graph: GraphOut; accent: string; onClaimSelected?: (claimId: string) => void;
+export function GraphView({ graph, accent, onClaimSelected, paperId }: {
+  graph: GraphOut; accent: string; paperId?: number;
+  onClaimSelected?: (claimId: string, evidenceIdx?: number) => void;
 }) {
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  const [claimDetail, setClaimDetail] = useState<ClaimOut | null>(null);
+  const [loadingClaim, setLoadingClaim] = useState(false);
 
   const nodes = useMemo<Node[]>(() => {
     const perKind: Record<string, number> = {};
@@ -88,6 +93,17 @@ export function GraphView({ graph, accent, onClaimSelected }: {
   const onNodeClick = (_: any, node: Node) => {
     const found = graph.nodes.find((n) => n.id === node.id) || null;
     setSelected(found);
+    // 断言节点：同步拉取完整证据，供图谱内直接弹看
+    if (found?.kind === 'claim' && found.props?.claim_id && paperId) {
+      setLoadingClaim(true);
+      setClaimDetail(null);
+      api.claim(paperId, found.props.claim_id as string)
+        .then((c) => setClaimDetail(c))
+        .catch(() => setClaimDetail(null))
+        .finally(() => setLoadingClaim(false));
+    } else {
+      setClaimDetail(null);
+    }
   };
 
   return (
@@ -130,12 +146,52 @@ export function GraphView({ graph, accent, onClaimSelected }: {
             </button>
           </div>
           <p className="mt-2 text-sm leading-relaxed text-slate-300">{selected.props?.text || '—'}</p>
-          {selected.props?.claim_id && (
+          {selected.kind === 'claim' && selected.props?.claim_id && (
+            <div className="mt-3 space-y-3">
+              {/* 图谱内直接弹出该断言的证据 */}
+              {loadingClaim && <div className="text-[12px] text-slate-500">正在加载证据…</div>}
+              {claimDetail && (
+                <div className="rounded-xl border border-[var(--line)] bg-white/[0.02] p-3">
+                  <div className="mb-2 flex items-center gap-2">
+                    <Badge tone="slate">该断言的证据</Badge>
+                    <span className="font-mono text-[10px] text-slate-500">{claimDetail.evidence?.length || 0} 条</span>
+                  </div>
+                  <div className="space-y-2">
+                    {claimDetail.evidence?.length === 0 && (
+                      <p className="text-[11px] text-amber-300/80">该断言未绑定证据（Evidence Gate）。</p>
+                    )}
+                    {claimDetail.evidence?.map((e, i) => (
+                      <div key={i} className="rounded-lg bg-white/[0.03] px-2.5 py-1.5">
+                        <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                          <Quote className="h-3 w-3 text-slate-600" />
+                          <span className="font-mono">p.{e.page} · {e.region}</span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-[11.5px] text-slate-300">{e.quote || e.text}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button onClick={() => onClaimSelected?.(selected.props!.claim_id as string)}
+                  className="rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
+                  在证据链中查看 →
+                </button>
+                {claimDetail && claimDetail.evidence?.length > 0 && (
+                  <button onClick={() => onClaimSelected?.(selected.props!.claim_id as string, 0)}
+                    className="inline-flex items-center gap-1 rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/10">
+                    <ArrowRight className="h-3 w-3" /> 定位到该证据
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {selected.kind === 'evidence' && selected.props?.claim_id && (
             <div className="mt-2 inline-flex items-center gap-2">
               <span className="inline-flex rounded-md bg-white/[0.05] px-2 py-1 font-mono text-[11px] text-slate-400">
                 claim_id: {selected.props.claim_id}
               </span>
-              <button onClick={() => onClaimSelected?.(selected.props.claim_id as string)}
+              <button onClick={() => onClaimSelected?.(selected.props!.claim_id as string)}
                 className="rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
                 查看该断言的证据 →
               </button>

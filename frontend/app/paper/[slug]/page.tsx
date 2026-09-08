@@ -56,6 +56,9 @@ export default function Workspace() {
   const [selectedClaimId, setSelectedClaimId] = useState<string>();
   const [claimDetail, setClaimDetail] = useState<ClaimOut>();
   const [paperTarget, setPaperTarget] = useState<{ kind?: string; page?: number; quote?: string }>();
+  const [claimTargetEvidence, setClaimTargetEvidence] = useState<number>();
+  // 证据问答历史消息（提升到本页，跨视图切换保持）
+  const [qaMessages, setQaMessages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [processing, setProcessing] = useState(false);
@@ -153,8 +156,9 @@ export default function Workspace() {
   const topClaim = useMemo(() => claims[0]?.claim_id, [claims]);
 
   const selectClaim = useCallback(
-    async (claimId: string) => {
+    async (claimId: string, evidenceIdx?: number) => {
       setSelectedClaimId(claimId);
+      setClaimTargetEvidence(evidenceIdx);
       if (!paper) return;
       const c = await api.claim(paper.id, claimId).catch(() => undefined);
       setClaimDetail(c);
@@ -276,9 +280,9 @@ export default function Workspace() {
                     onSelect={(cid) => selectClaim(cid)}
                   />
                 )}
-                {view === 'graph' && <GraphView graph={graph} accent={accent} onClaimSelected={(cid) => { selectClaim(cid); changeView('claim'); }} />}
+                {view === 'graph' && <GraphView graph={graph} accent={accent} paperId={paper?.id} onClaimSelected={(cid, evIdx) => { selectClaim(cid, evIdx); changeView('claim'); }} />}
                 {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} detail={detail} claims={claims} />}
-                {view === 'qa' && <QAView paperId={paper!.id} accent={accent} detail={detail} onJump={jumpToPaper} />}
+                {view === 'qa' && <QAView paperId={paper!.id} accent={accent} detail={detail} onJump={jumpToPaper} messages={qaMessages} onMessagesChange={setQaMessages} />}
                 {view === 'eval' && <EvalView evalData={evalData} accent={accent} />}
                 {view === 'paper' && <PaperView detail={detail} target={paperTarget} />}
               </motion.div>
@@ -288,7 +292,7 @@ export default function Workspace() {
           {/* Evidence rail (only in evidence view) */}
           {view === 'claim' && (
             <div className="lg:pl-5">
-              <EvidenceRail claim={claimDetail} detail={detail} accent={accent} onJump={jumpToPaper} />
+              <EvidenceRail claim={claimDetail} detail={detail} accent={accent} onJump={jumpToPaper} targetEvidence={claimTargetEvidence} />
             </div>
           )}
         </div>
