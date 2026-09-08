@@ -31,6 +31,7 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      MINERU_TOKEN: ${MINERU_TOKEN:-}
       BACKEND_PORT: 8000
     depends_on:
       db:

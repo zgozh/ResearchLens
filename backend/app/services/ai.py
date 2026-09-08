@@ -130,20 +130,29 @@ class AIClient:
         from app.core.runtime import get_active_model
         return get_active_model() or prov.model
 
-    def _chat_once(self, prov: _Provider, body: Dict[str, Any]) -> Optional[str]:
+    def _chat_once(self, prov: _Provider, body: Dict[str, Any], _retry: int = 2) -> Optional[str]:
         payload = {**body, "model": body.get("model", prov.model)}
-        r = httpx.post(
-            f"{prov.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {prov.api_key}"},
-            json=payload,
-            timeout=self._timeout,
-        )
-        r.raise_for_status()
-        data = r.json()
-        choices = data.get("choices") or []
-        if not choices:
-            return None
-        return (choices[0].get("message") or {}).get("content")
+        last: Optional[Exception] = None
+        for attempt in range(_retry + 1):
+            try:
+                r = httpx.post(
+                    f"{prov.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {prov.api_key}"},
+                    json=payload,
+                    timeout=self._timeout,
+                )
+                r.raise_for_status()
+                data = r.json()
+                choices = data.get("choices") or []
+                if not choices:
+                    return None
+                return (choices[0].get("message") or {}).get("content")
+            except (httpx.ReadTimeout, httpx.ConnectError, httpx.TransportError) as e:  # noqa: PERF203
+                last = e
+                log.warning("provider %s 第 %d 次调用失败：%s", prov.base_url, attempt + 1, e)
+        if last:
+            raise last
+        return None
 
     def _parse_json(self, txt: str, schema: dict) -> Optional[Any]:
         try:

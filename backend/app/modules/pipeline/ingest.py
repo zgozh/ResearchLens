@@ -43,6 +43,16 @@ def parse_pdf(data: bytes) -> Dict:
     return {"pages": pages, "full_text": full_text, "text": full_text[:24000]}
 
 
+def _normal_figure(f: Dict) -> Dict:
+    """MinerU 图 → ingest 所需字段（去掉 mineru 的 fig_no，由入库循环重新编号）。"""
+    return {
+        "caption": f.get("caption", ""),
+        "page": int(f.get("page", 1) or 1),
+        "image_b64": f.get("image_b64", ""),
+        "glyph_svg": f.get("glyph_svg", ""),
+    }
+
+
 def extract_figures(data: bytes, max_figs: int = 6, min_target: int = 3) -> List[Dict]:
     """提取论文内真实图；若内置光栅图不足，用「整页图像」兜底（保证每篇都有可视图片）。
 
@@ -272,9 +282,37 @@ def _slug_from_title(title: str) -> str:
 
 
 def ingest_paper_from_pdf(db: Session, data: bytes, url: str = "", title: str = "") -> int:
-    parsed = parse_pdf(data)
+    # 1) 本地 pymupdf 兜底解析（当 data 存在时）；data 为空（纯 URL 交给 MinerU）则跳过。
+    parsed = {"pages": [], "full_text": "", "text": ""}
+    figures: List[Dict] = []
+    if data:
+        try:
+            parsed = parse_pdf(data)
+            figures = extract_figures(data)
+        except Exception as e:  # noqa: BLE001
+            log.warning("pymupdf 解析失败，改用 MinerU：%s", e)
+    mineru_tables: List[Dict] = []
+    from app.core.config import settings as _cfg
+    if _cfg.has_mineru:
+        try:
+            from app.services import mineru as _mineru
+            mi = _mineru.parse_pdf(data=data or None, url=url or None, filename=f"{_slug_from_title(title) or 'paper'}.pdf")
+            parsed["full_text"] = mi.get("full_text") or parsed["full_text"]
+            parsed["pages"] = mi.get("pages") or parsed["pages"]
+            parsed["text"] = (mi.get("full_text") or parsed["full_text"])[:24000]
+            if mi.get("figures"):
+                figures = [_normal_figure(f) for f in mi.get("figures")][:6]
+            mineru_tables = mi.get("tables") or []
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            log.warning("MinerU 解析失败，降级 pymupdf：%s", e)
     text = parsed["text"] or ""
-    figures = extract_figures(data)
+    if not figures and data:
+        try:
+            figures = extract_figures(data)
+        except Exception:  # noqa: BLE001
+            figures = []
     ai = None
     from app.services.ai import get_ai
     ai = get_ai()
@@ -295,15 +333,22 @@ def ingest_paper_from_pdf(db: Session, data: bytes, url: str = "", title: str = 
     for pg in parsed["pages"]:
         db.add(models.PaperPage(paper_id=paper.id, page_no=pg["page_no"], text=pg["text"], blocks=[]))
 
-    # figures
+    # figures（MinerU 真实图优先；pymupdf 图次之）
     fig_models = []
     for i, fig in enumerate(figures, start=1):
         fig_no = i
         f = models.Figure(paper_id=paper.id, fig_no=fig_no, caption=fig.get("caption", f"论文图 {fig_no}"),
-                          page=fig["page"], image_b64=fig["image_b64"], importance="medium")
+                          page=fig.get("page", 1), image_b64=fig.get("image_b64", ""),
+                          glyph_svg=fig.get("glyph_svg", ""), importance="medium")
         db.add(f)
         fig_models.append(f)
         db.flush()
+
+    # tables（MinerU 结构化表格）
+    for t in mineru_tables[:12]:
+        db.add(models.Table(paper_id=paper.id, table_no=t.get("table_no", 0), caption=t.get("caption", ""),
+                            page=t.get("page", 1), content=t.get("content", []),
+                            key_finding=t.get("key_finding", "")))
 
     # sections
     sections = extract_sections(ai, text) if ai and ai.ready else []

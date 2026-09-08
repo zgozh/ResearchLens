@@ -70,6 +70,10 @@ class Settings:
     embedding_model: str = _env("EMBEDDING_MODEL", "text-embedding-3-small")
     llm_fallbacks: str = _env("LLM_FALLBACKS")
 
+    # --- MinerU 文档解析（可选，高质量结构化 PDF→markdown/表格/公式/图）---
+    mineru_token: str = _env("MINERU_TOKEN")
+    mineru_base_url: str = _env("MINERU_BASE_URL", "https://mineru.net")
+
     # --- TTS (optional) ---
     tts_api_key: str = _env("TTS_API_KEY")
     tts_base_url: str = _env("TTS_BASE_URL")
@@ -90,6 +94,10 @@ class Settings:
     @property
     def has_llm(self) -> bool:
         return bool(self.llm_api_key)
+
+    @property
+    def has_mineru(self) -> bool:
+        return bool(self.mineru_token)
 
 
 @lru_cache
