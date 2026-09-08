@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -258,9 +259,16 @@ def extract_method_steps(ai, text: str) -> List[Dict]:
 
 # --------------------------------------------------------------------- 入库
 def _slug_from_title(title: str) -> str:
+    import hashlib
     import re
+
+    # 保留 ASCII 词素；中文等非 ASCII 全数折叠后补一个基于标题的稳定哈希后缀，
+    # 保证中文标题也能生成唯一、稳定、幂等的 slug。
     s = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-").lower()
-    return s[:120] or "paper"
+    if not s:
+        s = "paper"
+    s = s[:100]
+    return f"{s}-{hashlib.md5(title.encode('utf-8')).hexdigest()[:6]}"
 
 
 def ingest_paper_from_pdf(db: Session, data: bytes, url: str = "", title: str = "") -> int:
@@ -305,6 +313,16 @@ def ingest_paper_from_pdf(db: Session, data: bytes, url: str = "", title: str = 
                               page=s.get("page", 1), summary=s.get("summary", ""),
                               body=s.get("body", ""), key_points=s.get("key_points", [])))
         _fill_map(paper.map_summary, s.get("kind", ""), s.get("summary", ""))
+
+    # 摘要：优先用引言的摘录，否则用首段正文概括，避免洁面成 PDF 页眉垃圾文本。
+    if sections:
+        intro = next((x for x in sections if x.get("kind") == "intro"), sections[0])
+        abstract = (intro.get("summary") or intro.get("body") or "").strip()
+    else:
+        abstract = re.sub(r"\s+", " ", parsed["full_text"] or "")[:1200]
+    if abstract:
+        paper.abstract = abstract[:2000]
+    db.flush()
 
     # claims + evidence
     claims = extract_claims(ai, text, {}) if ai and ai.ready else []

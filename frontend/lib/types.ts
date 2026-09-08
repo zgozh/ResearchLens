@@ -131,6 +131,7 @@ export interface SceneOut {
   steps: any[];
   evidence_refs: any[];
   figure_refs: number[];
+  table_refs?: number[];
   narration: ScenedNarration;
   linked?: any[];
 }

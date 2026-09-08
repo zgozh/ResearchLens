@@ -22,11 +22,28 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api
-      .demoList()
-      .then(setPapers)
-      .catch((e) => console.error('demoList', e))
-      .finally(() => setLoading(false));
+    let mounted = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const list = await api.demoList();
+        if (!mounted) return;
+        setPapers(list);
+        // 真实论文为后台自举（含 LLM 抽取），可能延迟就绪；尚未出现时轮询
+        const hasReal = list.some((p) => p.source_mode === 'real');
+        if (!hasReal) {
+          timer = setTimeout(poll, 5000);
+        }
+      } catch (e) {
+        console.error('demoList', e);
+        setLoading(false);
+      }
+    };
+    poll().finally(() => mounted && setLoading(false));
+    return () => {
+      mounted = false;
+      clearTimeout(timer);
+    };
   }, []);
 
   const real = papers.filter((p) => p.source_mode === 'real');

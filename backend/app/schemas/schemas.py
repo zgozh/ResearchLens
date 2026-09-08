@@ -103,6 +103,7 @@ class SceneOut(BaseModel):
     steps: List[Any] = Field(default_factory=list)
     evidence_refs: List[Any] = Field(default_factory=list)
     figure_refs: List[Any] = Field(default_factory=list)
+    table_refs: List[Any] = Field(default_factory=list)
     narration: dict = Field(default_factory=dict)
     linked: List[Any] = Field(default_factory=list)
 

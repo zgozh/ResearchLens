@@ -2,10 +2,13 @@
 
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Send, ShieldCheck, ShieldAlert, Quote, FileText, CornerDownLeft } from 'lucide-react';
+import { Send, ShieldCheck, ShieldAlert, Quote, FileText, CornerDownLeft, ChevronDown } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { AskResponse, EvidenceOut } from '@/lib/types';
+import type { AskResponse, EvidenceOut, PaperDetail } from '@/lib/types';
 import { Badge, Btn, GlassCard, Kicker, Spinner } from '@/components/ui';
+import { RichText } from '@/components/RichText';
+import { MediaModal, type MediaItem } from '@/components/MediaModal';
+import { cn } from '@/lib/cn';
 
 const PRESETS = [
   '这篇论文哪里最值得质疑？',
@@ -19,10 +22,15 @@ interface Msg {
   resp?: AskResponse;
 }
 
-export function QAView({ paperId, accent }: { paperId: number; accent: string }) {
+export function QAView({ paperId, accent, detail, onJump }: {
+  paperId: number; accent: string; detail?: PaperDetail;
+  onJump?: (page: number, region: string, quote: string) => void;
+}) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [media, setMedia] = useState<MediaItem | null>(null);
+  const [openEv, setOpenEv] = useState<Record<number, boolean>>({});
 
   const ask = async (q: string) => {
     if (!q.trim() || loading) return;
@@ -43,6 +51,7 @@ export function QAView({ paperId, accent }: { paperId: number; accent: string })
   };
 
   const openPreset = (q: string) => ask(q);
+  const toggleEv = (i: number) => setOpenEv((s) => ({ ...s, [i]: !s[i] }));
 
   return (
     <div className="flex h-full flex-col">
@@ -61,7 +70,7 @@ export function QAView({ paperId, accent }: { paperId: number; accent: string })
         </div>
       </div>
 
-      <GlassCard className="flex min-h-[360px] flex-col">
+      <GlassCard className="flex min-h-[480px] flex-col">
         <div className="flex-1 space-y-5 overflow-y-auto p-5">
           {messages.length === 0 && (
             <div className="grid h-full place-items-center text-center">
@@ -91,22 +100,51 @@ export function QAView({ paperId, accent }: { paperId: number; accent: string })
                     )}
                     {m.resp && <span className="font-mono text-[10px] text-slate-500">置信度 · {m.resp.confidence}</span>}
                   </div>
-                  <div className="max-w-full rounded-2xl rounded-bl-md border border-[var(--line)] bg-white/[0.03] px-4 py-3 text-sm leading-relaxed text-slate-200">
-                    {m.text}
+                  <div className="max-w-full rounded-2xl rounded-bl-md border border-[var(--line)] bg-white/[0.03] px-4 py-3">
+                    {m.text ? (
+                      <RichText
+                        text={m.text}
+                        figures={detail?.figures}
+                        tables={detail?.tables}
+                        onOpenMedia={setMedia}
+                      />
+                    ) : null}
                   </div>
+
+                  {/* 证据卡片（可点击定位到论文原文，可展开） */}
                   {m.resp && m.resp.evidence.length > 0 && (
                     <div className="mt-2 space-y-1.5">
-                      {m.resp.evidence.map((e, j) => (
-                        <div key={j} className="flex items-start gap-2 rounded-lg bg-white/[0.02] px-3 py-2 text-[12px] text-slate-400">
-                          <Quote className="mt-0.5 h-3 w-3 shrink-0 text-slate-600" />
-                          <div>
-                            <span className="font-mono text-[10px] text-slate-500">
-                              p.{e.page} · {e.region}
-                            </span>
-                            <div className="mt-0.5 line-clamp-2">{e.text || e.quote}</div>
-                          </div>
-                        </div>
-                      ))}
+                      <div className="flex items-center gap-1.5 font-mono text-[10px] text-slate-500">
+                        <Quote className="h-3 w-3" /> 引用证据 · 点击定位到论文
+                      </div>
+                      {m.resp.evidence.map((e, j) => {
+                        const open = openEv[j];
+                        return (
+                          <button
+                            key={j}
+                            onClick={() => {
+                              if (onJump && (e.text || e.quote)) onJump(e.page, e.region, e.quote || e.text);
+                            }}
+                            className="group flex w-full items-start gap-2 rounded-lg bg-white/[0.02] px-3 py-2 text-left text-[12px] text-slate-400 transition hover:bg-white/[0.05]"
+                          >
+                            <Quote className="mt-0.5 h-3 w-3 shrink-0 text-slate-600" />
+                            <div className="min-w-0 flex-1">
+                              <span className="font-mono text-[10px] text-slate-500">
+                                p.{e.page} · {e.region}
+                              </span>
+                              {open || !e.text ? (
+                                <div className="mt-0.5 text-slate-300">{e.text || e.quote}</div>
+                              ) : (
+                                <div className="mt-0.5 line-clamp-2">{e.text || e.quote}</div>
+                              )}
+                            </div>
+                            <ChevronDown
+                              className={cn('mt-0.5 h-3 w-3 shrink-0 text-slate-600 transition-transform group-hover:text-indigo-300', open && 'rotate-180')}
+                              onClick={(ev) => { ev.stopPropagation(); toggleEv(j); }}
+                            />
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                   {m.resp && !m.resp.grounded && (
@@ -120,7 +158,9 @@ export function QAView({ paperId, accent }: { paperId: number; accent: string })
             <div className="flex items-center gap-2 text-sm text-slate-400">
               <Spinner /> 检索证据中…
             </div>
-          )}        </div>
+          )}
+        </div>
+
         <div className="border-t border-[var(--line)] p-3">
           <form
             onSubmit={(e) => { e.preventDefault(); ask(input); }}
@@ -138,10 +178,12 @@ export function QAView({ paperId, accent }: { paperId: number; accent: string })
           </form>
           <div className="mt-2 flex items-center gap-1.5 font-mono text-[10px] text-slate-600">
             <CornerDownLeft className="h-3 w-3" />
-            回车发送 · 回答带证据与置信度
+            回车发送 · 回答带证据与置信度 · 点证据可定位到原文，点「图/表N」可查看
           </div>
         </div>
       </GlassCard>
+
+      <MediaModal item={media} accent={accent} onClose={() => setMedia(null)} />
     </div>
   );
 }

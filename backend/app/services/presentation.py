@@ -43,6 +43,45 @@ def _discover_evidence(refs, all_evidence, limit: int = 6):
     return items
 
 
+def _discover_figure_refs(scene, paper_id: int) -> list:
+    """从场景的 evidence_refs / summary / narration 中提取「图N」「Fig.N」引用，
+    仅保留论文内真实存在的图号，用于「讲解」涉及内容点击。"""
+    if not scene:
+        return []
+    text = " ".join(str(x) for x in (scene.evidence_refs or [])) + " " \
+        + (scene.summary or "") + " " + str((scene.narration or {}).get("script", ""))
+    nums = {int(m.group(1)) for m in re.finditer(r"(?:图|Fig\.?)\s*(\d+)", text)}
+    if not nums:
+        return []
+    from app.core.db import SessionLocal
+    from app import models as _m
+    s = SessionLocal()
+    try:
+        existing = {row.fig_no for row in s.query(_m.Figure).filter(_m.Figure.paper_id == paper_id).all()}
+    finally:
+        s.close()
+    return [n for n in sorted(nums) if n in existing]
+
+
+def _discover_table_refs(scene, paper_id: int) -> list:
+    """与 _discover_figure_refs 类似，提取「表N」引用并只保留存在表号。"""
+    if not scene:
+        return []
+    text = " ".join(str(x) for x in (scene.evidence_refs or [])) + " " \
+        + (scene.summary or "") + " " + str((scene.narration or {}).get("script", ""))
+    nums = {int(m.group(1)) for m in re.finditer(r"(?:表|Table\.?)\s*(\d+)", text)}
+    if not nums:
+        return []
+    from app.core.db import SessionLocal
+    from app import models as _m
+    s = SessionLocal()
+    try:
+        existing = {row.table_no for row in s.query(_m.Table).filter(_m.Table.paper_id == paper_id).all()}
+    finally:
+        s.close()
+    return [n for n in sorted(nums) if n in existing]
+
+
 def get_presentation(db: Session, paper_id: int) -> dict:
     scenes = (
         db.query(models.Scene)
@@ -65,7 +104,8 @@ def get_presentation(db: Session, paper_id: int) -> dict:
                 "summary": s.summary,
                 "steps": s.steps if s.steps is not None else [],
                 "evidence_refs": s.evidence_refs if s.evidence_refs is not None else [],
-                "figure_refs": s.figure_refs if s.figure_refs is not None else [],
+                "figure_refs": (s.figure_refs if s.figure_refs is not None else []) or _discover_figure_refs(s, paper_id),
+                "table_refs": _discover_table_refs(s, paper_id),
                 "narration": s.narration or {},
                 "linked": _discover_evidence(s.evidence_refs, all_evidence),
             }

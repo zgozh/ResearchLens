@@ -278,7 +278,7 @@ export default function Workspace() {
                 )}
                 {view === 'graph' && <GraphView graph={graph} accent={accent} onClaimSelected={(cid) => { selectClaim(cid); changeView('claim'); }} />}
                 {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} detail={detail} claims={claims} />}
-                {view === 'qa' && <QAView paperId={paper!.id} accent={accent} />}
+                {view === 'qa' && <QAView paperId={paper!.id} accent={accent} detail={detail} onJump={jumpToPaper} />}
                 {view === 'eval' && <EvalView evalData={evalData} accent={accent} />}
                 {view === 'paper' && <PaperView detail={detail} target={paperTarget} />}
               </motion.div>

@@ -43,12 +43,9 @@ export function PresenterView({ presentation, accent, detail, claims }: {
 
   const goto = (i: number) => { setIdx(Math.max(0, Math.min(scenes.length - 1, i))); };
 
-  // 汇总本场景可点击内容：图 / 表 / 证据文本
+  // 汇总本场景可点击内容：图 / 表 / 证据文本（figure_refs/table_refs 已由后端按论文真实图/表解析）
   const figs = (scene?.figure_refs || []).map((r) => detail.figures.find((f) => f.fig_no === Number(r))).filter((x): x is NonNullable<typeof x> => !!x);
-  const tables = (scene?.evidence_refs || [])
-    .filter((r) => /table|表|t\d/i.test(String(r)))
-    .map((r) => { const m = String(r).match(/[tT](\d+)|表\s*(\d+)/); const n = m ? Number(m[1] || m[2]) : undefined; return n ? detail.tables.find((t) => t.table_no === n) : undefined; })
-    .filter((x): x is NonNullable<typeof x> => !!x);
+  const tables = (scene?.table_refs || []).map((r) => detail.tables.find((t) => t.table_no === Number(r))).filter((x): x is NonNullable<typeof x> => !!x);
   const linkedTexts = (scene?.linked || []).filter((l: any) => l?.type === 'text');
   const texts: any[] = linkedTexts.length
     ? linkedTexts

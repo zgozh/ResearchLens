@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -17,6 +18,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Docker-only 部署：若数据库为空且非 DEMO 模式，后台自举「真实中文论文」
+    # （含 LLM 抽取，较慢；后台线程不阻塞健康检查）。
+    if not settings.demo_mode:
+        try:
+            from app.modules.pipeline.seed_real import start_real_provision_thread
+            start_real_provision_thread()
+        except Exception:  # noqa: BLE001
+            import traceback; traceback.print_exc()
     yield
 
 

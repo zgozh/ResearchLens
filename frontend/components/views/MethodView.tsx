@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Play, RotateCcw, ChevronRight, Info, FileText } from 'lucide-react';
+import { Play, RotateCcw, ChevronRight, Info, FileText, Layers, Table2 } from 'lucide-react';
 import type { PaperDetail, MethodStep } from '@/lib/types';
 import { Badge, Btn, GlassCard, Kicker } from '@/components/ui';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
+import { RichText } from '@/components/RichText';
 import { cn } from '@/lib/cn';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -21,6 +22,9 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
   const heroRef = useRef<HTMLDivElement>(null);
   const total = steps.length;
   const stepFigure = detail.figures.find((f) => f.fig_no === steps[explored ?? -1]?.figure_ref);
+  const relatedTables = detail.tables.filter((t) =>
+    steps[explored ?? -1]?.text?.includes(`表${t.table_no}`) || steps[explored ?? -1]?.detail?.includes(`表${t.table_no}`),
+  );
 
   useEffect(() => {
     if (!playing) return;
@@ -111,16 +115,38 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
               </div>
               <p className="mt-2 flex items-start gap-2 text-[14px] leading-relaxed text-slate-300">
                 <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
-                {steps[explored!].text || steps[explored!].detail || '这一环节的作用可结合论文原图理解。'}
+                <span className="min-w-0">
+                  {(() => {
+                    const st = steps[explored!];
+                    return st.text ? (
+                      <RichText
+                        text={st.text}
+                        figures={detail.figures}
+                        tables={detail.tables}
+                        onOpenMedia={setMedia}
+                      />
+                    ) : (st.detail || '这一环节的作用可结合论文原图理解。');
+                  })()}
+                </span>
               </p>
-              {/* 关联图（可点击放大） */}
-              {stepFigure && (
-                <button onClick={() => setMedia({ type: 'figure', figure: stepFigure })}
-                  className="mt-4 inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
-                  <FileText className="h-4 w-4" /> 查看关联图（图 {stepFigure.fig_no}）
-                </button>
+              {/* 关联图 + 关联表（可点击放大） */}
+              {(stepFigure || relatedTables.length > 0) && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {stepFigure && (
+                    <button onClick={() => setMedia({ type: 'figure', figure: stepFigure })}
+                      className="inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
+                      <Layers className="h-4 w-4" /> 查看关联图（图 {stepFigure.fig_no}）
+                    </button>
+                  )}
+                  {relatedTables.map((t) => (
+                    <button key={`rt${t.table_no}`} onClick={() => setMedia({ type: 'table', table: t })}
+                      className="inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
+                      <Table2 className="h-4 w-4" /> 查看关联表（表 {t.table_no}）
+                    </button>
+                  ))}
+                </div>
               )}
-              {hero && !stepFigure && (
+              {hero && !stepFigure && relatedTables.length === 0 && (
                 <button onClick={() => heroRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
                   className="mt-4 inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
                   <FileText className="h-4 w-4" /> 查看方法原图（图 {hero.fig_no}）

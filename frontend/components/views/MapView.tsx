@@ -2,10 +2,12 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, FileText, Table2, Image as ImageIcon } from 'lucide-react';
+import { ChevronDown, FileText, Table2, Image as ImageIcon, Expand } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { PaperDetail, SectionOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
+import { MediaModal, type MediaItem } from '@/components/MediaModal';
+import { FigureImage } from '@/components/FigureImage';
 import { cn } from '@/lib/cn';
 
 const KIND_LABEL: Record<string, string> = {
@@ -30,6 +32,7 @@ export function MapView({ detail, accent, onOpenSection }: {
     { key: 'limitation', label: '局限', c: '#F59E0B' },
   ];
   const [openSec, setOpenSec] = useState<number | undefined>(0);
+  const [media, setMedia] = useState<MediaItem | null>(null);
 
   return (
     <div className="space-y-6">
@@ -119,25 +122,68 @@ export function MapView({ detail, accent, onOpenSection }: {
         </GlassCard>
       </div>
 
-      {/* 关键图条目 */}
+      {/* 关键图表（可点击放大） */}
       <div>
         <Kicker className="mb-3">关键图表 · FIGURES &amp; TABLES</Kicker>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {detail.figures.map((f) => (
-            <GlassCard key={`f${f.fig_no}`} className="p-3">
+            <GlassCard key={`f${f.fig_no}`} onClick={() => setMedia({ type: 'figure', figure: f })}
+              className="group cursor-pointer p-3 transition-all hover:border-white/20">
               <div className="mb-2 flex items-center gap-2">
                 <ImageIcon className="h-3.5 w-3.5 text-slate-500" />
                 <span className="text-xs font-semibold text-slate-200">图 {f.fig_no}</span>
-                <span className="ml-auto font-mono text-[10px] text-slate-500">p.{f.page}</span>
+                <span className="ml-auto flex items-center gap-1 font-mono text-[10px] text-slate-500">
+                  p.{f.page}
+                  <span className="inline-flex items-center gap-0.5 rounded-md bg-white/[0.04] px-1 py-0.5 text-slate-500 transition group-hover:text-indigo-300"><Expand className="h-3 w-3" /></span>
+                </span>
               </div>
               <div className="overflow-hidden rounded-md border border-[var(--line)] bg-[#0F172A]">
-                <div className="[&_svg]:w-full [&_svg]:h-auto" dangerouslySetInnerHTML={{ __html: f.glyph_svg }} />
+                <FigureImage image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
               </div>
               <p className="mt-2 line-clamp-2 text-[11px] text-slate-500">{f.caption}</p>
             </GlassCard>
           ))}
         </div>
+
+        {detail.tables.length > 0 && (
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {detail.tables.map((t) => (
+              <GlassCard key={`t${t.table_no}`} onClick={() => setMedia({ type: 'table', table: t })}
+                className="group cursor-pointer p-4 transition-all hover:border-white/20">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+                    <Table2 className="h-3.5 w-3.5 text-slate-500" /> 表 {t.table_no}
+                  </span>
+                  <span className="flex items-center gap-1 font-mono text-[10px] text-slate-500">
+                    p.{t.page}
+                    <span className="inline-flex items-center gap-0.5 rounded-md bg-white/[0.04] px-1 py-0.5 text-slate-500 transition group-hover:text-indigo-300"><Expand className="h-3 w-3" /></span>
+                  </span>
+                </div>
+                <p className="mb-2 text-[11px] text-slate-500">{t.caption}</p>
+                <div className="overflow-hidden rounded-md border border-[var(--line)]">
+                  <table className="w-full text-left text-[11px]">
+                    <thead>
+                      <tr className="bg-white/[0.04]">
+                        {(t.content[0] || []).map((h, i) => <th key={i} className="px-2 py-1.5 font-medium text-slate-300">{h}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {t.content.slice(1, 4).map((row, ri) => (
+                        <tr key={ri} className="border-t border-[var(--line)]">
+                          {row.map((cell, ci) => <td key={ci} className="px-2 py-1.5 text-slate-400">{cell}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {t.key_finding && <p className="mt-2 line-clamp-2 text-[11px] text-emerald-200/80">{t.key_finding}</p>}
+              </GlassCard>
+            ))}
+          </div>
+        )}
       </div>
+
+      <MediaModal item={media} accent={accent} onClose={() => setMedia(null)} />
     </div>
   );
 }
