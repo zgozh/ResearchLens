@@ -148,6 +148,16 @@ def papers_list(db: Session = Depends(get_db)):
 
 @router.get("/papers/{paper_id}")
 def paper_detail(paper_id: int, db: Session = Depends(get_db)):
+    # canonical 优先：真实论文的 图/表/章节/方法步骤/原文页 全部写在 canonical 表，
+    # 而 legacy 的 figures/tables/sections/paper_pages/papers.method_steps 只被
+    # demo seed 填充 —— 直接读旧 ORM 会让真实论文这几处全空。
+    # 详见 modules/papers/legacy.py；无 canonical 数据时返回 None 走旧路径。
+    from app.modules.papers import legacy as papers_legacy
+
+    canonical = papers_legacy.get_detail(db, paper_id)
+    if canonical is not None:
+        return canonical
+
     p = (
         db.query(models.Paper)
         .options(
@@ -237,6 +247,10 @@ async def paper_upload(file: UploadFile = File(...), db: Session = Depends(get_d
 def paper_process(paper_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Trigger the LIVE pipeline (parse → claims → evidence → evaluation) in the
     background. Returns immediately with a job id; poll /api/jobs/{id}."""
+
+    # §5.11：无论文 404（不得对不存在的论文建 job，否则 FK 约束失败）
+    if db.query(models.Paper).filter(models.Paper.id == paper_id).first() is None:
+        raise HTTPException(404, "paper not found")
 
     def _work():
         from app.core.db import SessionLocal as _SessionLocal

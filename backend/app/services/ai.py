@@ -1,14 +1,17 @@
-"""AIClient — OpenAI-compatible provider-agnostic LLM + Vision + Embeddings.
+"""AIClient — 兼容薄壳（REFACTOR_SPEC §6.7：保留旧签名，不替换供应商）。
 
-Decision D-06 / D-11: all model calls go through this single seam so we can
-  1) route to a primary provider, 2) fall back across configured candidates,
-  3) never crash the main path (degrade to cache/mock).
-Uses plain httpx (no vendor SDK) so any OpenAI-compatible base_url works.
+**旧类 ``AIClient`` 与 ``get_ai()`` 的公开签名保持不变**，旧调用方
+（``services/pipeline.py``、``services/qa.py``、``modules/pipeline/ingest.py``）
+继续可用。
+
+新增能力（类型验证、预算共享、能力探测、模型快照）在
+``app.modules.ai`` 中提供；本类的结构化调用可选转发到那里，但**保留原有
+``Optional`` 返回与"永不抛异常到主链路"的旧契约**（旧调用方按 None 判空）。
 """
 from __future__ import annotations
 
-import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +30,8 @@ class _Provider:
 
 
 class AIClient:
+    """旧 AIClient（签名向后兼容）。"""
+
     def __init__(self) -> None:
         self._providers: List[_Provider] = self._build_providers()
         self._timeout = httpx.Timeout(120.0, connect=15.0)
@@ -34,7 +39,10 @@ class AIClient:
     def _build_providers(self) -> List[_Provider]:
         providers: List[_Provider] = []
         if settings.has_llm:
-            providers.append(_Provider(settings.llm_api_key, settings.llm_base_url.rstrip("/"), settings.llm_model))
+            providers.append(
+                _Provider(settings.llm_api_key, settings.llm_base_url.rstrip("/"),
+                          settings.llm_model)
+            )
         for item in filter(None, (s for s in settings.llm_fallbacks.split(",") if s.strip())):
             try:
                 key_url, model = item.rsplit("|", 1)
@@ -58,10 +66,9 @@ class AIClient:
         json_schema: Optional[dict] = None,
         json_object: bool = False,
     ) -> Optional[Any]:
-        """Return parsed JSON if json_schema or json_object, else text. None on total failure.
+        """旧契约：返回解析后的 JSON 或文本；失败返回 ``None``（不抛异常）。
 
-        json_object mode is faster on providers where strict `json_schema` validation is slow;
-        it asks the model for a JSON object and passes the schema as a prompt hint.
+        ``json_object`` 模式请求 JSON 对象并把 schema 作为提示注入。
         """
         last_err = None
         for prov in self._providers:
@@ -69,10 +76,11 @@ class AIClient:
             if json_object:
                 body["model"] = model or self._resolve_model(prov)
                 hint = ("请只输出符合该 JSON Schema 的 JSON：\n"
-                        + json.dumps(json_schema or {}, ensure_ascii=False))
+                        + __import__("json").dumps(json_schema or {}, ensure_ascii=False))
                 body["response_format"] = {"type": "json_object"}
                 try:
-                    txt = self._chat_once(prov, {**body, "messages": messages + [{"role": "user", "content": hint}]})
+                    txt = self._chat_once(prov, {**body, "messages": messages +
+                                                 [{"role": "user", "content": hint}]})
                 except Exception as e:  # noqa: BLE001
                     last_err = e
                     log.warning("provider %s failed: %s", prov.base_url, e)
@@ -82,7 +90,6 @@ class AIClient:
                 return self._parse_json(txt, json_schema or {})
             if json_schema is not None:
                 body["model"] = model or self._resolve_model(prov)
-                # try strict json_schema, then json_object fallback
                 try:
                     fmt = {
                         "type": "json_schema",
@@ -91,12 +98,12 @@ class AIClient:
                     txt = self._chat_once(prov, {**body, "response_format": fmt})
                 except Exception as e:  # noqa: BLE001
                     last_err = e
-                    log.info("json_schema rejected by %s (%s); falling back to json_object", prov.base_url, e)
+                    log.info("json_schema rejected by %s; falling back to json_object",
+                             prov.base_url)
                     txt = None
                 if txt is None:
-                    # json_object fallback: keep a hint of the schema in the prompt
                     hint = ("请只输出符合该 JSON Schema 的 JSON：\n"
-                            + json.dumps(json_schema, ensure_ascii=False))
+                            + __import__("json").dumps(json_schema, ensure_ascii=False))
                     fb_body = {
                         **body,
                         "response_format": {"type": "json_object"},
@@ -110,17 +117,16 @@ class AIClient:
                 if txt is None:
                     continue
                 return self._parse_json(txt, json_schema)
-            else:
-                body["model"] = model or self._resolve_model(prov)
-                try:
-                    txt = self._chat_once(prov, body)
-                except Exception as e:  # noqa: BLE001
-                    last_err = e
-                    log.warning("provider %s failed: %s", prov.base_url, e)
-                    continue
-                if txt is None:
-                    continue
-                return txt
+            body["model"] = model or self._resolve_model(prov)
+            try:
+                txt = self._chat_once(prov, body)
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                log.warning("provider %s failed: %s", prov.base_url, e)
+                continue
+            if txt is None:
+                continue
+            return txt
         if last_err:
             log.error("all providers failed: %s", last_err)
         return None
@@ -141,13 +147,17 @@ class AIClient:
                     json=payload,
                     timeout=self._timeout,
                 )
+                # 401/403 不重试（§6.7）
+                if r.status_code in (401, 403):
+                    log.warning("provider %s 鉴权失败 %d", prov.base_url, r.status_code)
+                    return None
                 r.raise_for_status()
                 data = r.json()
                 choices = data.get("choices") or []
                 if not choices:
                     return None
                 return (choices[0].get("message") or {}).get("content")
-            except (httpx.ReadTimeout, httpx.ConnectError, httpx.TransportError) as e:  # noqa: PERF203
+            except (httpx.ReadTimeout, httpx.ConnectError, httpx.TransportError) as e:
                 last = e
                 log.warning("provider %s 第 %d 次调用失败：%s", prov.base_url, attempt + 1, e)
         if last:
@@ -155,13 +165,12 @@ class AIClient:
         return None
 
     def _parse_json(self, txt: str, schema: dict) -> Optional[Any]:
+        import json
+
         try:
             return json.loads(txt)
         except json.JSONDecodeError:
-            # tolerate content wrapped in markdown fences
-            import re
-
-            m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", txt, re.DOTALL)
+            m = __import__("re").search(r"```(?:json)?\s*(\{.*\})\s*```", txt, __import__("re").DOTALL)
             if m:
                 try:
                     return json.loads(m.group(1))
@@ -221,3 +230,6 @@ def get_ai() -> AIClient:
     if _client is None:
         _client = AIClient()
     return _client
+
+
+__all__ = ["AIClient", "get_ai"]

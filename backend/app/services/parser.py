@@ -1,8 +1,10 @@
-"""Paper parser (Spec §28). Live path: PDF → pages/sections/figures/tables.
+"""services/parser — 兼容薄壳（REFACTOR_SPEC §6.4：旧签名代理）。
 
-Demo path does not call this — the 3 demo papers are fully structured seeds.
-This module exists so a real uploaded PDF can be processed with only lightweight
-deps (pypdf), and structure is then enriched by a vision/LLM step when available.
+本模块**保留原有全部公共函数名与签名**，内部可迁移的部分转发到
+``app.modules.parse``；尚未迁移的保留原实现并标注 ``# legacy: not yet migrated``。
+
+新代码请使用 ``app.modules.parse``（canonical：parse/persist/get_pages/...）
+与 ``app.modules.papers``（源文件字节与资产存储）。
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ try:
 except Exception:  # pragma: no cover
     pypdf = None
 
-
+#: 旧启发式章节关键词表（保留原值，行为不变）
 _SECTION_HINTS = [
     ("abstract", "abstract", "abstract"),
     ("introduction", "intro", "introduction"),
@@ -38,7 +40,10 @@ _SECTION_HINTS = [
 
 
 def extract_pdf_pages(data: bytes) -> List[dict]:
-    """Return [{page_no, text, region_map}]."""
+    """# legacy: not yet migrated — 旧 pypdf 逐页取文（无坐标/无页码语义）。
+
+    新实现见 ``app.modules.parse.parse``（MinerU 优先、PyMuPDF 降级，保留块与坐标）。
+    """
     if pypdf is None:
         return []
     reader = pypdf.PdfReader(io.BytesIO(data))
@@ -51,14 +56,16 @@ def extract_pdf_pages(data: bytes) -> List[dict]:
 
 
 def detect_sections(pages: List[dict]) -> List[dict]:
-    """Heuristic heading detection → sections with a mapped kind."""
+    """# legacy: not yet migrated — 旧标题启发式（可能误判，不产生 verified 结构）。
+
+    新结构抽取归 M06；本函数仅保留旧返回形状供旧管线使用。
+    """
     kind_by_heading: Dict[str, str] = {}
     for raw, kind, _ in _SECTION_HINTS:
         kind_by_heading[raw] = kind
 
     sections: List[dict] = []
     for pg in pages:
-        # find candidate heading lines (short lines, mostly titles)
         lines = [l.strip() for l in pg["text"].split("\n") if l.strip()]
         for line in lines:
             low = line.lower()
@@ -70,12 +77,15 @@ def detect_sections(pages: List[dict]) -> List[dict]:
                     "page": pg["page_no"],
                     "summary": "",
                 })
-                break  # one heading per page is enough
+                break
     return sections
 
 
 def parse_pdf(data: bytes) -> dict:
-    """Full parse → structure IR (structure extraction step)."""
+    """# legacy: not yet migrated — 旧结构 IR（pages/sections/full_text/corpus）。
+
+    新代码改用 ``app.modules.parse.parse`` + ``persist``（保留完整物理页、块与坐标）。
+    """
     pages = extract_pdf_pages(data)
     full_text = "\n\n".join(p["text"] for p in pages)
     sections = detect_sections(pages)
@@ -88,7 +98,10 @@ def parse_pdf(data: bytes) -> dict:
 
 
 def default_upload_dir() -> Path:
-    """Default upload directory (absolute) — resolves relative to backend root."""
+    """# legacy: not yet migrated — 历史上传目录。
+
+    新路径：``app.modules.papers`` 内容寻址存储（``settings.assets_dir``）。
+    """
     backend = Path(__file__).resolve().parents[2]
     d = backend / "data" / "uploads"
     d.mkdir(parents=True, exist_ok=True)
@@ -96,8 +109,22 @@ def default_upload_dir() -> Path:
 
 
 def save_upload(dir_path: Path, filename: str, data: bytes) -> Path:
+    """# legacy: not yet migrated — 历史同名写盘（**会覆盖同名文件**）。
+
+    新路径：``app.modules.papers.store_source`` / ``put_asset``（临时文件 → sha256 →
+    原子 rename；同名不覆盖）。
+    """
     dir_path.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "upload.pdf"
     target = dir_path / safe
     target.write_bytes(data)
     return target
+
+
+__all__ = [
+    "extract_pdf_pages",
+    "detect_sections",
+    "parse_pdf",
+    "default_upload_dir",
+    "save_upload",
+]

@@ -1,4 +1,4 @@
-"""Demo paper loader — hydrates the DB from the IR (idempotent: delete-then-insert).
+"""Demo paper loader — hydrates the DB from the IR (idempotent: skip-if-exists).
 
 DEMO_MODE reads these seeds; no LLM / API key needed.
 """
@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app import models
@@ -23,9 +22,12 @@ BUILDERS = {
 
 def _persist_paper(db: Session, ir: Dict) -> None:
     slug = ir["slug"]
-    # idempotent: remove existing paper + children
-    db.execute(delete(models.Paper).where(models.Paper.slug == slug))
-    db.flush()
+    # 幂等：已存在则跳过（D20 禁止同 slug 删除重建破坏稳定 ID；
+    # 且 canonical 表 revisions/source_documents 的 paper_id FK 无 CASCADE，
+    # 批量 delete 会触发 FK 约束失败）。
+    existing = db.query(models.Paper).filter(models.Paper.slug == slug).first()
+    if existing is not None:
+        return
 
     paper = models.Paper(
         slug=slug,

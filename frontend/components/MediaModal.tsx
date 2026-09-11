@@ -28,7 +28,7 @@ export function MediaModal({ item, onClose, accent }: { item: MediaItem | null; 
             <div className="mb-4 flex items-center gap-2">
               {item.type === 'figure' ? <ImageIcon className="h-4 w-4" style={{ color: accent }} /> : <Table2 className="h-4 w-4" style={{ color: accent }} />}
               <span className="text-sm font-semibold text-white">{item.type === 'figure' ? `图 ${item.figure.fig_no}` : `表 ${item.table.table_no}`}</span>
-              <span className="ml-auto font-mono text-[11px] text-slate-500">原图 · p.{item.type === 'figure' ? item.figure.page : item.table.page}</span>
+              <span className="ml-auto font-mono text-[11px] text-slate-500">旧版示意/提取 · p.{item.type === 'figure' ? item.figure.page : item.table.page}</span>
               <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-white/5 hover:text-white">
                 <X className="h-4 w-4" />
               </button>

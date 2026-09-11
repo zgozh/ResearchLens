@@ -35,11 +35,16 @@ class Paper(Base):
     abstract: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[list] = mapped_column(JSON, default=list)
     pdf_url: Mapped[str] = mapped_column(String(1024), default="")
-    source_mode: Mapped[str] = mapped_column(String(16), default="demo")  # demo | upload
+    source_mode: Mapped[str] = mapped_column(String(16), default="demo")  # demo | real | upload
     status: Mapped[str] = mapped_column(String(24), default="ready")
     accent: Mapped[str] = mapped_column(String(16), default="#6366F1")
     map_summary: Mapped[dict] = mapped_column(JSON, default=dict)  # paper map
     method_steps: Mapped[list] = mapped_column(JSON, default=list)  # animation steps
+    # --- 重构新增（迁移 0002 添加）---
+    provenance_class: Mapped[str] = mapped_column(String(24), default="synthetic")
+    published_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    readable_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
     pages: Mapped[list["PaperPage"]] = relationship(back_populates="paper", cascade="all, delete-orphan")

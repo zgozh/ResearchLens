@@ -1,3 +1,7 @@
-from . import routes  # noqa: F401
+from fastapi import APIRouter
 
-api_router = routes.router
+from . import canonical, routes  # noqa: F401
+
+api_router = APIRouter()
+api_router.include_router(routes.router)
+api_router.include_router(canonical.router)

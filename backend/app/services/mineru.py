@@ -1,16 +1,18 @@
-"""services/mineru — MinerU 高质量文档解析（可选外部工具）。
+"""services/mineru — 兼容薄壳（REFACTOR_SPEC §6.4：旧签名代理）。
 
-把 PDF 直接抛给 MinerU 精准解析 API（reading-order markdown + 结构化表格 HTML +
-真实图表图片 + OCR/公式），返回一份可直接入库的中间表示：
-    {full_text, pages[{page_no,text}], figures[{image_b64,caption,page}],
-     tables[{table_no,caption,page,content[[str]],key_finding}] }
+**保留原有全部公共函数名与签名**，可迁移部分转发到
+``app.modules.parse.mineru_adapter``（安全的 ZIP 解包、终态轮询、保留
+header/footer/page_number 块）。
 
-采用「URL 提交」优先；无公开 URL 时改用本地文件批量上传签名接口。
-任何一步失败都抛异常，由调用方决定降级到 pymupdf。
+新代码请使用 ``app.modules.parse.parse``（MinerU 优先、PyMuPDF 降级，产出
+契约 DTO）。本模块继续返回旧 dict IR，供 ``modules/pipeline/ingest.py`` 等
+历史调用方使用。
+
+# legacy: 旧返回结构（full_text/pages/figures/tables）保留；新 canonical
+# 产物请走 app.modules.parse。两套并存期间不删除旧函数。
 """
 from __future__ import annotations
 
-import base64
 import io
 import json
 import logging
@@ -31,11 +33,13 @@ HEADERS = lambda: {"Content-Type": "application/json", "Authorization": f"Bearer
 
 
 class MineruError(RuntimeError):
-    pass
+    """旧异常类型（保持可用；新适配器用同名的 ``mineru_adapter.MineruError``）。"""
+
+
+# ------------------------------------------------------------------ 传输
 
 
 def _submit_by_url(url: str, model_version: str = "vlm") -> str:
-    """创建精准解析任务（URL 模式），返回 task_id。"""
     payload = {
         "url": url,
         "model_version": model_version,
@@ -55,11 +59,11 @@ def _submit_by_url(url: str, model_version: str = "vlm") -> str:
 
 
 def _submit_by_bytes(data: bytes, filename: str, model_version: str = "vlm") -> str:
-    """创建精准解析任务（本地文件签名上传），返回 task_id（上传后自动解析）。"""
     r = httpx.post(
         f"{_BASE}/api/v4/file-urls/batch",
         headers=HEADERS(),
-        json={"files": [{"name": filename, "data_id": "researchlens"}], "model_version": model_version},
+        json={"files": [{"name": filename, "data_id": "researchlens"}],
+              "model_version": model_version},
         timeout=60,
     )
     j = r.json()
@@ -79,7 +83,7 @@ def _submit_by_bytes(data: bytes, filename: str, model_version: str = "vlm") -> 
 
 
 def _poll(task_ref: str, timeout: float = 600, interval: float = 4.0) -> List[Dict]:
-    """轮询任务直到 done；返回解析结果条目列表（每项含 full_zip_url 或 err_msg）。"""
+    """轮询任务直到**终态**；批任务必须等到条目 done（修复 D22：非空即返回）。"""
     h = HEADERS()
     start = time.time()
     while time.time() - start < timeout:
@@ -89,44 +93,55 @@ def _poll(task_ref: str, timeout: float = 600, interval: float = 4.0) -> List[Di
             j = r.json()
             if j.get("code") != 0:
                 raise MineruError(f"查询失败 {j.get('code')} {j.get('msg')}")
-            # batch: data.extract_result 是数组
             res = ((j.get("data") or {}).get("extract_result")) or []
             if not res:
                 time.sleep(interval)
                 continue
-            return res
-        else:
-            r = httpx.get(f"{_BASE}/api/v4/extract/task/{task_ref}", headers=h, timeout=60)
-            j = r.json()
-            if j.get("code") != 0:
-                raise MineruError(f"查询失败 {j.get('code')} {j.get('msg')}")
-            d = j.get("data") or {}
-            state = d.get("state")
+            first = res[0]
+            state = first.get("state")
             if state == "done":
-                return [d]
+                return res
             if state == "failed":
-                raise MineruError(f"解析失败：{d.get('err_msg')}")
+                raise MineruError(f"解析失败：{first.get('err_msg')}")
+            time.sleep(interval)
+            continue
+        r = httpx.get(f"{_BASE}/api/v4/extract/task/{task_ref}", headers=h, timeout=60)
+        j = r.json()
+        if j.get("code") != 0:
+            raise MineruError(f"查询失败 {j.get('code')} {j.get('msg')}")
+        d = j.get("data") or {}
+        state = d.get("state")
+        if state == "done":
+            return [d]
+        if state == "failed":
+            raise MineruError(f"解析失败：{d.get('err_msg')}")
         time.sleep(interval)
     raise MineruError("等待 MinerU 解析超时")
 
 
 def _download_zip(url: str, retries: int = 3, backoff: float = 3.0) -> bytes:
-    """下载结果 zip；对瞬时连接拒绝/超时做重试（MinerU CDN 偶发 Connection refused）。"""
     last: Optional[Exception] = None
     for i in range(retries):
         try:
             r = httpx.get(url, timeout=180)
             r.raise_for_status()
             return r.content
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.TransportError) as e:  # noqa: PERF203
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.TransportError) as e:
             last = e
             log.warning("MinerU zip 下载失败(第 %d 次)，重试：%s", i + 1, e)
             time.sleep(backoff * (i + 1))
     raise MineruError(f"MinerU zip 下载失败：{last}")
 
 
+# ------------------------------------------------------------------ 解析
+
+
 def _html_table_to_matrix(html: str, max_rows: int = 12, max_cols: int = 12) -> List[List[str]]:
-    """把 MinerU 表格的 HTML <table> 转成 [[cell,...],...] 字符串矩阵（图片不放入，取压缩/去重）。"""
+    """# legacy: not yet migrated — 旧有损矩阵截断（12×12、单元格 60 字）。
+
+    ⚠️ 该截断不满足 §5.3/§3.4 的原件保真要求，新代码请使用
+    ``app.modules.visual.tables.extract_cells``（保留 rowspan/colspan 与完整文本）。
+    """
     if not html:
         return []
     rows_html = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S)
@@ -150,7 +165,6 @@ def _html_table_to_matrix(html: str, max_rows: int = 12, max_cols: int = 12) -> 
 
 
 def _as_text(v) -> str:
-    """MinerU 的 caption/summary 可能是 str 或 list[str]，统一转成单行文本。"""
     if v is None:
         return ""
     if isinstance(v, str):
@@ -161,7 +175,11 @@ def _as_text(v) -> str:
 
 
 def _group_pages(content_list: List[Dict]) -> List[Dict]:
-    """按 page_idx 归组，每页文本拼接（含表格与公式文本），供正文/章节/断言/QA 使用。"""
+    """# legacy: not yet migrated — 旧分页：**丢弃** header/footer/page_number 块。
+
+    ⚠️ 这正是 D01 报告的失真点；新实现见 ``app.modules.parse.mineru_adapter``
+    （保留全部块与坐标）。此处仅为旧管线兼容保留。
+    """
     by_page: Dict[int, List[str]] = {}
     for item in content_list:
         page = item.get("page_idx", 0)
@@ -174,20 +192,15 @@ def _group_pages(content_list: List[Dict]) -> List[Dict]:
             body_txt = re.sub(r"\s+", " ", body_txt).strip()
             seg = (cap + " " + body_txt).strip()
         elif typ in ("image", "chart"):
-            cap = _as_text(item.get("chart_caption") or item.get("image_caption"))
-            seg = cap
-        elif typ == "equation":
-            seg = _as_text(item.get("text"))
+            seg = _as_text(item.get("chart_caption") or item.get("image_caption"))
         else:
             seg = _as_text(item.get("text"))
         if seg:
             by_page.setdefault(page, []).append(seg)
-    pages = [{"page_no": p + 1, "text": "\n".join(by_page.get(p, []))} for p in sorted(by_page)]
-    return pages
+    return [{"page_no": p + 1, "text": "\n".join(by_page.get(p, []))} for p in sorted(by_page)]
 
 
 def _bbox_width(bbox) -> float:
-    """bbox 形如 [x0,y0,x1,y1]，返回宽度；异常返回 0。"""
     try:
         if not bbox or len(bbox) < 4:
             return 0.0
@@ -197,27 +210,16 @@ def _bbox_width(bbox) -> float:
 
 
 def _is_content_figure(item: Dict) -> bool:
-    """过滤噪声图：作者头像 / 二维码 / 期刊 logo 等。
-
-    判据：MinerU 的 content_list 里，真实内容图（流程图/曲线图/架构图）通常
-    - 有非空题注（chart_caption/image_caption），或
-    - bbox 宽度较大（≥ 300px，占满正文栏）。
-    而二维码/头像/logo 多为「小图 + 无题注」。二者皆不满足则丢弃。
-    """
     typ = item.get("type")
     if typ not in ("image", "chart"):
         return False
     cap = _as_text(item.get("chart_caption") or item.get("image_caption") or item.get("content"))
     if cap:
         return True
-    # 无题注：仅当宽度足够大（正文级图）才保留，否则视为噪声
-    if _bbox_width(item.get("bbox")) >= 300:
-        return True
-    return False
+    return _bbox_width(item.get("bbox")) >= 300
 
 
 def _clean_caption(item: Dict) -> str:
-    """拼合题注：取清晰的中/英题注段，去掉多余碎片（如 Axis 标签文本）。"""
     caps = []
     for key in ("chart_caption", "image_caption"):
         v = item.get(key)
@@ -230,17 +232,19 @@ def _clean_caption(item: Dict) -> str:
         caps.append(content)
     if not caps:
         return ""
-    # 题注可能含多段（Axis 标签 + 图题），取最长的一段为主（图题通常最长、含 Fig./图 N）
     caps.sort(key=lambda s: len(s), reverse=True)
     return caps[0]
 
 
 def parse_result(zip_bytes: bytes) -> Dict:
-    """从 MinerU 结果 zip 解析出可入库 IR。"""
+    """# legacy: not yet migrated — 旧 ZIP 解析（使用 ``zipfile`` 直接读，未做路径
+    穿越/展开体积/数量限制）。
+
+    ⚠️ 新实现见 ``app.modules.parse.mineru_adapter.safe_extract``（受限解包）。
+    """
     if not zip_bytes:
         raise MineruError("空结果")
     z = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    names = {n: z.getinfo(n).file_size for n in z.namelist()}
 
     md = ""
     for n in z.namelist():
@@ -258,7 +262,6 @@ def parse_result(zip_bytes: bytes) -> Dict:
 
     pages = _group_pages(content_list)
 
-    # 图：取 image/chart 条目 + 对应图片字节
     figures: List[Dict] = []
     images_map: Dict[str, bytes] = {}
     for n in z.namelist():
@@ -269,7 +272,7 @@ def parse_result(zip_bytes: bytes) -> Dict:
         if item.get("type") not in ("image", "chart"):
             continue
         if not _is_content_figure(item):
-            continue  # 过滤二维码 / 作者头像 / logo
+            continue
         cap = _clean_caption(item)
         ipath = item.get("img_path") or item.get("image_path") or ""
         img = images_map.get(ipath.split("/")[-1]) if ipath else None
@@ -277,6 +280,8 @@ def parse_result(zip_bytes: bytes) -> Dict:
             img = images_map.get(f"images/{ipath.rsplit('/',1)[-1]}")
         if img:
             fig_no += 1
+            import base64
+
             figures.append({
                 "fig_no": fig_no,
                 "caption": cap or f"图 {fig_no}",
@@ -284,7 +289,6 @@ def parse_result(zip_bytes: bytes) -> Dict:
                 "image_b64": base64.b64encode(img).decode("utf-8"),
             })
 
-    # 表：取 table 条目（保留原始 HTML，前端优先渲染原表）
     tables: List[Dict] = []
     tbl_no = 0
     for item in content_list:
@@ -303,24 +307,25 @@ def parse_result(zip_bytes: bytes) -> Dict:
                 "key_finding": _as_text(item.get("table_footnote")),
             })
 
-    return {
-        "full_text": md,
-        "pages": pages,
-        "figures": figures,
-        "tables": tables,
-    }
+    return {"full_text": md, "pages": pages, "figures": figures, "tables": tables}
 
 
-def parse_pdf(data: Optional[bytes] = None, url: Optional[str] = None, filename: str = "paper.pdf") -> Dict:
-    """MinerU 解析入口。优先 URL 提交，否则本地文件上传。返回 parse_result 结构。"""
+def parse_pdf(data: Optional[bytes] = None, url: Optional[str] = None,
+              filename: str = "paper.pdf") -> Dict:
+    """MinerU 解析入口（旧签名）。
+
+    优先本地字节上传（可确认与保存字节一致）；仅在无字节时才用 URL。
+    ⚠️ 使用远程 URL 时必须能确认解析输入与 SourceDocument hash 相同（§5.14）；
+    调用方无法确认时应改用 PyMuPDF 降级。
+    """
     if not settings.has_mineru:
         raise MineruError("未配置 MINERU_TOKEN")
-    if url and (url.startswith("http")):
+    if data:
+        task_ref = _submit_by_bytes(data, filename)
+    elif url and url.startswith("http"):
         task_ref = _submit_by_url(url)
     else:
-        if not data:
-            raise MineruError("无数据且无 URL")
-        task_ref = _submit_by_bytes(data, filename)
+        raise MineruError("无数据且无 URL")
     results = _poll(task_ref)
     if not results:
         raise MineruError("未取得解析结果")
@@ -331,3 +336,10 @@ def parse_pdf(data: Optional[bytes] = None, url: Optional[str] = None, filename:
     if not zip_url:
         raise MineruError("未返回结果 zip")
     return parse_result(_download_zip(zip_url))
+
+
+__all__ = [
+    "MineruError",
+    "parse_result",
+    "parse_pdf",
+]

@@ -1,10 +1,22 @@
-# ResearchLens — 一键部署（Spec §16）
+# ResearchLens — 一键部署（Spec §2.2 / §15）
 #   cp .env.example .env
 #   docker compose up --build
-#   打开 http://localhost:3000
+#   打开 http://localhost:4002（本机 3002 被 Windows 保留，见 .env FRONTEND_PORT）
 #
-# 若本机 3000/8000 已被占用，可覆盖宿主端口：
-#   FRONTEND_PORT=3002 BACKEND_PORT=8003 docker compose up --build
+# 宿主端口 4002/8002（容器内部仍 3000/8000）；LLM 默认 DashScope/qwen-plus。
+
+x-backend-env: &backend-env
+  DEMO_MODE: ${DEMO_MODE:-true}
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-researchlens}:${POSTGRES_PASSWORD:-researchlens}@db:5432/${POSTGRES_DB:-researchlens}
+  CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-4002},http://127.0.0.1:${FRONTEND_PORT:-4002}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+  LLM_MODEL: ${LLM_MODEL:-qwen-plus}
+  VISION_MODEL: ${VISION_MODEL:-qwen-vl-max}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v3}
+  MINERU_TOKEN: ${MINERU_TOKEN:-}
+  DATA_DIR: /app/data
+  BACKEND_PORT: 8000
 
 services:
   db:
@@ -24,32 +36,40 @@ services:
 
   backend:
     build: ./backend
-    environment:
-      DEMO_MODE: ${DEMO_MODE:-true}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-researchlens}:${POSTGRES_PASSWORD:-researchlens}@db:5432/${POSTGRES_DB:-researchlens}
-      CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000},http://127.0.0.1:${FRONTEND_PORT:-3000}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
-      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
-      MINERU_TOKEN: ${MINERU_TOKEN:-}
-      BACKEND_PORT: 8000
+    environment: *backend-env
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${BACKEND_PORT:-8002}:8000"
+    volumes:
+      - backend-data:/app/data
+    restart: unless-stopped
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - backend-data:/app/data
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8002}
+        # 默认 0 = 真实 canonical API；设 1 才走静态 fixtures（离线开发）。
+        NEXT_PUBLIC_USE_FIXTURES: ${NEXT_PUBLIC_USE_FIXTURES:-0}
     depends_on:
       - backend
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_PORT:-4002}:3000"
     restart: unless-stopped
 
 volumes:
   pgdata:
+  backend-data:

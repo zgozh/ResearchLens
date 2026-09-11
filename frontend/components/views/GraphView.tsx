@@ -13,19 +13,19 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Circle, GitBranch, FlaskConical, Target, FileSearch, X, Quote, ArrowRight } from 'lucide-react';
+import { Circle, GitBranch, FlaskConical, Target, FileSearch, Image as ImageIcon, X, Quote, ArrowRight } from 'lucide-react';
 import type { GraphOut, GraphNode, ClaimOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
-const KIND_X: Record<string, number> = { problem: 0, method: 1, experiment: 2, claim: 3, evidence: 4 };
+const KIND_X: Record<string, number> = { problem: 0, method: 1, experiment: 2, claim: 3, evidence: 4, media: 5 };
 const KIND_COLOR: Record<string, string> = {
-  problem: '#F43F5E', method: '#6366F1', experiment: '#22D3EE', claim: '#34D399', evidence: '#F59E0B',
+  problem: '#F43F5E', method: '#6366F1', experiment: '#22D3EE', claim: '#34D399', evidence: '#F59E0B', media: '#A78BFA',
 };
 
 function KindIcon({ kind }: { kind: string }) {
-  const map: Record<string, any> = { problem: Target, method: GitBranch, experiment: FlaskConical, claim: Circle, evidence: FileSearch };
+  const map: Record<string, any> = { problem: Target, method: GitBranch, experiment: FlaskConical, claim: Circle, evidence: FileSearch, media: ImageIcon };
   const I = map[kind] || Circle;
   return <I className="h-3.5 w-3.5" />;
 }
@@ -56,7 +56,7 @@ function LensNode({ data }: NodeProps) {
 }
 
 const nodeTypes = { lens: LensNode };
-const NODE_KIND_LABEL: Record<string, string> = { problem: '问题', method: '方法', experiment: '实验', claim: '断言', evidence: '证据' };
+const NODE_KIND_LABEL: Record<string, string> = { problem: '问题', method: '方法', experiment: '实验', claim: '断言', evidence: '证据', media: '图表' };
 
 export function GraphView({ graph, accent, onClaimSelected, paperId }: {
   graph: GraphOut; accent: string; paperId?: number;
@@ -113,10 +113,10 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
       <div className="mb-4 flex items-center justify-between">
         <div>
           <Kicker>研究图谱 · RESEARCH GRAPH</Kicker>
-          <p className="mt-1 text-sm text-slate-400">问题 → 方法 → 实验 → 断言 → 证据。点击节点查看详情。</p>
+          <p className="mt-1 text-sm text-slate-400">问题 → 方法 → 实验 → 断言 → 证据 → 图表。点击节点查看详情。</p>
         </div>
         <div className="hidden items-center gap-3 font-mono text-[10px] text-slate-500 sm:flex">
-          {['problem', 'method', 'experiment', 'claim', 'evidence'].map((k) => (
+          {['problem', 'method', 'experiment', 'claim', 'evidence', 'media'].map((k) => (
             <span key={k} className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full" style={{ background: KIND_COLOR[k] }} />
               {k}

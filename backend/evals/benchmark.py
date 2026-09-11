@@ -20,11 +20,27 @@ SIM_THRESHOLD = 0.30
 
 
 def _ngrams(text: str, n: int = 2) -> set:
-    text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", text.lower())
-    toks = text.split()
-    grams = {f"{a} {b}" for a, b in zip(toks, toks[1:])} if len(toks) >= 2 else set(toks)
+    """中文用**字符 bigram**，拉丁用词 bigram；**不丢中文单字**。
+
+    修复的真实缺陷：旧实现把中文当成一个整 token（``text.split()`` 对中文无效），
+    导致中文断言之间几乎零重叠；且 ``text.lower()`` 后又对原文做正则，
+    大小写混用使拉丁术语匹配不稳。
+    """
+    lowered = (text or "").lower()
+    cjk = re.findall(r"[\u4e00-\u9fff\u3400-\u4dbf]", lowered)
+    latin = re.findall(r"[a-z0-9][a-z0-9._+\-/]*", lowered)
+
+    grams: set = set()
+    if len(cjk) >= n:
+        grams |= {cjk[i] + cjk[i + 1] for i in range(len(cjk) - 1)}
+    else:
+        grams |= set(cjk)
+    if len(latin) >= n:
+        grams |= {f"{a} {b}" for a, b in zip(latin, latin[1:])}
+    else:
+        grams |= set(latin)
     if not grams:
-        grams = {text}
+        grams = {lowered}
     return grams
 
 
@@ -49,19 +65,26 @@ def _sim(a: str, b: str) -> float:
 
 
 def _match(extracted: List[Dict], gt: List[Dict]) -> Tuple[List[Optional[int]], List[Optional[int]]]:
-    """Return (gt->best extracted idx or None, extracted->gt idx or None)."""
-    gt_match: List[Optional[int]] = []
-    for g in gt:
-        best, best_s = None, 0.0
-        for i, e in enumerate(extracted):
+    """**一对一**匹配：按相似度降序贪心，每个 gold / 每个 extracted 最多配一次。
+
+    修复的真实缺陷：旧实现 ``gt_match`` 允许**多个 gold 指向同一个 extracted**，
+    使 ``covered`` 可被一条万能断言刷高（一对多虚高）。现在两侧都保证唯一。
+    """
+    pairs: List[Tuple[float, int, int]] = []
+    for gi, g in enumerate(gt):
+        for ei, e in enumerate(extracted):
             s = _sim(g["statement"], e.get("statement", ""))
-            if s > best_s:
-                best, best_s = i, s
-        gt_match.append(best if best_s >= SIM_THRESHOLD else None)
+            if s >= SIM_THRESHOLD:
+                pairs.append((s, gi, ei))
+    pairs.sort(key=lambda t: (-t[0], t[1], t[2]))
+
+    gt_match: List[Optional[int]] = [None] * len(gt)
     ext_match: List[Optional[int]] = [None] * len(extracted)
-    for gi, ei in enumerate(gt_match):
-        if ei is not None and ext_match[ei] is None:
-            ext_match[ei] = gi
+    for _, gi, ei in pairs:
+        if gt_match[gi] is not None or ext_match[ei] is not None:
+            continue
+        gt_match[gi] = ei
+        ext_match[ei] = gi
     return gt_match, ext_match
 
 
@@ -97,12 +120,17 @@ def compute_paper_metrics(paper: Dict, extracted: List[Dict]) -> Dict:
         if not evs:
             continue
         gt_pages = [p for p in gt[ext_match[i]]["evidence_pages"] if p]
-        got_pages = [e.get("page") for e in evs if e.get("page") and not isinstance(e.get("page"), str) or (isinstance(e.get("page"), str) and e.get("page").strip().isdigit())]
+        got_pages = [
+            e.get("page") for e in evs
+            if e.get("page") is not None and str(e.get("page")).strip().isdigit()
+        ]
         if not gt_pages or not got_pages:
             continue
         cite_den += 1
-        if any(int(p) in set(int(x) for x in gt_pages) for p in got_pages if str(p).strip().isdigit()):
+        if any(int(p) in {int(x) for x in gt_pages} for p in got_pages):
             cite_ok += 1
+    # 注意：此处已是 **percent**（0..100）。旧实现又在返回时 ×100，
+    # 使最大可报值变成 10000；且 cite_den==0 时 None×100 直接崩溃。
     citation_accuracy = round(cite_ok / cite_den * 100, 1) if cite_den else None
 
     return {
@@ -116,7 +144,9 @@ def compute_paper_metrics(paper: Dict, extracted: List[Dict]) -> Dict:
         "f1": round(f1 * 100, 1),
         "evidence_coverage": round(evidence_coverage * 100, 1),
         "unsupported_claim_rate": round(unsupported_rate * 100, 1),
-        "citation_accuracy": round(citation_accuracy * 100, 1),
+        # 已是 percent：**不再缩放**（旧代码 round(citation_accuracy * 100, 1)
+        # 是双重缩放，且 None 时会 TypeError）
+        "citation_accuracy": citation_accuracy,
         "grounded_claims": len(with_ev),
     }
 
@@ -137,12 +167,20 @@ def _aggregate(items: List[Dict]) -> Dict:
     n_gt = sum(x["n_gt"] for x in items)
     n_ext = sum(x["n_extracted"] for x in items)
     covered = sum(x["covered"] for x in items)
-    grounded = sum(x["grounded_claims"] for x in items)
-    total_claims = n_ext + n_gt
-    recall = covered / n_gt if n_gt else 0.0
-    precision = grounded / n_ext if n_ext else 0.0  # approximate TP-only precision
+    # 一对一匹配后，covered 即真正的 TP（一个 gold 只对应一个 extracted）
+    tp = covered
+    recall = tp / n_gt if n_gt else 0.0
+    precision = tp / n_ext if n_ext else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
-    unsupported = sum(x["unsupported_claim_rate"] * x["n_extracted"] for x in items) / n_ext if n_ext else 0.0
+    # 量纲统一：per-paper 的 unsupported_claim_rate 已是 percent，
+    # 用 n_extracted 加权还原到全局比例（旧实现混用了 ratio 与 percent）。
+    if n_ext:
+        unsupported_num = sum(
+            (x["unsupported_claim_rate"] / 100.0) * x["n_extracted"] for x in items
+        )
+        unsupported = unsupported_num / n_ext * 100.0
+    else:
+        unsupported = 0.0
     cite = [x["citation_accuracy"] for x in items if x.get("citation_accuracy") is not None]
     ev_cov = sum(x["evidence_coverage"] for x in items) / len(items)
     return {

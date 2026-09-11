@@ -1,5 +1,43 @@
-"""modules/evidence — 证据模块（Spec §B.4，Evidence Gate）。职责：断言↔证据链接 + Gate。
-API: 复用 claims 的证据存取；对无证据断言标记 UNSUPPORTED。
-评价：Citation Coverage / Alignment / Unsupported Claim Rate（目标≈0）。"""
-# Evidence Gate 逻辑目前在 claims（存取）与 qa（检索）中；此为模块化入口。
-from app.services.claims import get_claim, get_claims  # noqa: F401
+"""M04 — 证据、绑定与事实发布闸门（REFACTOR_SPEC §6.6）。
+
+**全系统 Evidence Gate**。已验证事实 / 推断 / 争议 / 缺证之间有不可绕过的状态边界。
+
+边界：M04 不 import M06（避免 claims ↔ evidence 循环）；接收 ``StatementDraft``。
+"""
+from .service import (  # noqa: F401
+    CAPTION_REF_MAX_PER_STATEMENT,
+    CAPTION_REF_MIN_SHARED_TOKENS,
+    bind,
+    bind_media_for_statements,
+    export,
+    get_anchor,
+    get_bindings,
+    get_evidence,
+    get_evidence_with_validation,
+    get_reviews,
+    get_verified_media_for_claims,
+    mark_review_applied,
+    resolve_legacy,
+    review,
+    save_report,
+    validate,
+)
+
+__all__ = [
+    "CAPTION_REF_MIN_SHARED_TOKENS",
+    "CAPTION_REF_MAX_PER_STATEMENT",
+    "validate",
+    "save_report",
+    "get_evidence",
+    "get_evidence_with_validation",
+    "get_anchor",
+    "resolve_legacy",
+    "bind",
+    "bind_media_for_statements",
+    "get_bindings",
+    "get_verified_media_for_claims",
+    "review",
+    "get_reviews",
+    "mark_review_applied",
+    "export",
+]

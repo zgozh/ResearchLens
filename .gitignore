@@ -26,6 +26,16 @@ backend/data/*.db
 backend/data/*.sqlite
 backend/data/*.sqlite3
 *.log
+# 运行期落盘的解析资产与上传原件（体积大、可再生产；容器内由 backend-data 卷承载）
+backend/data/assets/
+backend/data/uploads/
+
+# 单测临时目录：conftest 每次会话重建，里面的 PDF/DB 都是跑测试的产物
+backend/app/tests/unit/_tmp/
+backend/app/tests/unit/_tmp_shared/
+
+# 本地工具状态（备份 tarball 等，非源码）
+.workbuddy/
 
 # Local verification artifacts
 edge_profile/

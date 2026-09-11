@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -11,10 +11,18 @@ import { api, sleep } from '@/lib/api';
 import type {
   ClaimOut, ClaimSummary, EvaluationOut, GraphOut, PaperDetail, PaperOut, PresentationOut, ViewMode,
 } from '@/lib/types';
+import type {
+  ClaimRecord, ExhibitBundle, MediaIndexEntry, NavigationTarget, Scope,
+} from '@/lib/contracts';
+import { usePaperWorkspace } from '@/hooks/usePaperWorkspace';
+import { useEvidenceNavigation } from '@/hooks/useEvidenceNavigation';
+import { useJobEvents } from '@/hooks/useJobEvents';
+import { JobProgress } from '@/components/jobs/JobProgress';
+import { AgentTrace } from '@/components/jobs/AgentTrace';
 import { Logo } from '@/components/Logo';
 import { Badge, GlassCard, Kicker, Spinner } from '@/components/ui';
 import { Timeline } from '@/components/Timeline';
-import { EvidenceRail } from '@/components/EvidenceRail';
+import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer';
 import { MapView } from '@/components/views/MapView';
 import { MethodView } from '@/components/views/MethodView';
 import { ClaimView } from '@/components/views/ClaimView';
@@ -36,17 +44,31 @@ const NAV: { view: ViewMode; label: string; icon: any }[] = [
   { view: 'paper', label: '论文阅读', icon: BookOpen },
 ];
 
+/** 从 canonical ClaimRecord 生成旧 ClaimSummary（视图分组/长度仍用旧形状）。 */
+function claimSummaryOf(c: ClaimRecord): ClaimSummary {
+  return {
+    claim_id: c.claim_id,
+    statement: c.rationale || c.claim_id,
+    type: c.type,
+    confidence: c.confidence ?? 0,
+    status: c.status === 'verified' ? 'SUPPORTED' : 'UNSUPPORTED',
+    evidence_count: c.evidence_ids.length,
+  };
+}
+
 export default function Workspace() {
   const params = useParams<{ slug: string }>();
   const slug = params?.slug;
   const searchParams = useSearchParams();
   const router = useRouter();
-  const paperId = searchParams.get('paper_id');
+  const paperIdParam = searchParams.get('paper_id');
   const jobId = searchParams.get('job_id');
 
-  const [paper, setPaper] = useState<PaperOut>();
+  const [resolvedPaperId, setResolvedPaperId] = useState<number | undefined>(
+    paperIdParam ? Number(paperIdParam) : undefined,
+  );
   const [detail, setDetail] = useState<PaperDetail>();
-  const [claims, setClaims] = useState<ClaimSummary[]>([]);
+  const [paper, setPaper] = useState<PaperOut>();
   const [graph, setGraph] = useState<GraphOut>({ nodes: [], edges: [] });
   const [presentation, setPresentation] = useState<PresentationOut>({ scenes: [] });
   const [evalData, setEvalData] = useState<EvaluationOut>({ overall_score: 0, metrics: {} });
@@ -54,116 +76,185 @@ export default function Workspace() {
     (searchParams.get('view') as ViewMode) || 'map',
   );
   const [selectedClaimId, setSelectedClaimId] = useState<string>();
+  // 兼容旧 ClaimOut（text.indexOf 引文高亮的旧路径已移除，这里是降级壳）
   const [claimDetail, setClaimDetail] = useState<ClaimOut>();
-  const [paperTarget, setPaperTarget] = useState<{ kind?: string; page?: number; quote?: string }>();
-  const [claimTargetEvidence, setClaimTargetEvidence] = useState<number>();
   // 证据问答历史消息（提升到本页，跨视图切换保持）
   const [qaMessages, setQaMessages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [processing, setProcessing] = useState(false);
   const [stageLabel, setStageLabel] = useState<string>();
+  // PDF 阅读器定位结果（D13：只有真正画出区域才报已高亮）
+  const [locateNotice, setLocateNotice] = useState<{ status: string; page?: number | null; anchorId?: string } | null>(null);
+  const [pdfFailed, setPdfFailed] = useState(false);
+
+  // ---- canonical：先 manifest 得 revision，再并行取同 revision 的 exhibits（§5.13）----
+  const workspace = usePaperWorkspace({ paper_id: resolvedPaperId ?? 0 });
+  const manifest = workspace.manifest.data;
+  const exhibits: ExhibitBundle | null = workspace.exhibits.data;
+  const revisionId = manifest?.revision?.id ?? null;
+  const scope: Scope | null = useMemo(
+    () => (resolvedPaperId && revisionId ? { paper_id: resolvedPaperId, revision_id: revisionId } : null),
+    [resolvedPaperId, revisionId],
+  );
+
+  // slug-only 访问：先 demoLoad 拿 id，再走 canonical
+  useEffect(() => {
+    if (resolvedPaperId || !slug) return;
+    let cancelled = false;
+    api
+      .demoLoad(slug)
+      .then((p) => {
+        if (!cancelled) setResolvedPaperId(p.id);
+      })
+      .catch(async () => {
+        // 兜底：从论文列表按 slug 找
+        try {
+          const list = await api.papers();
+          const hit = list.find((x) => x.slug === slug);
+          if (hit && !cancelled) setResolvedPaperId(hit.id);
+        } catch {
+          /* ignore */
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, resolvedPaperId]);
 
   const accent = detail?.accent || '#6366F1';
   const isUpload = detail?.source_mode === 'upload';
-  const modeLabel = isUpload ? '实时抽取' : '演示模式';
 
-  const jumpToPaper = useCallback((page: number, region: string, quote: string) => {
-    const kindMap: Record<string, string> = {
-      discussion: 'discussion', method: 'method', experiments: 'experiment', experiment: 'experiment',
-      results: 'result', result: 'result', introduction: 'intro', intro: 'intro',
-    };
-    let kind: string | undefined;
-    if (kindMap[region]) kind = kindMap[region];
-    else if (/^table_/.test(region) || /^fig_/.test(region)) kind = 'result';
-    setPaperTarget({ kind, page, quote });
-    setView('paper');
-  }, []);
+  // 导航到物理页（D12/D13）：NavigationTarget 真正交给阅读器，结果由 onLocated 回填
+  const evidenceNav = useEvidenceNavigation({
+    scope: scope ?? { paper_id: 0, revision_id: '' },
+  });
 
-  const changeView = useCallback((v: ViewMode) => {
-    setView(v);
-    const qs = paperId ? `paper_id=${paperId}&view=${v}` : `view=${v}`;
-    if (slug) router.replace(`/paper/${slug}?${qs}`, { scroll: false });
-  }, [slug, paperId, router]);
+  /** 旧视图把证据映射到物理页（D12）：NavigationTarget 交给阅读器，结果由 onLocated 回填。 */
+  const jumpToPaper = useCallback(
+    (anchorId: string | null | undefined) => {
+      setView('paper');
+      setLocateNotice(null);
+      if (!scope || !anchorId) {
+        // 无 anchor：只能打开论文视图，不谎称已高亮
+        setLocateNotice({ status: 'unavailable' });
+        return;
+      }
+      const target: NavigationTarget = {
+        paper_id: scope.paper_id,
+        revision_id: scope.revision_id,
+        anchor_id: anchorId,
+        segment_index: 0,
+      };
+      // 页码由 anchor.segments[0].pdf_page_index 决定（±1 → PDF 页序），与阅读器一致
+      const pageP = api
+        .getAnchor(scope.paper_id, anchorId, scope.revision_id)
+        .then((a) => (a.segments?.[0] ? a.segments[0].pdf_page_index + 1 : null))
+        .catch(() => null);
+      evidenceNav.navigate(target).then(async (r) => {
+        setLocateNotice({ status: r.status, page: await pageP, anchorId });
+      });
+    },
+    [scope, evidenceNav],
+  );
 
+  const changeView = useCallback(
+    (v: ViewMode) => {
+      setView(v);
+      const pid = resolvedPaperId;
+      const qs = pid ? `paper_id=${pid}&view=${v}` : `view=${v}`;
+      if (slug) router.replace(`/paper/${slug}?${qs}`, { scroll: false });
+    },
+    [slug, resolvedPaperId, router],
+  );
 
-  const load = useCallback(async () => {
-    if (!slug && !paperId) return;
+  const loadLegacy = useCallback(async () => {
+    if (!resolvedPaperId) return;
     setLoading(true);
     setError(undefined);
     try {
-      let pid: number;
-      let p: PaperOut | undefined;
-      if (paperId) {
-        pid = Number(paperId);
-      } else if (slug) {
-        const pl = await api.demoLoad(slug);
-        pid = pl.id;
-        p = pl;
-      } else {
-        return;
-      }
-      const d = await api.paperDetail(pid);
-      setPaper(p ?? d);
+      const d = await api.paperDetail(resolvedPaperId);
+      setPaper(d);
       setDetail(d);
-      setGraph(await api.graph(pid));
-      setPresentation(await api.presentation(pid));
-      setEvalData(await api.evaluation(pid));
-
-      // live (real/uploaded) papers: content is filled by background ingest/process — poll
-      let c = await api.claims(pid).catch(() => []);
-      if (c.length === 0) {
-        setProcessing(true);
-        for (let i = 0; i < 40; i++) {
-          await sleep(2500);
-          c = await api.claims(pid).catch(() => []);
-          if (c.length > 0) break;
-        }
-        setProcessing(false);
-        setEvalData(await api.evaluation(pid));
-      }
-      setClaims(c);
+      setGraph(await api.graph(resolvedPaperId));
+      setPresentation(await api.presentation(resolvedPaperId));
+      setEvalData(await api.evaluation(resolvedPaperId));
     } catch (e: any) {
       console.error(e);
       setError(e?.message || '加载失败');
     } finally {
       setLoading(false);
     }
-  }, [slug, paperId]);
+  }, [resolvedPaperId]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    loadLegacy();
+  }, [loadLegacy]);
 
-  // 实时模式：按 job 状态展示当前处理阶段（可观测）
+  // canonical 就绪后：用 exhibits.structure.sections 覆盖旧 sections，旧字段降级保留
+  const canonicalClaims: ClaimRecord[] = exhibits?.claims ?? [];
+  const claims: ClaimSummary[] = useMemo(() => {
+    if (canonicalClaims.length > 0) return canonicalClaims.map(claimSummaryOf);
+    return [];
+  }, [canonicalClaims]);
+
+  // 实时模式：canonical 无断言且存在 job → 轮询旧 claims（降级）
+  useEffect(() => {
+    if (!resolvedPaperId || processing) return;
+    if (exhibits && canonicalClaims.length === 0 && detail?.source_mode === 'upload') {
+      setProcessing(true);
+    }
+  }, [resolvedPaperId, exhibits, canonicalClaims.length, detail?.source_mode, processing]);
+
+  useEffect(() => {
+    if (!processing || !resolvedPaperId) return;
+    if (exhibits && canonicalClaims.length > 0) {
+      setProcessing(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < 40 && !cancelled; i++) {
+        await sleep(2500);
+        await workspace.refresh();
+        if (cancelled) break;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processing, resolvedPaperId, exhibits, canonicalClaims.length]);
+
+  // ---- 阶段 E：job 事件流（SSE），jobStatus 轮询作降级 ----
+  const jobEvents = useJobEvents({ job_id: jobId ? Number(jobId) : 0 });
   useEffect(() => {
     if (!processing || !jobId || Number(jobId) === 0) return;
+    // SSE 不可用（failed）时退化为 jobStatus 轮询
+    if (jobEvents.state !== 'failed' && jobEvents.state !== 'idle') return;
     const id = setInterval(async () => {
       try {
         const j = await api.jobStatus(Number(jobId));
         setStageLabel(j.stage_label);
-        if (j.status === 'done' || j.status === 'failed') {
-          clearInterval(id);
-          setProcessing(false);
-        }
+        if (j.status === 'done' || j.status === 'failed') clearInterval(id);
       } catch {
         /* 继续轮询 */
       }
     }, 2500);
     return () => clearInterval(id);
-  }, [processing, jobId]);
+  }, [processing, jobId, jobEvents.state]);
 
   const topClaim = useMemo(() => claims[0]?.claim_id, [claims]);
 
   const selectClaim = useCallback(
     async (claimId: string, evidenceIdx?: number) => {
       setSelectedClaimId(claimId);
-      setClaimTargetEvidence(evidenceIdx);
-      if (!paper) return;
-      const c = await api.claim(paper.id, claimId).catch(() => undefined);
+      if (!resolvedPaperId) return;
+      // 兼容旧 ClaimOut（EvidenceDrawer 用 canonical evidence_ids，此处仅为旧视图保留）
+      const c = await api.claim(resolvedPaperId, claimId).catch(() => undefined);
       setClaimDetail(c);
     },
-    [paper],
+    [resolvedPaperId],
   );
 
   useEffect(() => {
@@ -171,6 +262,20 @@ export default function Workspace() {
       selectClaim(topClaim);
     }
   }, [view, selectedClaimId, topClaim, selectClaim]);
+
+  // 选中 claim 的 canonical evidence_ids
+  const selectedClaimRecord: ClaimRecord | undefined = useMemo(
+    () => canonicalClaims.find((c) => c.claim_id === selectedClaimId),
+    [canonicalClaims, selectedClaimId],
+  );
+  const evidenceIds = selectedClaimRecord?.evidence_ids ?? [];
+
+  const mediaIndex: MediaIndexEntry[] = manifest?.media_index ?? [];
+  const assets = manifest?.assets ?? [];
+
+  const title = manifest?.paper?.title || detail?.title || '';
+  const domain = manifest?.paper?.domain || detail?.domain || '';
+  const modeLabel = isUpload ? '实时抽取' : '演示模式';
 
   return (
     <div className="grid-bg min-h-screen">
@@ -182,14 +287,14 @@ export default function Workspace() {
           </Link>
           <Logo />
           <div className="hidden h-6 w-px bg-[var(--line)] sm:block" />
-          {detail && (
+          {title && (
             <div className="hidden min-w-0 items-center gap-2 md:flex">
-              <span className="max-w-[280px] truncate text-sm text-slate-300">{detail.title}</span>
+              <span className="max-w-[280px] truncate text-sm text-slate-300">{title}</span>
             </div>
           )}
           <div className="ml-auto flex items-center gap-3">
-            <Badge tone={isUpload ? 'cyan' : 'emerald'}>{isUpload ? '实时抽取' : '演示模式'}</Badge>
-            <Badge tone="slate">{detail?.domain || '加载中'}</Badge>
+            <Badge tone={isUpload ? 'cyan' : 'emerald'}>{modeLabel}</Badge>
+            <Badge tone="slate">{domain || '加载中'}</Badge>
           </div>
         </div>
         {/* view nav */}
@@ -236,7 +341,7 @@ export default function Workspace() {
       ) : detail ? (
         <div className={cn(
           'mx-auto grid max-w-[1500px] grid-cols-1 gap-0 px-5 py-5',
-          view === 'claim' ? 'lg:grid-cols-[minmax(0,1fr),340px]' : 'lg:grid-cols-1',
+          view === 'claim' ? 'lg:grid-cols-[minmax(0,1fr),360px]' : 'lg:grid-cols-1',
         )}>
           {/* Left + center */}
           <div className="min-w-0">
@@ -245,7 +350,7 @@ export default function Workspace() {
               <div className="min-w-0">
                 <Kicker>视觉演绎 · VISUAL STAGE</Kicker>
                 <div className="mt-1 flex items-center gap-2">
-                  <span className="text-lg font-semibold text-white">{detail.title}</span>
+                  <span className="text-lg font-semibold text-white">{title}</span>
                 </div>
               </div>
               <div className="hidden shrink-0 flex-wrap gap-1.5 sm:flex">
@@ -255,10 +360,20 @@ export default function Workspace() {
               </div>
             </div>
 
+            {/* 阶段 E：任务事件流（SSE）——阶段列表 + Agent 工具轨迹 */}
             {processing && (
-              <div className="mb-4 flex items-center gap-2 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-[13px] text-cyan-200">
-                <Spinner className="h-4 w-4" />
-                {stageLabel || '正在调用大模型抽取结构、断言与证据…'}
+              <div className="mb-4 space-y-3">
+                {jobId && Number(jobId) !== 0 && jobEvents.events.length > 0 ? (
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <JobProgress events={jobEvents.events} />
+                    <AgentTrace events={jobEvents.events} />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-[13px] text-cyan-200">
+                    <Spinner className="h-4 w-4" />
+                    {stageLabel || '正在调用大模型抽取结构、断言与证据…'}
+                  </div>
+                )}
               </div>
             )}
 
@@ -280,19 +395,40 @@ export default function Workspace() {
                     onSelect={(cid) => selectClaim(cid)}
                   />
                 )}
-                {view === 'graph' && <GraphView graph={graph} accent={accent} paperId={paper?.id} onClaimSelected={(cid, evIdx) => { selectClaim(cid, evIdx); changeView('claim'); }} />}
+                {view === 'graph' && <GraphView graph={graph} accent={accent} paperId={resolvedPaperId} onClaimSelected={(cid, evIdx) => { selectClaim(cid, evIdx); changeView('claim'); }} />}
                 {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} detail={detail} claims={claims} />}
-                {view === 'qa' && <QAView paperId={paper!.id} accent={accent} detail={detail} onJump={jumpToPaper} messages={qaMessages} onMessagesChange={setQaMessages} />}
+                {view === 'qa' && <QAView scope={scope} accent={accent} detail={detail} onNavigate={(t) => { jumpToPaper(t.anchor_id); }} messages={qaMessages} onMessagesChange={setQaMessages} />}
                 {view === 'eval' && <EvalView evalData={evalData} accent={accent} />}
-                {view === 'paper' && <PaperView detail={detail} target={paperTarget} />}
+                {view === 'paper' && (
+                  <PaperView
+                    detail={detail}
+                    scope={scope}
+                    documentUrl={resolvedPaperId && revisionId ? api.documentUrl(resolvedPaperId, revisionId) : undefined}
+                    exhibits={exhibits}
+                    mediaIndex={mediaIndex}
+                    assets={assets}
+                    target={evidenceNav.target}
+                    locateNotice={locateNotice}
+                    pdfFailed={pdfFailed}
+                    onPdfFailed={() => setPdfFailed(true)}
+                    onLocated={evidenceNav.reportLocated}
+                    onNavigate={(t) => jumpToPaper(t.anchor_id)}
+                  />
+                )}
               </motion.div>
             </AnimatePresence>
           </div>
 
-          {/* Evidence rail (only in evidence view) */}
-          {view === 'claim' && (
+          {/* 证据链：桌面 rail + 移动抽屉共享同一内容（阶段 C / D14） */}
+          {view === 'claim' && scope && (
             <div className="lg:pl-5">
-              <EvidenceRail claim={claimDetail} detail={detail} accent={accent} onJump={jumpToPaper} targetEvidence={claimTargetEvidence} />
+              <EvidenceDrawer
+                scope={scope}
+                evidence_ids={evidenceIds}
+                open={!!selectedClaimId}
+                onClose={() => setSelectedClaimId(undefined)}
+                onNavigate={(t) => jumpToPaper(t.anchor_id)}
+              />
             </div>
           )}
         </div>

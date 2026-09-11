@@ -1,120 +1,25 @@
-"""ResearchLens Evaluation — REAL computed metrics (Spec §21/§22/§35).
+"""M13 — 旧兼容薄壳（REFACTOR_SPEC §5.11）。
 
-Metrics are computed from the actual claim↔evidence linkage in the store, so the
-dashboard shows genuine numbers (not fabricated). For demo papers these are still
-real: they count how many claims carry at least one evidence, the alignment, and
-the unsupported-claim rate.
+保留旧签名 ``compute_evaluation(db, paper_id) -> models.Evaluation``，
+内部转发到 ``app.modules.evaluation`` 的兼容适配器。
+
+修复的真实缺陷：
+- 旧 GET 路径**直接写库并 commit**；canonical 的 ``get`` 不计算、不写库；
+- 旧 ``overall_score`` 在无数据时是 0.0，与「无法评估」不可区分；兼容层现在
+  额外给出 ``overall_score_available`` / ``overall_score_canonical`` / ``not_evaluated``。
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import List
 
-from sqlalchemy.orm import Session, selectinload
-
-from app import models
-
-# Weighted overall score components.
-_WEIGHTS = {
-    "citation_coverage": 0.22,
-    "claim_evidence_alignment": 0.24,
-    "unsupported_claim_rate": 0.20,   # inverted
-    "structure_accuracy": 0.14,
-    "visual_consistency": 0.10,
-    "answer_grounding": 0.10,
-}
+from sqlalchemy.orm import Session
 
 
-def compute_evaluation(db: Session, paper_id: int) -> models.Evaluation:
-    paper = (
-        db.query(models.Paper)
-        .options(selectinload(models.Paper.claims))
-        .filter(models.Paper.id == paper_id)
-        .first()
-    )
-    claims: list = paper.claims if paper else []
+def compute_evaluation(db: Session, paper_id: int):
+    """旧签名：返回 ``models.Evaluation``（保持既有前端读取形状）。"""
+    from app.modules import evaluation as _eval
 
-    n = len(claims)
-    supported = [c for c in claims if c.evidence]
-    unsupported = [c for c in claims if not c.evidence]  # Evidence Gate violation
-    citation_coverage = len(supported) / n if n else 0.0
-    unsupported_rate = len(unsupported) / n if n else 0.0
+    return _eval.compute_evaluation(db, paper_id)
 
-    # claim↔evidence alignment: average confidence of the best evidence per claim
-    aligns = []
-    for c in supported:
-        best = max((e.confidence for e in c.evidence), default=0.9)
-        aligns.append(best)
-    alignment = sum(aligns) / len(aligns) if aligns else 0.0
 
-    # structure accuracy proxy: fraction of sections that carry a kind mapping
-    section_kinds = {
-        "intro": 1, "method": 1, "experiment": 1, "result": 1,
-        "discussion": 1, "conclusion": 1,
-    }
-    total_sections = db.query(models.Section).filter(models.Section.paper_id == paper_id).count()
-    known_sections = (
-        db.query(models.Section)
-        .filter(models.Section.paper_id == paper_id, models.Section.kind.in_(list(section_kinds)))
-        .count()
-    )
-    structure_accuracy = known_sections / total_sections if total_sections else 0.0
-
-    # visual consistency proxy: fraction of claims that refer to a figure/table region
-    visual = 0
-    for c in claims:
-        if any(e.region_type in ("figure", "table") for e in c.evidence):
-            visual += 1
-    visual_consistency = visual / n if n else 0.0
-
-    # answer grounding proxy: fraction of qa_bank entries that carry evidence
-    qas = db.query(models.Question).filter(models.Question.paper_id == paper_id).all()
-    grounded_qas = [q for q in qas if q.evidence_refs]
-    answer_grounding = len(grounded_qas) / len(qas) if qas else 0.0
-
-    metrics: Dict[str, Any] = {
-        "citation_coverage": round(citation_coverage * 100, 1),
-        "claim_evidence_alignment": round(alignment * 100, 1),
-        "unsupported_claim_rate": round(unsupported_rate * 100, 1),
-        "structure_accuracy": round(structure_accuracy * 100, 1),
-        "visual_consistency": round(visual_consistency * 100, 1),
-        "answer_grounding": round(answer_grounding * 100, 1),
-        "num_claims": n,
-        "num_supported": len(supported),
-        "num_unsupported": len(unsupported),
-    }
-
-    # 双维度评测（参考 Paper2Video：面向观众/面向作者）
-    audience = {
-        "faithful": round(0.6 * citation_coverage + 0.4 * alignment, 1),
-        "accessible": round(0.6 * structure_accuracy + 0.4 * answer_grounding, 1),
-    }
-    author = {
-        "contribution": round(100 * len(supported) / n, 1) if n else 0.0,
-        "visibility": round(0.5 * visual_consistency + 0.5 * citation_coverage, 1),
-    }
-    metrics["audience"] = audience  # type: ignore[assignment]
-    metrics["author"] = author  # type: ignore[assignment]
-
-    # overall (unsupported rate inverted so higher = better)
-    overall = (
-        _WEIGHTS["citation_coverage"] * citation_coverage
-        + _WEIGHTS["claim_evidence_alignment"] * alignment
-        + _WEIGHTS["unsupported_claim_rate"] * (1 - unsupported_rate)
-        + _WEIGHTS["structure_accuracy"] * structure_accuracy
-        + _WEIGHTS["visual_consistency"] * visual_consistency
-        + _WEIGHTS["answer_grounding"] * answer_grounding
-    )
-
-    ev = (
-        db.query(models.Evaluation)
-        .filter(models.Evaluation.paper_id == paper_id)
-        .order_by(models.Evaluation.id.desc())
-        .first()
-    )
-    if ev is None:
-        ev = models.Evaluation(paper_id=paper_id)
-        db.add(ev)
-    ev.metrics = metrics
-    ev.overall_score = round(overall * 100, 1)
-    db.commit()
-    return ev
+__all__: List[str] = ["compute_evaluation"]

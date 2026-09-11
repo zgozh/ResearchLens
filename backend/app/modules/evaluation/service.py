@@ -1,0 +1,296 @@
+"""M12 — 自动评测模块公共入口（REFACTOR_SPEC §5.9、§5.10、§6.14）。
+
+公共函数：
+- ``compute(input: EvaluationInput, ctx) -> EvaluationReport``
+- ``get(scope) -> EvaluationReport``
+- ``run_golden(input: EvaluationInput, ctx) -> EvaluationReport``
+
+硬约束：
+1. **M12 不调用 pipeline**，只接收 ``EvaluationInput``（数据由调用方备好）；
+2. 固定 15 个指标名；``value=null`` 的 ``not_evaluated`` **不可冒充 0/100**；
+3. ``overall_score`` **仅在核心人工真值指标均可测时计算**，否则 canonical null；
+4. ``get`` **不计算、不写库**；不存在论文 → 404。
+"""
+from __future__ import annotations
+
+import uuid
+from typing import Dict, List, Optional, Sequence
+
+from app.contracts.common import CallContext, Scope, Warning
+from app.contracts.evaluation import (
+    METRIC_NAMES,
+    EvaluationInput,
+    EvaluationReport,
+    GoldenSet,
+    MetricEntry,
+    MetricValue,
+    NavigationCheck,
+    not_evaluated,
+)
+from app.core.db import session_scope
+from app.core.errors import invalid_input, not_found, revision_mismatch
+
+from . import golden as golden_mod
+from . import metrics as M
+from . import repository as repo
+
+#: 评测算法版本（进入评测版本）
+ALGORITHM_VERSION = "rl.eval/2"
+
+
+# =============================================================== compute
+
+
+def compute(
+    input: EvaluationInput,
+    ctx: Optional[CallContext] = None,
+) -> EvaluationReport:
+    """计算 15 项指标并持久化报告。**不调用 pipeline、不触发生成。**"""
+    scope = input.scope
+    _require_scope(scope)
+    warnings: List[Warning] = []
+
+    golden_set = input.golden
+    if golden_set is not None and not golden_mod.golden_scope_ok(
+        golden_set, scope.paper_id, scope.revision_id
+    ):
+        warnings.append(Warning(
+            code="golden_scope_mismatch",
+            message="真值集与当前 scope 不同源，本次不用于精确率/召回率计算",
+            stage="evaluation",
+        ))
+        golden_set = None
+
+    entries = _compute_entries(input, golden_set, warnings)
+
+    report = EvaluationReport(
+        scope=scope,
+        id=_report_id(scope.revision_id, getattr(golden_set, "id", None)),
+        overall_score=None,
+        metrics=entries,
+        golden_id=getattr(golden_set, "id", None),
+        computed_at=None,
+        warnings=warnings,
+    )
+
+    # overall_score 只依赖 report 内部指标；缺失核心指标时为 None（不是 0）
+    report = report.model_copy(update={"overall_score": M.compute_overall(report)})
+
+    missing_core = M.core_metric_missing(report)
+    if missing_core:
+        report = report.model_copy(update={
+            "warnings": report.warnings + [Warning(
+                code="overall_not_evaluated",
+                message=(
+                    "核心指标缺失，overall_score 为 null（不以 0 冒充）："
+                    + ", ".join(missing_core)
+                ),
+                stage="evaluation",
+            )]
+        })
+
+    from app.core.clock import utc_now
+
+    report = report.model_copy(update={"computed_at": utc_now()})
+    _persist(report)
+    return report
+
+
+def run_golden(
+    input: EvaluationInput,
+    ctx: Optional[CallContext] = None,
+) -> EvaluationReport:
+    """在 golden 真值下运行评测：核心指标从 proxy 升级为 measured。"""
+    if input.golden is None:
+        raise invalid_input("run_golden 需要提供 golden 真值集", field="golden")
+    return compute(input, ctx)
+
+
+def _compute_entries(
+    input: EvaluationInput,
+    golden_set: Optional[GoldenSet],
+    warnings: List[Warning],
+) -> List[MetricEntry]:
+    """按固定 15 项构建指标；**missing 一律 not_evaluated，不填 0**。"""
+    entries: Dict[str, MetricEntry] = {}
+
+    # ---- 证据与断言（可能来自 golden 的精确率/召回率）
+    statements = list(input.statements or [])
+    predicted_texts = [
+        getattr(s, "text", "") for s in statements
+        if getattr(s, "display_class", "unverified") in ("verified_fact", "attributed_quote")
+    ]
+    predicted_ok = [
+        bool(getattr(s, "evidence_ids", []) or [])
+        for s in statements
+        if getattr(s, "display_class", "unverified") in ("verified_fact", "attributed_quote")
+    ]
+
+    if golden_set is not None and golden_set.claims:
+        precision, recall = golden_mod.support_precision_recall(
+            predicted_texts, list(golden_set.claims), predicted_ok=predicted_ok,
+        )
+        entries["support_precision"] = precision
+        entries["support_recall"] = recall
+    else:
+        precision, recall, escape = M.support_metrics(statements)
+        entries["support_precision"] = precision
+        entries["support_recall"] = recall
+        entries["unsupported_fact_escape_rate"] = escape
+
+    if "unsupported_fact_escape_rate" not in entries:
+        _, _, escape = M.support_metrics(statements)
+        entries["unsupported_fact_escape_rate"] = escape
+
+    # ---- 引文与锚点
+    entries["quote_exact_rate"] = M.quote_exact_rate(_all_evidence(input))
+    checks = list(input.navigation_checks or [])
+    entries["anchor_page_accuracy"] = M.anchor_page_accuracy(checks)
+    entries["anchor_region_hit_rate"] = M.anchor_region_hit_rate(checks)
+
+    # ---- 拒答
+    golden_questions = list(golden_set.questions) if golden_set is not None else []
+    refusal, false_refusal = M.refusal_metrics(list(input.answers or []), golden_questions)
+    entries["unanswerable_refusal_rate"] = refusal
+    entries["answerable_false_refusal_rate"] = false_refusal
+
+    # ---- 资产覆盖
+    entries["source_asset_coverage"] = M.source_asset_coverage(list(input.media or []))
+
+    # ---- 时延 / token
+    for entry in M.timing_metrics(list(input.answers or []), checks):
+        entries[entry.name] = entry
+    for entry in M.token_metrics(list(input.answers or [])):
+        entries[entry.name] = entry
+
+    # ---- 恢复率
+    all_warnings: List[Warning] = []
+    for answer in (input.answers or []):
+        all_warnings.extend(list(getattr(answer, "warnings", []) or []))
+    entries["recovery_success_rate"] = M.recovery_success_rate(all_warnings)
+
+    # ---- 严格按 METRIC_NAMES 顺序输出，缺失项显式 not_evaluated
+    out: List[MetricEntry] = []
+    for name in METRIC_NAMES:
+        out.append(entries.get(name) or not_evaluated(name, method="本次输入未提供该指标数据"))
+    return out
+
+
+def _all_evidence(input: EvaluationInput) -> List:
+    """从 statements 关联的证据与 bindings 中收集证据对象（用于引文精确率）。"""
+    from app.contracts.evidence import EvidenceRecord
+
+    out: List = []
+    seen: set = set()
+    for answer in (input.answers or []):
+        for ev in (getattr(answer, "evidence", []) or []):
+            eid = getattr(ev, "id", None)
+            if eid and eid not in seen and isinstance(ev, EvidenceRecord):
+                seen.add(eid)
+                out.append(ev)
+    return out
+
+
+def _persist(report: EvaluationReport) -> None:
+    payload = report.model_dump(mode="json")
+    try:
+        with session_scope() as db:
+            repo.insert_report(
+                db,
+                report_id=report.id,
+                paper_id=report.scope.paper_id,
+                revision_id=report.scope.revision_id,
+                version=report.version,
+                overall_score=report.overall_score,
+                metrics=payload.get("metrics", []),
+                golden_id=report.golden_id,
+                warnings=payload.get("warnings", []),
+            )
+    except Exception:  # noqa: BLE001  持久化失败不回滚已算好的报告
+        pass
+
+
+# =============================================================== get
+
+
+def get(scope: Scope) -> EvaluationReport:
+    """读取最近一次持久化报告。**不计算、不写库**；无报告返回全 not_evaluated。"""
+    _require_scope(scope)
+
+    with session_scope() as db:
+        row = repo.latest_report(db, scope.revision_id)
+
+    if row is None:
+        return EvaluationReport(
+            scope=scope,
+            id=_report_id(scope.revision_id, None),
+            overall_score=None,
+            metrics=[not_evaluated(n, method="尚无评测报告") for n in METRIC_NAMES],
+            golden_id=None,
+            computed_at=None,
+            warnings=[Warning(
+                code="evaluation_absent",
+                message="该 revision 尚无评测报告；指标一律为 not_evaluated",
+                stage="evaluation",
+            )],
+        )
+
+    entries: List[MetricEntry] = []
+    stored = {m.get("name"): m for m in (row.metrics or []) if isinstance(m, dict)}
+    for name in METRIC_NAMES:
+        raw = stored.get(name)
+        if raw is None:
+            entries.append(not_evaluated(name, method="报告未包含该指标"))
+            continue
+        try:
+            entries.append(MetricEntry.model_validate(raw))
+        except Exception:  # noqa: BLE001  脏条目降级为 not_evaluated
+            entries.append(not_evaluated(name, method="指标条目不可解析"))
+
+    return EvaluationReport(
+        scope=scope,
+        id=row.id,
+        version=row.version or "rl.eval/1",
+        overall_score=row.overall_score,     # None 就是 None，绝不写成 0
+        metrics=entries,
+        golden_id=row.golden_id,
+        computed_at=row.computed_at,
+        warnings=_warnings_from(row.warnings),
+    )
+
+
+def _warnings_from(raw) -> List[Warning]:
+    out: List[Warning] = []
+    for item in (raw or []):
+        if isinstance(item, dict):
+            try:
+                out.append(Warning.model_validate(item))
+            except Exception:  # noqa: BLE001
+                continue
+    return out
+
+
+# =============================================================== 辅助
+
+
+def _report_id(revision_id: str, golden_id: Optional[str]) -> str:
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"researchlens:eval:{revision_id}:{golden_id or 'none'}:{ALGORITHM_VERSION}",
+    ))
+
+
+def _require_scope(scope: Scope) -> None:
+    from app.models.source import RevisionORM
+
+    if scope.paper_id <= 0 or not scope.revision_id:
+        raise invalid_input("scope 非法")
+    with session_scope() as db:
+        row = db.get(RevisionORM, scope.revision_id)
+        if row is None:
+            raise not_found("revision 不存在")
+        if row.paper_id != scope.paper_id:
+            raise revision_mismatch("revision 不属于该 paper")
+
+
+__all__ = ["compute", "get", "run_golden", "ALGORITHM_VERSION"]

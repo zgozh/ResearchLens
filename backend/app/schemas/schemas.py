@@ -1,36 +1,74 @@
-"""Pydantic v2 schemas (Spec §19 Claim Schema, §20 Q&A rule)."""
+"""Pydantic v2 schemas — 旧 HTTP 契约（REFACTOR_SPEC §5.11）。
+
+**兼容纪律**：旧字段名/类型逐项保留（见 §5.11 代码块），新增字段一律可选，
+不改变旧字段语义。旧的宽松字段（``content`` / ``steps`` / ``linked`` 等）
+在响应模型上允许旧有效值，避免旧数据导致整个详情 500。
+
+新增 canonical 扩展字段（可选）：
+- ``provenance_class`` / ``revision_id`` / ``readable_revision_id`` /
+  ``published_revision_id`` / ``generation_status``
+- ``evidence_id``（新 ID）与旧数字 ``id`` 并存
+- ``confidence_assessed`` / ``verification_status`` / ``anchor_id``
+- ``image_mime``（不悄悄把 ``image_b64`` 改成 URL）
+- ``migration_warnings``（逐项迁移警告，不静默丢字段）
+"""
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+#: 旧响应模型基类：忽略未知字段（旧库/旧前端可能有额外键）
+class LegacyModel(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
-class HealthOut(BaseModel):
+class HealthOut(LegacyModel):
     status: str
     demo_mode: bool
     version: str
+    # --- 可选扩展（§5.11：可新增 dependencies/warnings）---
+    dependencies: Dict[str, Any] = Field(default_factory=dict)
+    warnings: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # --- Paper ---
-class PaperOut(BaseModel):
+class LegacyMethodStepOut(LegacyModel):
+    """旧 ``LegacyMethodStep``：id/label 必填，其余可选。"""
+
+    id: str
+    label: str
+    phase: Optional[str] = None
+    detail: Optional[str] = None
+    text: Optional[str] = None
+    figure_ref: Optional[int] = None
+    color: Optional[str] = None
+
+
+class PaperOut(LegacyModel):
     id: int
     slug: str
     title: str
     subtitle: str = ""
     authors: List[str] = Field(default_factory=list)
-    year: int
-    domain: str
+    year: int = 2026
+    domain: str = "general"
     abstract: str = ""
     tags: List[str] = Field(default_factory=list)
     source_mode: str = "demo"
     status: str = "ready"
-    map_summary: dict = Field(default_factory=dict)
+    map_summary: Dict[str, Any] = Field(default_factory=dict)
     pdf_url: str = ""
     method_steps: List[Any] = Field(default_factory=list)
+    # --- canonical 扩展（全部可选）---
+    provenance_class: Optional[str] = None
+    revision_id: Optional[str] = None
+    readable_revision_id: Optional[str] = None
+    published_revision_id: Optional[str] = None
+    generation_status: Optional[str] = None
 
 
-class SectionOut(BaseModel):
+class SectionOut(LegacyModel):
     heading: str
     kind: str
     page: int
@@ -39,7 +77,7 @@ class SectionOut(BaseModel):
     key_points: List[str] = Field(default_factory=list)
 
 
-class FigureOut(BaseModel):
+class FigureOut(LegacyModel):
     fig_no: int
     caption: str
     page: int
@@ -47,29 +85,55 @@ class FigureOut(BaseModel):
     image_b64: str = ""
     importance: str = "medium"
     description: str = ""
+    # --- canonical 扩展 ---
+    image_mime: str = "image/png"
+    media_id: Optional[str] = None
 
 
-class TableOut(BaseModel):
+class TableOut(LegacyModel):
     table_no: int
     caption: str
     page: int
     content: List[List[Any]] = Field(default_factory=list)
     table_html: str = ""
     key_finding: str = ""
+    # --- canonical 扩展 ---
+    media_id: Optional[str] = None
+
+
+class PaperDetail(PaperOut):
+    sections: List[SectionOut] = Field(default_factory=list)
+    figures: List[FigureOut] = Field(default_factory=list)
+    tables: List[TableOut] = Field(default_factory=list)
+    method_steps: List[Any] = Field(default_factory=list)
+    pages: List[Dict[str, Any]] = Field(default_factory=list)
+    accent: str = "#6366F1"
+    #: 逐项迁移警告（旧宽松字段不可解析时的降级说明）
+    migration_warnings: List[str] = Field(default_factory=list)
 
 
 # --- Claims / Evidence ---
-class EvidenceOut(BaseModel):
+class EvidenceOut(LegacyModel):
+    """旧 ``id`` 继续数字；新 ID 放 ``evidence_id``。"""
+
     id: Optional[int] = None
-    page: int
+    page: int = 1
     region: str = ""
     region_type: str = "text"
     text: str = ""
     quote: str = ""
     confidence: float = 0.95
+    # --- canonical 扩展 ---
+    evidence_id: Optional[str] = None
+    anchor_id: Optional[str] = None
+    locator_status: Optional[str] = None
+    verification_status: Optional[str] = None
+    media_ids: List[str] = Field(default_factory=list)
+    confidence_assessed: bool = True
+    confidence_method: Optional[str] = None
 
 
-class ClaimOut(BaseModel):
+class ClaimOut(LegacyModel):
     id: Optional[int] = None
     claim_id: str
     statement: str
@@ -78,25 +142,36 @@ class ClaimOut(BaseModel):
     status: str = "SUPPORTED"
     rationale: str = ""
     evidence: List[EvidenceOut] = Field(default_factory=list)
+    # --- canonical 扩展 ---
+    statement_id: Optional[str] = None
+    verification_status: Optional[str] = None
+    visibility: Optional[str] = None
+    revision_id: Optional[str] = None
+    confidence_assessed: bool = True
+    evidence_ids: List[str] = Field(default_factory=list)
 
 
-class ClaimSummary(BaseModel):
+class ClaimSummary(LegacyModel):
     claim_id: str
-    statement: str
+    statement: str = ""
     type: str
     confidence: float
     status: str
     evidence_count: int
+    # --- canonical 扩展 ---
+    verification_status: Optional[str] = None
+    confidence_assessed: bool = True
 
 
 # --- Graph ---
-class GraphOut(BaseModel):
-    nodes: List[dict] = Field(default_factory=list)
-    edges: List[dict] = Field(default_factory=list)
+class GraphOut(LegacyModel):
+    nodes: List[Dict[str, Any]] = Field(default_factory=list)
+    edges: List[Dict[str, Any]] = Field(default_factory=list)
+    revision_id: Optional[str] = None
 
 
 # --- Presentation ---
-class SceneOut(BaseModel):
+class SceneOut(LegacyModel):
     order: int
     title: str
     kind: str
@@ -105,21 +180,29 @@ class SceneOut(BaseModel):
     evidence_refs: List[Any] = Field(default_factory=list)
     figure_refs: List[Any] = Field(default_factory=list)
     table_refs: List[Any] = Field(default_factory=list)
-    narration: dict = Field(default_factory=dict)
+    narration: Dict[str, Any] = Field(default_factory=dict)
     linked: List[Any] = Field(default_factory=list)
+    # --- canonical 扩展 ---
+    media_ids: List[str] = Field(default_factory=list)
+    statement_ids: List[str] = Field(default_factory=list)
 
 
-class PresentationOut(BaseModel):
+class PresentationOut(LegacyModel):
     scenes: List[SceneOut] = Field(default_factory=list)
+    revision_id: Optional[str] = None
 
 
 # --- Q&A (Spec §20: Answer + Evidence + Confidence) ---
 class AskRequest(BaseModel):
+    """旧请求：question 1..2000；top_k 越界由服务层 clamp，不直接 422。"""
+
+    model_config = ConfigDict(extra="ignore")
+
     question: str = Field(min_length=1, max_length=2000)
     top_k: int = 5
 
 
-class AskResponse(BaseModel):
+class AskResponse(LegacyModel):
     answer: str
     grounded: bool
     confidence: str
@@ -128,13 +211,13 @@ class AskResponse(BaseModel):
 
 
 # --- Evaluation (Spec §21) ---
-class EvaluationOut(BaseModel):
+class EvaluationOut(LegacyModel):
     overall_score: float
-    metrics: dict
+    metrics: Dict[str, Any] = Field(default_factory=dict)
 
 
 # --- Demo list ---
-class DemoPaperListItem(BaseModel):
+class DemoPaperListItem(LegacyModel):
     slug: str
     title: str
     subtitle: str = ""
@@ -144,3 +227,27 @@ class DemoPaperListItem(BaseModel):
     abstract: str = ""
     accent: str = ""
     source_mode: str = "demo"
+    # --- canonical 扩展 ---
+    provenance_class: Optional[str] = None
+
+
+__all__ = [
+    "LegacyModel",
+    "HealthOut",
+    "LegacyMethodStepOut",
+    "PaperOut",
+    "SectionOut",
+    "FigureOut",
+    "TableOut",
+    "PaperDetail",
+    "EvidenceOut",
+    "ClaimOut",
+    "ClaimSummary",
+    "GraphOut",
+    "SceneOut",
+    "PresentationOut",
+    "AskRequest",
+    "AskResponse",
+    "EvaluationOut",
+    "DemoPaperListItem",
+]
