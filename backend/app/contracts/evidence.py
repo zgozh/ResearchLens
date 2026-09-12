@@ -176,7 +176,11 @@ class Binding(ContractModel):
     to: ArtifactRef | SourceRef
     relation: Literal["supports", "contradicts", "illustrates", "mentions"]
     method: Literal[
-        "explicit_block_ref", "caption_ref", "verified_claim_join", "manual", "legacy_candidate"
+        "explicit_block_ref", "caption_ref", "verified_claim_join", "manual", "legacy_candidate",
+        # 位置兜底：与断言同页/相邻页的图表（低分、**必须**在 UI 标明是位置推断，ADR-0059）。
+        # 之所以要显式加进 Literal：它是**受控枚举**，不在列表里的值会让整条绑定校验失败
+        # （实测：兜底绑定曾因此一条都没落库，而调用方的 except 把异常吞了）。
+        "page_proximity",
     ] = "explicit_block_ref"
     validation_id: Optional[Id] = None
     state: Literal["verified", "candidate", "rejected"] = "candidate"

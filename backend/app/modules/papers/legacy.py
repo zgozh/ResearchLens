@@ -327,9 +327,13 @@ def method_step_extras(
 
     figure_refs: List[int] = []
     table_refs: List[int] = []
+    ref_methods: Dict[int, str] = {}
 
     def _collect(media_ids) -> None:
-        for media_id in media_ids or []:
+        for item in media_ids or []:
+            # 绑定项可能是 ``(media_id, kind)``（旧）或 ``(media_id, kind, method)``
+            media_id = item[0] if isinstance(item, (tuple, list)) else item
+            method = item[2] if isinstance(item, (tuple, list)) and len(item) > 2 else ""
             legacy_no = (media_legacy_no or {}).get(media_id)
             if not isinstance(legacy_no, int):
                 continue
@@ -340,6 +344,8 @@ def method_step_extras(
             elif kind == "figure":
                 if legacy_no not in figure_refs:
                     figure_refs.append(legacy_no)
+            if legacy_no not in ref_methods and method:
+                ref_methods[legacy_no] = str(method)
 
     # ① 该步骤断言的 statement→media 绑定
     # ``MethodStepRecord`` 只有 ``claim_ids``（没有 statement_id），所以这里按
@@ -351,7 +357,7 @@ def method_step_extras(
     keys.extend(str(c) for c in (getattr(step, "claim_ids", None) or []))
     for key in keys:
         bound = (statement_media or {}).get(key, [])
-        _collect([mid for mid, _kind in bound])
+        _collect(bound)
     # ② 步骤自带 media_ids（绑定缺失时的补充）
     _collect(getattr(step, "media_ids", None))
 
@@ -360,15 +366,23 @@ def method_step_extras(
         out["figure_ref"] = figure_refs[0]      # 兼容旧字段
     if table_refs:
         out["table_refs"] = table_refs
+    # 来源方法：前端据此把"位置推断"与"题注匹配"分开标注（ADR-0059）
+    if ref_methods:
+        out["figure_ref_methods"] = dict(ref_methods)
     return out
 
 
 def _media_kind_of(media_id: str, statement_media: Optional[Dict[str, Any]]) -> str:
-    """从 ``statement→media`` 绑定里取该媒体的 kind；找不到返回 ``figure``（保守）。"""
+    """从 ``statement→media`` 绑定里取该媒体的 kind；找不到返回 ``figure``（保守）。
+
+    绑定项可能是 ``(media_id, kind)`` 或 ``(media_id, kind, method)``（ADR-0059 起带来源方法）。
+    """
     for entries in (statement_media or {}).values():
-        for mid, kind in entries:
-            if mid == media_id:
-                return str(kind or "")
+        for entry in entries:
+            if not isinstance(entry, (tuple, list)) or not entry:
+                continue
+            if entry[0] == media_id:
+                return str(entry[1] if len(entry) > 1 else "") or ""
     return "figure"
 
 
@@ -543,7 +557,8 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
                 for row in evidence_repo.list_binding_rows(bdb, revision_id):
                     if (row.from_kind or "") != "statement" or (row.to_kind or "") != "media":
                         continue
-                    entry = (row.to_id, media_kind.get(row.to_id, "figure"))
+                    entry = (row.to_id, media_kind.get(row.to_id, "figure"),
+                             getattr(row, "method", "") or "")
                     # 同时挂到 statement_id 与 claim_id：方法步骤只带 claim_ids
                     statement_media.setdefault(row.from_id, []).append(entry)
                     claim_id = claim_of_statement.get(row.from_id)

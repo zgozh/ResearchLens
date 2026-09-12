@@ -454,6 +454,9 @@ class RebuildDerivedBody(BaseModel):
     index: bool = True      # 检索索引（chunks + vectors）：问答与检索的前提
     graph: bool = True      # 研究图谱快照（节点/边）
     scene: bool = True      # 讲解分镜（确定性；基于**当前**结构，改过结构再重建）
+    # 图表绑定（statement→media）：确定性、不调 LLM。绑定规则升级后**必须回填**，
+    # 否则方法步骤的图表引用会一直停留在旧规则的结果上（ADR-0059）。
+    bindings: bool = True
     structure: bool = False  # 结构/论文地图/方法步骤——**会调用 LLM**，故默认关闭
 
 
@@ -494,6 +497,23 @@ def rebuild_derived(
             "embedding_space": index_result.embedding_space,
             "warnings": [w.code for w in (index_result.warnings or [])],
         }
+
+    if body.bindings:
+        # 绑定规则升级后的**回填入口**（ADR-0059）：方法步骤的图表引用来自这些绑定，
+        # 不回填的话，规则改进（新增"同页/相邻页"位置兜底）在老 revision 上完全看不到。
+        try:
+            from app.modules import evidence as evidence_mod
+
+            statements = list(claims_mod.get_verified_statements(scope))
+            bound = evidence_mod.bind_media_for_statements(scope, statements, ctx)
+            methods: dict = {}
+            for binding in bound:
+                methods[binding.method] = methods.get(binding.method, 0) + 1
+            result["bindings"] = {
+                "statements": len(statements), "bindings": len(bound), "by_method": methods,
+            }
+        except Exception as exc:  # noqa: BLE001  绑定失败不得让重建整体失败
+            result["bindings"] = {"error": f"{type(exc).__name__}: {exc}"}
 
     if body.graph:
         artifact = graph_mod.build(scope)

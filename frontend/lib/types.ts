@@ -69,6 +69,9 @@ export interface MethodStep {
   /** **该步骤自己的**关联图/表编号（可能多个）——不再回退到"全篇第一张图"。 */
   figure_refs?: number[];
   table_refs?: number[];
+  /** 图表编号 → 来源方法（`explicit_block_ref`/`caption_ref`/`page_proximity`）。
+   *  `page_proximity` 是**位置推断**（同页/相邻页），UI 必须如实标注（ADR-0059）。 */
+  figure_ref_methods?: Record<string, string>;
   color?: string;
 }
 

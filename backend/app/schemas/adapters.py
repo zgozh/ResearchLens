@@ -141,6 +141,13 @@ def _legacy_step(step: Any, index: int = 0) -> LegacyMethodStepOut:
         # 与 figure_ref 同一纪律：只保留 int，字符串/其它类型一律丢弃（不猜编号）
         figure_refs=[n for n in (data.get("figure_refs") or []) if isinstance(n, int)],
         table_refs=[n for n in (data.get("table_refs") or []) if isinstance(n, int)],
+        # 图表引用的**来源方法**（ADR-0059）：前端据此把"位置推断"与"题注匹配"分开标注。
+        # 固定字段表**必须显式列出**，否则又会被静默丢弃（D-48 的教训）。
+        figure_ref_methods={
+            int(no): str(method)
+            for no, method in (data.get("figure_ref_methods") or {}).items()
+            if str(no).lstrip("-").isdigit()
+        },
         color=data.get("color"),
     )
 

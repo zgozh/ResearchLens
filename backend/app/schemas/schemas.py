@@ -46,6 +46,9 @@ class LegacyMethodStepOut(LegacyModel):
     #: 绑定得出；此前 DTO 是固定字段表，新字段会被静默丢弃（实测 figure_refs 恒 None）。
     figure_refs: List[int] = Field(default_factory=list)
     table_refs: List[int] = Field(default_factory=list)
+    #: 图表编号 → **来源方法**（``explicit_block_ref``/``caption_ref``/``page_proximity``）。
+    #: 前端据此把"位置推断"与"题注匹配"分开标注，不让人以为位置推断也是文字证据（ADR-0059）。
+    figure_ref_methods: Dict[int, str] = Field(default_factory=dict)
     color: Optional[str] = None
 
 

@@ -211,10 +211,26 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
                   </div>
                 </div>
               )}
+              {/* 来源标注：位置推断（同页/相邻页）**必须**与题注匹配区分开，
+                  不能让读者以为"同页"也是文字证据（ADR-0059）。 */}
+              {(() => {
+                const methods = current?.figure_ref_methods ?? {};
+                const inferred = [...(current?.figure_refs ?? []), ...(current?.table_refs ?? [])]
+                  .filter((no) => methods[String(no)] === 'page_proximity');
+                if (stepFigures.length === 0 && relatedTables.length === 0) return null;
+                return (
+                  <p className="mt-2 text-[11px] text-amber-300/70">
+                    {inferred.length > 0
+                      ? `其中 ${inferred.map((n) => `图/表 ${n}`).join('、')} 为**位置推断**`
+                        + '（与断言同页或相邻页，非题注文字匹配）；其余为陈述显式引用或题注匹配。'
+                      : '引用来源：陈述显式编号 或 题注文字匹配（均为可复核关联）。'}
+                  </p>
+                );
+              })()}
               {stepFigures.length === 0 && relatedTables.length === 0 && (
                 <p className="mt-4 text-[12px] text-slate-500">
-                  该步骤的断言尚未绑定图表（证据门只把 caption 与陈述词面重合的图表绑上；
-                  不重合就不绑，避免给出无关的图）。
+                  该步骤的断言尚未绑定图表（证据门只把显式编号、题注词面重合、或**同页/相邻页**
+                  的图表绑上；都不满足就不绑，避免给出无关的图）。
                 </p>
               )}
               {hero && stepFigures.length === 0 && relatedTables.length === 0 && (

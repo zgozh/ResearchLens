@@ -696,10 +696,25 @@ def bind_media_for_statements(
         return []
 
     created: List[Binding] = []
+    # 位置兜底所需的页码（只查一次；精确匹配成功的陈述用不到）
+    page_of_media: Dict[str, int] = {}
+    page_of_statement: Dict[str, int] = {}
+    with session_scope() as db:
+        page_of_media, page_of_statement = _proximity_pages(db, scope, bindable)
     for statement in bindable:
         picks = _pick_media_for_statement(
             getattr(statement, "text", "") or "", media_items, max_per_statement
         )
+        if not picks:
+            # 精确方法（显式编号 / caption 重合）都没结果时，才用**位置**兜底：
+            # 同页或相邻页的图表。用户反馈"有些步骤显示尚未绑定图表、于是没有引用"；
+            # 但**绝不退回全篇第一张图**（D-48 的教训），且来源必须标明（ADR-0059）。
+            fallback = _proximity_media_for_statement(
+                page_of_statement.get(str(getattr(statement, "id", ""))),
+                media_items, page_of_media,
+            )
+            if fallback is not None:
+                picks = [fallback]
         for media_id, method, score, reason in picks:
             created.append(bind(Binding(
                 scope=scope,
@@ -713,6 +728,123 @@ def bind_media_for_statements(
                 score=score,
             ), ctx))
     return created
+
+
+#: 位置兜底允许的最大页差（同页 = 0，相邻页 = 1）
+PROXIMITY_MAX_PAGE_GAP = 1
+#: 位置兜底的分值：**必须显著低于**精确匹配，便于前端/评测区分
+PROXIMITY_SCORE = 0.2
+
+
+def _proximity_pages(db, scope: Scope, statements: Sequence[Any]):
+    """算出 ``(media_id → 0-based 页, statement_id → 0-based 页)``。
+
+    - 媒体页：媒体自己的 ``anchor_ids`` 所指向的锚点第一段 ``pdf_page_index``；
+    - 陈述页：该陈述**证据行**的 ``source_page``（1-based，`gate.build_evidence` 写的
+      ``pdf_page_index + 1``）→ 换成 0-based 后与媒体同尺度比较。
+    """
+    from app.modules.evidence import repository as erepo
+
+    media_rows = erepo.get_media_rows(db, scope.revision_id)
+    anchor_ids = [a for row in media_rows for a in (row.anchor_ids or [])]
+    anchor_page: Dict[str, int] = {}
+    for row in erepo.get_anchor_rows(db, scope.revision_id, anchor_ids):
+        for seg in (row.segments or []):
+            idx = seg.get("pdf_page_index") if isinstance(seg, dict) else None
+            if idx is not None:
+                anchor_page[row.id] = int(idx)
+                break
+    page_of_media: Dict[str, int] = {}
+    for row in media_rows:
+        for anchor_id in (row.anchor_ids or []):
+            if anchor_id in anchor_page:
+                page_of_media[row.id] = anchor_page[anchor_id]
+                break
+
+    # 媒体**没有锚点**时（实测 papers 1–3 的 media 一个 anchor 都没有），用 caption
+    # 文本反查它所在的原文块，再取该块的物理页。为什么值得做：不这么做时
+    # ``page_of_media`` 恒为空 → 位置兜底永远不生效（实测 17 个媒体全 page=None）。
+    if len(page_of_media) < len(media_rows):
+        page_of_media.update(_media_pages_by_caption(db, scope, media_rows, page_of_media))
+
+    ev_ids = [e for s in statements for e in (getattr(s, "evidence_ids", None) or [])]
+    ev_page: Dict[str, int] = {}
+    if ev_ids:
+        for row in erepo.get_evidence_rows(db, scope.revision_id, ev_ids):
+            ev_page[row.id] = max(0, int(row.source_page or 1) - 1)
+    page_of_statement: Dict[str, int] = {}
+    for statement in statements:
+        pages = [ev_page[e] for e in (getattr(statement, "evidence_ids", None) or [])
+                 if e in ev_page]
+        if pages:
+            page_of_statement[str(getattr(statement, "id", ""))] = min(pages)
+    return page_of_media, page_of_statement
+
+
+def _media_pages_by_caption(db, scope: Scope, media_rows, known: Dict[str, int]):
+    """用 caption 文本反查媒体所在块，得到 0-based 页（``known`` 以外的媒体）。
+
+    为什么需要：实测 papers 1–3 的 ``media`` **一个 anchor 都没有**、也没有块通过
+    ``media_id`` 反向引用，于是"媒体在哪一页"在库里无迹可寻；而 caption 文本与
+    caption 块是同一段文字（实测前 8 个媒体里 7 个能匹配上），匹配到块就能拿到页。
+    只做**确定性**的文本包含匹配，匹配不上就**不给页**（不猜）。
+    """
+    from app.modules.evidence import repository as erepo
+
+    pending = [row for row in media_rows if row.id not in known]
+    if not pending:
+        return {}
+    page_of_block = {p.id: p.pdf_page_index for p in erepo.get_page_rows(db, scope.revision_id)}
+    block_rows = erepo.get_block_rows(db, scope.revision_id)   # BlockORM 行
+    out: Dict[str, int] = {}
+    for row in pending:
+        caption = (row.caption or "").strip()
+        probe = caption[:18]
+        if not probe:
+            continue
+        for block in block_rows:
+            if probe in (block.text or ""):
+                page = page_of_block.get(block.page_id)
+                if page is not None:
+                    out[row.id] = int(page)
+                break
+    return out
+
+
+def _proximity_media_for_statement(
+    statement_page: Optional[int],
+    media_items: Sequence[Media],
+    page_of_media: Dict[str, int],
+) -> Optional[Any]:
+    """**位置兜底**：取同页或相邻页的媒体（ADR-0059）。
+
+    为什么需要：用户反馈"方法动画里有些步骤显示该步骤的断言尚未绑定图表，
+    然后导致该步骤没有相关的引用"。精确方法（陈述显式写"图 N"、或与 caption
+    共享区分性 token）在中文论文上命中率有限，而**同页图表**在排版上是真正相关的。
+
+    纪律：① 只在精确方法都没结果时调用；② 页差 ≤ ``PROXIMITY_MAX_PAGE_GAP``；
+    ③ 返回低分 + ``method="page_proximity"`` + 说明"位置推断"，**不冒充题注匹配**。
+    """
+    if statement_page is None:
+        return None
+    best: Optional[Any] = None
+    best_gap: Optional[int] = None
+    for media in media_items:
+        media_page = page_of_media.get(media.id)
+        if media_page is None:
+            continue
+        gap = abs(int(media_page) - int(statement_page))
+        if gap > PROXIMITY_MAX_PAGE_GAP:
+            continue
+        if best_gap is None or gap < best_gap:
+            best, best_gap = media, gap
+    if best is None:
+        return None
+    where = "同页" if best_gap == 0 else "相邻页"
+    return (
+        best.id, "page_proximity", PROXIMITY_SCORE,
+        f"{where}图表（位置推断，非题注文字匹配；该陈述的精确引用缺失）",
+    )
 
 
 def _binding_id(scope: Scope, statement_id: str, media_id: str) -> str:
