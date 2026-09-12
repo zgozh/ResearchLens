@@ -33,6 +33,40 @@ log = logging.getLogger("researchlens.pipeline.ingest")
 _TERMINAL = ("succeeded", "partial", "failed", "cancelled")
 
 
+def ingest_pdf_for_paper(
+    paper_id: int,
+    data: bytes,
+    *,
+    url: str = "",
+    title: str = "",
+) -> int:
+    """为**已存在的 paper** 跑完整 ingest，返回 job_id（ADR-0066）。
+
+    为什么需要（真实缺陷）：上传接口 ``POST /api/papers/upload`` 以前只写一行 **legacy**
+    ``GenerationJob(status=pending)`` 就返回 —— 没有任何东西消费它，
+    ``pipeline.run_pipeline`` 对这种"没有 revision/源"的论文**静默什么都不做**（实测直接调用
+    返回 5 且论文状态一直是 pending）。而"粘贴网址"走的是 canonical ingest，所以那条链路是好的。
+    这里补一个公共入口，让上传走**同一条**链路：建 revision → 入队 → 内联执行完整 pipeline。
+    """
+    from app.modules import papers as papers_mod
+
+    resolved_title = (title or "").strip() or "Uploaded Paper"
+    source = _store_inline_source(paper_id, data, url, resolved_title)
+    revision = papers_mod.create_revision(paper_id, _source_id_of(source), "source")
+    spec = JobSpec(
+        paper_id=paper_id,
+        revision_id=revision.id,
+        kind="ingest",
+        source=source,
+    )
+    ctx = new_ctx(Scope(paper_id=paper_id, revision_id=revision.id))
+    from app.modules.pipeline import service as svc
+
+    job = svc.enqueue(spec, ctx)
+    _run_job_inline(job.id)
+    return job.id
+
+
 def ingest_paper_from_pdf(
     db: Session,
     data: bytes,

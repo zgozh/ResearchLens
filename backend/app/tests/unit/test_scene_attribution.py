@@ -275,3 +275,30 @@ class TestChineseHeadingKind:
         # 引言场景应只收 CONTEXT 那条
         intro_ids = by_scene[0]
         assert len(intro_ids) == 1, f"引言场景实际收到 {intro_ids}"
+
+
+class TestTtsSpansAreOwn:
+    """TTS 文本必须用自己的 spans（ADR-0066）。
+
+    实测缺陷：``build_narration`` 把 **script 的 spans 直接挂到 tts_text** 上，而
+    ``_to_tts_text`` 会去掉 ``*``/`` ` ``/``#`` 并压缩空白 → TTS 文本更短 →
+    span 越界 → ``ArtifactText`` 校验抛 ValidationError → exhibits 阶段整体失败 →
+    新导入的论文永远卡在 processing（paper 9 实测）。
+    """
+
+    def test_tts_spans_within_tts_text(self):
+        from app.modules.scene import narration as N
+
+        parts = [
+            ("s1", "本文**提出**一种方法。"),
+            ("s2", "实验表明   效果更好。"),
+        ]
+        rec = N.build_narration(parts, cue_id_prefix="cue")
+        tts = rec.tts_text
+        assert tts.text, "TTS 文本不该为空"
+        for span in tts.spans:
+            assert span.end_cp <= len(tts.text), \
+                f"TTS span 越界：end={span.end_cp} len={len(tts.text)}"
+        # script 侧同样要合法
+        for span in rec.script.spans:
+            assert span.end_cp <= len(rec.script.text)

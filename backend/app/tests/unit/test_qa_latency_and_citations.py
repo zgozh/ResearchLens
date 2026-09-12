@@ -130,7 +130,7 @@ class TestChunkCitationAccepted:
 
     def test_gate_no_longer_drops_valid_chunk_citations(self, monkeypatch):
         """端到端一层：给了合法 chunk 引用时**不得**再报 claim_without_citation。"""
-        from app.contracts.common import Scope
+        from app.contracts.common import Scope, new_ctx
         from app.modules.qa import service as qs
 
         captured = {}
@@ -270,3 +270,102 @@ class TestDeadlinesAreSet:
         assert "QA_STREAM_DEADLINE_MS" in src and "Budget(" in src, \
             "流式问答必须带截止时间与预算，否则供应商卡住就会一直转"
         assert canonical.QA_STREAM_DEADLINE_MS <= 180_000
+
+
+# ===================================================== 6. 提示词必须要求核对"问题对象"
+
+class TestPromptChecksQuestionObject:
+    """放宽"必须照抄相关句"之后，必须同时要求**核对问题里的对象是否出现在片段里**。
+
+    实测回归（ADR-0066）：放宽后 paper 7（英文 arXiv 论文）的四个"不可答"问题
+    （Kubernetes / 联邦学习 / 量子计算 / 区块链）**全被答了**（5–6 句），
+    `unanswerable_refusal_rate` 会因此掉到 0 —— 那是拿"实验用了几块 GPU"顶"用没用 Kubernetes"。
+    """
+
+    def test_prompt_forbids_answering_absent_objects(self):
+        import inspect
+
+        from app.modules.qa import service as qs
+
+        src = inspect.getsource(qs._llm_draft)
+        assert "根本没有出现该对象" in src, "提示词必须显式要求核对问题对象是否出现在片段里"
+        assert "答非所问" in src, "要说清为什么不能拿别的内容顶上"
+
+
+# ===================================================== 7. 问题对象不在原文 → 必须拒答
+
+@pytest.fixture
+def real_scope():
+    from app.contracts.common import Scope, new_ctx
+
+    """服务层测试要真实 revision（answer 会校验 scope 属于该 paper）。"""
+    from app.contracts.documents import PaperCreate, SourceMetadata
+    from app.modules import papers as papers_mod
+
+    paper = papers_mod.create_paper(
+        PaperCreate(title="对象缺失拒答测试", source_mode="upload",
+                    provenance_class="source_document")
+    )
+    source = papers_mod.store_source(
+        paper.id, b"%PDF-1.4\n%%EOF\n", SourceMetadata(original_filename="o.pdf")
+    )
+    revision = papers_mod.create_revision(paper.id, source.id, "source")
+    return Scope(paper_id=paper.id, revision_id=revision.id)
+
+
+class TestAbsentObjectRefusal:
+    """问"用了 Kubernetes 吗"而原文里没有 Kubernetes → **拒答**，不拿别的相关内容顶替。
+
+    实测回归（ADR-0066）：paper 7 的四个不可答问题全被答了（5–6 句），
+    回答给的是"用了 8 块 P100 GPU"——答非所问，`unanswerable_refusal_rate` 会掉到 0。
+    """
+
+    def _hits(self, text: str):
+        return [SimpleNamespace(chunk_id="c1", block_ids=["b1"], anchor_ids=[],
+                                media_ids=[], text=text, vector_score=0.5,
+                                lexical_score=1.0, rrf_score=0.03, rerank_score=None, rank=1)]
+
+    def test_absent_latin_object_is_detected(self):
+        from app.modules.qa import service as qs
+
+        hits = self._hits("实验使用 8 块 NVIDIA P100 GPU 训练,批大小 1024.")
+        assert qs._object_absent_from_hits("本文是如何使用 Kubernetes 完成实验与部署的？", hits)
+        assert qs._object_absent_from_hits("本文是如何使用 联邦学习 完成实验与部署的？", hits)
+
+    def test_present_object_is_not_refused(self):
+        from app.modules.qa import service as qs
+
+        hits = self._hits("本文使用 Kubernetes 完成实验与部署.")
+        assert not qs._object_absent_from_hits("本文是如何使用 Kubernetes 完成实验与部署的？", hits)
+
+    def test_user_questions_are_not_falsely_refused(self):
+        """用户点名要答的三类问题**不能**被这条判据误伤。"""
+        from app.modules.qa import service as qs
+
+        hits = self._hits("本文选用公开图像库 BOSS v0.92 与 BOSS v1.01;"
+                          "所选用的指标模型较为简单,仍有提升空间;"
+                          "本文提出了一种基于 Haar 小波域指标自适应选择载体的隐写方法.")
+        assert not qs._object_absent_from_hits("论文用了什么数据集？", hits)
+        assert not qs._object_absent_from_hits("这篇论文哪里最值得质疑？", hits)
+        assert not qs._object_absent_from_hits("这篇论文的主要贡献是什么？", hits)
+
+    def test_answer_refuses_when_object_absent(self, real_scope, monkeypatch):
+        """端到端：对象不在原文时**不许**走模型草稿或抽取兜底。"""
+        from app.contracts.common import new_ctx
+        from app.contracts.qa import QARequest
+        from app.modules.qa import service as qs
+
+        hits = self._hits("实验使用 8 块 NVIDIA P100 GPU 训练.")
+        monkeypatch.setattr(qs, "_retrieve", lambda *a, **k: (hits, []))
+
+        def boom(*a, **k):  # noqa: ANN001
+            raise AssertionError("对象不在原文时不该调用生成模型")
+
+        monkeypatch.setattr(qs, "_llm_draft", boom)
+        rec = qs.answer(real_scope, QARequest(question="本文是如何使用 Kubernetes 完成实验与部署的？"),
+                        new_ctx(real_scope))
+        assert rec.mode == "abstained", f"必须拒答，实际 {rec.mode}"
+        assert any(getattr(w, "code", "") == "question_object_absent" for w in rec.warnings)
+
+
+

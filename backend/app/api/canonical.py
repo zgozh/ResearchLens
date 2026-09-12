@@ -570,6 +570,7 @@ def rebuild_derived(
 def build_golden_set(
     paper_id: int,
     revision_id: Optional[str] = None,
+    source: str = Query("builtin", description="builtin=从原文挑句；ai=模型读原文起草（带逐字引文校验）"),
     x_admin_token: Optional[str] = Header(None),
 ):
     """构造并保存该 revision 的 **Golden Set**（真值取自原文，不由模型自证）。
@@ -578,16 +579,31 @@ def build_golden_set(
     指标里 ``support_precision`` 与 ``unanswerable_refusal_rate`` 永远没有分母，
     综合评分只能是 null（前端只能诚实显示"未评测"）。
 
-    **不调 LLM**：claim 文本逐字取自原文块、锚点页取自块的物理页、
-    "不可答"术语经程序检查确认全文不出现。
+    ``source``：
+    - ``builtin``（默认）：**不调 LLM**，claim 文本逐字取自原文块；
+    - ``ai``：**模型读原文起草**关键断言，但每条的 ``quote`` 必须逐字出现在原文块里
+      （校验不过即丢弃），且仍按**调参集**保存（ADR-0065）—— 用来解决"句子挑选版
+      参考集与抽取断言内容不重合、precision 只有 0.18"的问题。
     """
     require_admin(x_admin_token)
     scope, _rev = _resolve_scope(paper_id, revision_id)
     from app.modules.evaluation import golden_builder
 
-    golden = golden_builder.build_and_save(scope)
+    if source == "ai":
+        ctx = new_ctx(scope, snapshot=papers_mod.snapshot_for_revision(scope),
+                      deadline_ms=300_000,
+                      budget=Budget(max_calls=6, max_input_tokens=200_000,
+                                    max_output_tokens=40_000, max_wall_ms=300_000,
+                                    max_repair_rounds=1))
+        golden = golden_builder.build_and_save_ai(scope, ctx)
+        source_used = "ai"
+    else:
+        golden = golden_builder.build_and_save(scope)
+        source_used = "builtin"
+
     return {
         "scope": {"paper_id": scope.paper_id, "revision_id": scope.revision_id},
+        "source": source_used,
         "golden": {
             "id": golden.id, "version": golden.version,
             "claims": len(golden.claims),

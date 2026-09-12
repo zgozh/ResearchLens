@@ -158,7 +158,9 @@ def test_jobs_404(client):
 
 
 def test_upload(client):
-    # §5.11：demo_mode=true 保留 400；live 模式返回 paper_id/job_id/status=pending
+    # §5.11：demo_mode=true 保留 400；live 模式返回 paper_id 并**直接进入 processing**
+    # （ADR-0066：上传改走 canonical ingest，服务端自己跑完整 pipeline，
+    #  不再只建一行 legacy GenerationJob —— 那行没有任何消费者，论文会永远 pending）
     from app.core.config import settings
 
     r = client.post("/api/papers/upload",
@@ -168,5 +170,5 @@ def test_upload(client):
     else:
         assert r.status_code == 200
         body = r.json()
-        assert "paper_id" in body and "job_id" in body
-        assert body.get("status") == "pending"
+        assert "paper_id" in body
+        assert body.get("status") in ("processing", "pending"), body

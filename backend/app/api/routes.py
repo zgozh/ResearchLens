@@ -33,7 +33,7 @@ from app.modules import claims as claims_svc, evaluation as eval_svc
 from app.modules import graph as graph_svc, scene as pres_svc
 from app.modules import parse as parser_mod, pipeline
 from app.modules import qa as qa_svc
-from app.modules.pipeline.ingest import ingest_paper_from_pdf
+from app.modules.pipeline.ingest import ingest_paper_from_pdf, ingest_pdf_for_paper
 from app.core import runtime
 
 router = APIRouter(prefix="/api")
@@ -80,6 +80,33 @@ def models_set(body: ModelBody):
     return {"active": runtime.get_active_model()}
 
 
+def _looks_like_pdf(response) -> bool:
+    """响应体是不是真 PDF（**字节优先**）。
+
+    实测：arXiv 的 ``/abs/`` 摘要页、站点报错页都会返回 HTML；有的还在报错页上挂
+    ``content-type: application/pdf``。旧实现不看内容就存成 ``.pdf`` 入库，
+    于是库里多出一篇永远解析不出来的"论文"。这里以魔数 ``%PDF-`` 为准。
+    """
+    content = bytes(getattr(response, "content", b"") or b"")
+    if content.startswith(b"%PDF-"):
+        return True
+    ctype = str((getattr(response, "headers", {}) or {}).get("content-type", "")).lower()
+    if "pdf" in ctype:
+        # 声称是 PDF 但魔数不对：仍按**字节**判断，取前 1KB 里找一眼魔数
+        return b"%PDF-" in content[:1024]
+    return False
+
+
+def _pdf_rejection_reason(response) -> str:
+    """给用户一句能照做的说明（不要只说"无效"）。"""
+    ctype = str((getattr(response, "headers", {}) or {}).get("content-type", "") or "未知")
+    return (
+        f"该网址返回的不是 PDF（content-type={ctype}）。"
+        "请粘贴**论文 PDF 的直链**（例如 arXiv 的 /pdf/xxxx 形式），"
+        "不要粘贴摘要页/HTML 页面。"
+    )
+
+
 class FromUrlBody(BaseModel):
     url: str
     title: str = ""
@@ -100,9 +127,17 @@ def paper_from_url(body: FromUrlBody, background_tasks: BackgroundTasks, db: Ses
         r = _httpx.get(body.url, timeout=120, follow_redirects=True,
                        headers={"User-Agent": "Mozilla/5.0 (ResearchLens)", "Accept": "application/pdf,*/*"})
         r.raise_for_status()
-        pdf_path = parser_mod.save_upload(parser_mod.default_upload_dir(), f"{slug}.pdf", r.content)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"下载失败：{e}")
+
+    # **入库前验明是 PDF**（ADR-0064）：否则会建出一篇永远解析不出来的"论文"
+    if not _looks_like_pdf(r):
+        raise HTTPException(400, _pdf_rejection_reason(r))
+
+    try:
+        pdf_path = parser_mod.save_upload(parser_mod.default_upload_dir(), f"{slug}.pdf", r.content)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"保存 PDF 失败：{e}")
 
     p = models.Paper(slug=slug, title=title, source_mode="real", status="pending", accent="#22D3EE",
                      abstract="真实公开论文 · " + body.url, pdf_url=str(pdf_path))
@@ -221,26 +256,46 @@ def paper_evaluation(paper_id: int, db: Session = Depends(get_db)):
 
 # ------------------------------------------------------------------ upload (LIVE path)
 @router.post("/papers/upload")
-async def paper_upload(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def paper_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
     if settings.demo_mode:
         raise HTTPException(400, "DEMO_MODE=true — 请使用 /api/demo 选择内置论文；上传需 DEMO_MODE=false")
     data = await file.read()
     if len(data) > settings.max_upload_mb * 1024 * 1024:
         raise HTTPException(413, "file too large")
     path = parser_mod.save_upload(parser_mod.default_upload_dir(), file.filename or "paper.pdf", data)
+    title = file.filename or "Uploaded paper"
     p = models.Paper(
         slug=f"upload_{int(__import__('time').time())}",
-        title=file.filename or "Uploaded paper",
+        title=title,
         source_mode="upload",
         status="pending",
         pdf_url=str(path),
     )
     db.add(p)
     db.commit()
-    job = models.GenerationJob(paper_id=p.id, stage="parse", status="pending")
-    db.add(job)
-    db.commit()
-    return {"paper_id": p.id, "job_id": job.id, "status": "pending"}
+    pid = p.id
+
+    def _work():
+        # 走**和"粘贴网址"同一条** canonical ingest（ADR-0066）：
+        # 旧实现只建 legacy GenerationJob，没有任何消费者 → 论文永远 pending。
+        from app.core.db import SessionLocal as _SL
+
+        s = _SL()
+        try:
+            ingest_pdf_for_paper(pid, data, title=title)
+        except Exception:  # noqa: BLE001  失败不入库垃圾状态，只记日志
+            import traceback
+
+            traceback.print_exc()
+        finally:
+            s.close()
+
+    background_tasks.add_task(_work)
+    return {"paper_id": pid, "status": "processing"}
 
 
 @router.post("/papers/{paper_id}/process")

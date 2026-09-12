@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 from typing import List, Optional, Sequence, Tuple
 
+from pydantic import BaseModel, Field
+
 from app.contracts.common import Scope
 from app.contracts.evaluation import GoldenAnchor, GoldenClaim, GoldenQuestion, GoldenSet
 from app.core.db import session_scope
@@ -386,6 +388,161 @@ def _golden_id(scope: Scope) -> str:
     return f"golden-{scope.paper_id}-{scope.revision_id[:8]}"
 
 
+#: AI 起草版本的参考集版本号（与句子挑选版**分开**，便于追溯用的是哪种来源）
+AI_GOLDEN_VERSION = "rl.golden.ai/1"
+#: 送给模型起草的原文上限与产出条数上限
+AI_GOLDEN_MAX_CHARS = 12000
+AI_GOLDEN_MAX_CLAIMS = 12
+
+
+class _AiClaim(BaseModel):
+    text: str = Field(description="一条关键断言（简洁陈述句，可改写原文但不得改变事实）")
+    quote: str = Field(description="支持该断言的**原文连续片段**，必须逐字照抄原文")
+    section: str = Field(default="", description="该断言所属章节标题（原文里的）")
+
+
+class _AiClaims(BaseModel):
+    claims: list[_AiClaim] = Field(default_factory=list)
+
+
+AI_GOLDEN_PROMPT = (
+    "你是论文评测的出题人。阅读给定的论文原文，挑出**最值得作为参考答案的关键断言**，"
+    "覆盖：方法/指标的定义、实验设置（数据集、参数、对比对象）、主要结果（带数字）、"
+    "以及局限/不足。\n"
+    "每条断言必须满足：\n"
+    "1. ``text``：一句简洁的陈述（可以改写原文表述，但**不得改变事实、数字、条件**）；\n"
+    "2. ``quote``：**逐字照抄**原文中支持该断言的连续片段（≥15 字），"
+    "标点与数字照抄、不要拼接不同位置、不要加前后缀说明；\n"
+    "3. ``section``：该片段所属章节标题（原文里的）。\n"
+    "**最多 {n} 条**；原文里没有的结论不要写。只输出 JSON：{{\"claims\": [...]}}。\n"
+)
+
+
+def build_golden_set_ai(scope: Scope, ctx=None) -> GoldenSet:
+    """用**模型起草**参考断言，但每条的 ``quote`` 必须**逐字出现在原文块**里（ADR-0065）。
+
+    为什么（真实问题）：句子挑选版参考集（``build_golden_set``）取的是"每块最像断言的一句"，
+    与抽取产出的断言**内容不重合**（实测 paper 2 的 precision 只有 0.18），
+    AI 语义裁判再准也没用 —— 分母没对准。这里让模型读原文起草关键断言，
+    既有"出题人视角"的覆盖度，又靠**引文校验**保住"真值来自原文"这条纪律。
+
+    **纪律**：没有模型 / 调用失败 → 返回**空集合**（不退回句子挑选冒充 AI 起草）；
+    集合仍按调参集保存（AI 起草 ≠ 人工确认）。
+    """
+    from app.core.config import settings
+
+    if ctx is None or not getattr(settings, "has_llm", False):
+        return GoldenSet(id=_golden_id(scope), version=AI_GOLDEN_VERSION)
+
+    blocks = _load_blocks(scope)
+    if not blocks:
+        return GoldenSet(id=_golden_id(scope), version=AI_GOLDEN_VERSION)
+
+    # 逐块拼原文（带块标记，便于把 quote 定位回块）；总量封顶，避免超预算
+    parts: List[str] = []
+    used = 0
+    for block_id, text, _page in blocks:
+        piece = f"[block:{block_id}] {(text or '').strip()}"
+        if not piece.strip():
+            continue
+        if used + len(piece) > AI_GOLDEN_MAX_CHARS:
+            break
+        parts.append(piece)
+        used += len(piece)
+    source = "\n".join(parts)
+    if not source:
+        return GoldenSet(id=_golden_id(scope), version=AI_GOLDEN_VERSION)
+
+    try:
+        from app.contracts.ai import ChatMessage, CompletionRequest
+        from app.modules import ai as ai_module
+
+        result = ai_module.complete(
+            CompletionRequest(
+                messages=[
+                    ChatMessage(role="system", content=AI_GOLDEN_PROMPT.format(
+                        n=AI_GOLDEN_MAX_CLAIMS)),
+                    ChatMessage(role="user", content=f"论文原文：\n{source}"),
+                ],
+                output_schema=_AiClaims,
+                max_output_tokens=3000,
+            ),
+            ctx,
+        )
+    except Exception:  # noqa: BLE001  起草失败不产出集合（不伪造）
+        return GoldenSet(id=_golden_id(scope), version=AI_GOLDEN_VERSION)
+
+    value = getattr(result, "value", None)
+    drafted = list(getattr(value, "claims", None) or [])
+    if not drafted:
+        return GoldenSet(id=_golden_id(scope), version=AI_GOLDEN_VERSION)
+
+    claims: List[GoldenClaim] = []
+    anchors: List[GoldenAnchor] = []
+    for item in drafted:
+        text = (getattr(item, "text", "") or "").strip()
+        quote = _norm(getattr(item, "quote", "") or "")
+        if not text or len(quote) < 10:
+            continue
+        # **引文校验**：quote 必须逐字出现在某个原文块里（空白无关），否则丢弃
+        hit = None
+        for block_id, block_text, page in blocks:
+            if quote and quote in _norm(block_text):
+                hit = (block_id, page)
+                break
+        if hit is None:
+            continue
+        idx = len(claims)
+        claims.append(GoldenClaim(
+            id=f"gaic-{idx + 1}",
+            scope=scope,
+            text=text,
+            expected_support="supports",
+            acceptable_block_ids=[hit[0]],
+        ))
+        anchors.append(GoldenAnchor(
+            id=f"gaia-{idx + 1}", scope=scope, expected_page_index=int(hit[1] or 0),
+            expected_rect=None, source_label=f"block:{hit[0][:8]}",
+        ))
+        if len(claims) >= AI_GOLDEN_MAX_CLAIMS:
+            break
+
+    return GoldenSet(
+        id=_golden_id(scope), version=AI_GOLDEN_VERSION,
+        source_hashes=[], claims=claims, questions=[], anchors=anchors,
+    )
+
+
+def build_and_save_ai(scope: Scope, ctx=None) -> GoldenSet:
+    """起草并持久化 AI 参考集（仍按**调参集**保存：AI 起草 ≠ 人工确认）。
+
+    **题目与锚点仍用确定性构造**：AI 只负责 ``claims``（关键断言）。
+    理由：拒答率指标需要"不可答题"的分母，而"不可答"必须是**程序验证术语全文不出现**
+    （ADR-0046 的纪律），不能交给模型自由发挥。所以这里把 ``build_golden_set`` 的
+    questions/anchors 合并进来，两类来源各司其职。
+    """
+    from . import golden as golden_mod
+
+    golden = build_golden_set_ai(scope, ctx)
+    if not golden.claims:
+        return golden
+    try:
+        base = build_golden_set(scope)
+        golden = golden.model_copy(update={
+            "questions": base.questions,
+            # AI 起草时已按引文定位出锚点；只有当它没给出时才用确定性锚点
+            "anchors": golden.anchors or base.anchors,
+            "source_hashes": base.source_hashes,
+        })
+    except Exception:  # noqa: BLE001  题目构造失败不该拖垮 claims 的保存
+        pass
+    with session_scope() as db:
+        golden_mod.save_golden_set(
+            db, golden, blob_id=f"{golden.id}:{golden.version}", is_tuning=True,
+        )
+    return golden
+
+
 def build_and_save(scope: Scope, *, annotated: bool = False) -> GoldenSet:
     """构造并持久化（幂等：同 ``(golden_id, version)`` 覆盖写）。
 
@@ -422,8 +579,33 @@ def confirm_for_scope(scope: Scope) -> Optional[GoldenSet]:
     return golden
 
 
+#: 参考集来源优先级（越小越优先）——**决定评测用哪一版**（ADR-0065）。
+#: 此前只看 ``created_at`` 最新：同一篇建了 AI 版之后再重建句子版，评测会**悄悄换回旧版**，
+#: 用户完全看不出来（实测 paper 7 的评测就用了句子版，precision 因此停在 0.0）。
+#: 优先级：人工确认过的 > AI 起草的（与抽取断言更对齐、引文可溯源）> 句子挑选的。
+_VERSION_PRIORITY = (
+    ("rl.golden.ai", 0),   # AI 起草
+    ("rl.golden/", 1),     # 句子挑选
+)
+
+
+def _source_rank(version: str, is_tuning: bool) -> int:
+    """越小越优先；不是调参集（人工确认过）的一律最优先。"""
+    if not is_tuning:
+        return -1
+    for prefix, rank in _VERSION_PRIORITY:
+        if str(version or "").startswith(prefix):
+            return rank
+    return 2
+
+
 def find_for_scope_ex(db, scope: Scope) -> Tuple[Optional[GoldenSet], bool]:
-    """找该 revision 的金标集，并返回 ``(golden, is_tuning)``。"""
+    """找该 revision 的参考集，并返回 ``(golden, is_tuning)``。
+
+    **选择规则是确定性的**：先按来源优先级（人工确认 > AI 起草 > 句子挑选），
+    同优先级再取 ``created_at`` 最新。这样"用哪一版"可预测、可解释，
+    不会因为"谁最后被重建"而变。
+    """
     from sqlalchemy import select
 
     from app.models.audit import GoldenSetORM
@@ -433,13 +615,20 @@ def find_for_scope_ex(db, scope: Scope) -> Tuple[Optional[GoldenSet], bool]:
     rows = db.execute(
         select(GoldenSetORM).order_by(GoldenSetORM.created_at.desc()).limit(50)
     ).scalars().all()
+    candidates = []
     for row in rows:
         golden = golden_mod.load_golden_set(db, row.golden_id, row.version)
         if golden is None:
             continue
         if golden_mod.golden_scope_ok(golden, scope.paper_id, scope.revision_id):
-            return golden, bool(row.is_tuning)
-    return None, False
+            candidates.append((_source_rank(row.version, bool(row.is_tuning)),
+                               -float(row.created_at.timestamp() if row.created_at else 0.0),
+                               golden, bool(row.is_tuning)))
+    if not candidates:
+        return None, False
+    candidates.sort(key=lambda c: (c[0], c[1]))
+    _rank, _ts, golden, is_tuning = candidates[0]
+    return golden, is_tuning
 
 
 def find_for_scope(db, scope: Scope) -> Optional[GoldenSet]:

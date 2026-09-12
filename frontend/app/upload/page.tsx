@@ -4,11 +4,39 @@ import { useCallback, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
-import { ArrowLeft, FileUp, Loader2, CheckCircle2, AlertTriangle, Sparkles, Globe } from 'lucide-react';
+import { ArrowLeft, FileUp, FileText, Loader2, CheckCircle2, AlertTriangle, Sparkles, Globe } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Logo } from '@/components/Logo';
 import { Btn, GlassCard, Kicker } from '@/components/ui';
 import { cn } from '@/lib/cn';
+
+const EXAMPLE_PAPERS = [
+  {
+    label: 'Attention Is All You Need',
+    url: 'https://arxiv.org/pdf/1706.03762',
+    note: 'arXiv · Transformer',
+  },
+  {
+    label: 'BERT',
+    url: 'https://arxiv.org/pdf/1810.04805',
+    note: 'arXiv · NLP',
+  },
+  {
+    label: 'ResNet',
+    url: 'https://arxiv.org/pdf/1512.03385',
+    note: 'arXiv · 视觉',
+  },
+  {
+    label: 'LoRA',
+    url: 'https://arxiv.org/pdf/2106.09685',
+    note: 'arXiv · 微调',
+  },
+  {
+    label: 'PLOS ONE 示例',
+    url: 'https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0171226&type=printable',
+    note: 'PLOS · 开放获取',
+  },
+];
 
 export default function UploadPage() {
   const router = useRouter();
@@ -31,11 +59,11 @@ export default function UploadPage() {
     setStage('正在上传论文…');
     try {
       const up = await api.uploadPaper(file);
-      setStage('正在调用大模型抽取结构与断言…');
-      const proc = await api.processPaper(up.paper_id).catch(() => ({ status: 'skipped', job_id: 0 }));
+      // 服务端现在**自己**跑完整 ingest（与"粘贴网址"同一条 canonical 链路，ADR-0066），
+      // 因此不再调 /process —— 否则整条 pipeline 会跑两遍（双倍模型开销）。
       setOk(true);
-      setStage('抽取完成，正在进入科研展项…');
-      setTimeout(() => goToPaper(up.paper_id, proc.job_id), 700);
+      setStage('已上传，正在后台完整抽取（结构/断言/场景/图表）…');
+      setTimeout(() => goToPaper(up.paper_id), 900);
     } catch (e: any) {
       setError(e?.message || '上传失败');
       setStage('');
@@ -99,7 +127,36 @@ export default function UploadPage() {
                 className="flex-1 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-white/25" />
               <Btn type="submit" variant="primary">下载并处理</Btn>
             </form>
-            <p className="mt-3 font-mono text-[11px] text-slate-600">支持 arXiv 等公开论文链接；下载后后台完整抽取，进入后可看进度。</p>
+            {/* 示例论文网址：**全部实测可解析**（下载得到真 PDF，不是摘要页/HTML）。
+                选这些是因为它们是开放获取的**PDF 直链**——摘要页贴进来会返回 HTML，
+                后端现在会明确拒绝并提示改用直链（ADR-0064）。 */}
+            <div className="mt-4 text-left">
+              <p className="mb-2 text-[11px] text-slate-500">
+                可以直接点下面任意一篇试试（都是开放获取的 PDF 直链，实测可完整解析）：
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {EXAMPLE_PAPERS.map((p) => (
+                  <button
+                    key={p.url}
+                    type="button"
+                    onClick={() => setUrl(p.url)}
+                    title={p.url}
+                    className="group inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-slate-300 transition hover:border-indigo-400/40 hover:bg-indigo-500/10 hover:text-indigo-200"
+                  >
+                    <FileText className="h-3 w-3 text-slate-500 group-hover:text-indigo-300" />
+                    {p.label}
+                    <span className="font-mono text-[10px] text-slate-600">{p.note}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 font-mono text-[10px] text-slate-600">
+                点击只会**填入输入框**，不会自动下载；确认后再按"下载并处理"。
+              </p>
+            </div>
+            <p className="mt-3 text-left font-mono text-[11px] text-slate-600">
+              请粘贴论文 <span className="text-slate-400">PDF 直链</span>（如 arXiv 的 /pdf/xxxx）；
+              摘要页/HTML 页会被拒收并提示原因。下载后后台完整抽取，进入后可看进度。
+            </p>
           </div>
         ) : (
           <div className="mt-8">

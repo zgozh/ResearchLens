@@ -25,7 +25,12 @@ def build_narration(
     """
     script_text, spans = _assemble(parts)
     script = ArtifactText(text=script_text, spans=spans)
-    tts = ArtifactText(text=_to_tts_text(script_text), spans=spans)
+    # **TTS 文本必须用自己的 spans**（ADR-0066）：``_to_tts_text`` 会去掉强调符号、压缩空白，
+    # 长度与 ``script_text`` 不同；直接复用 script 的 span 会**越界**，触发
+    # ``ArtifactText`` 的 "span 超出文本长度" 校验 → 整个 exhibits 阶段失败 →
+    # 新导入的论文卡在 processing（实测 paper 9）。
+    tts_text, tts_spans = _assemble([(sid, _to_tts_text(text)) for sid, text in parts])
+    tts = ArtifactText(text=tts_text, spans=tts_spans)
 
     cues: List[SubtitleCue] = []
     for idx, (statement_id, text) in enumerate(parts):
