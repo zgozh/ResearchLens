@@ -787,6 +787,35 @@
   SSE 状态文案为"通用回答（未使用论文证据）"；前端用蓝色徽标与"拒答"区分。
 - 回归测试 `test_qa_general_mode.py`（8 条：指向判定 4 / 路径 3 / 评测口径 1）。
 
+## D-58 图谱节点必须带够展示事实；**投影层不许静默丢字段**
+
+- **谁反馈的**：用户实测两条 ——"研究图谱里的…证据节点就只有个标签显示'可定位锚点 1 个'是正常的吗"
+  与"图表节点没有给出具体的图表"。**都不正常**，而且是两个层面的缺陷。
+- **缺陷 1（真 bug，投影层丢字段）**：`graph/legacy.to_legacy_graph` 的 props 是**白名单**：
+  `status/claim_id/evidence_id/anchor_ids` —— **没有 `media_id`**。于是前端"图表节点"分支
+  （`selected.props?.media_id`）**永远不成立**，图表节点等于空壳。
+  这和 D-48（`_legacy_step` 丢掉 `figure_refs`）是**同一类**缺陷：白名单式投影漏一个字段，
+  API 表面毫无异常，功能整块失效。**纪律**：投影层必须原样透传契约里已有的字段。
+- **缺陷 2（节点没带展示事实）**：节点只有 `label` + 几个 id，前端除了"数锚点个数"无话可说。
+- **修法**：
+  1. `GraphNodeRecord` 增加 `props: Dict[str, Any]` —— 放**展示用**的补充事实
+     （用 dict 而不是继续加语义字段：这些是投影/UI 关心的，不该污染图谱语义）；
+  2. 构建时填充：图表节点给 `media_id/media_kind/legacy_no/caption`；
+     证据节点给 `support_status/quote/page/anchor_id`
+     （`source_page` 是 **1-based 页码**，见 `evidence/gate.build_evidence` 的 `pdf_page_index + 1`）；
+  3. 投影层白名单补上 `media_id` 并透传 `props`；
+  4. 前端：图表节点按需调 `GET /api/papers/{id}/media/{media_id}` 取 **assets + 视图策略**，
+     直接渲染这张图/表（没有图像资产时**如实说明**并只提供定位）；
+     证据节点显示 判定徽标 + 原文第 N 页 + 引文；"可定位锚点 N 个"这个**静态标签**换成
+     真的能跳页的按钮（接既有的 `onNavigate({anchor_id})`）。
+- **注意**：图谱是**持久化快照**，改完必须 `POST /papers/{id}/rebuild-derived` 重建才生效
+  （实测：不重建时新 props 全空，`media_id` 有值只是因为它在节点语义字段里）。
+- **实测（重建后）**：paper 1/3 的图表节点 `no=2/8 kind=table caption='表 2 …'`，
+  经 media 接口拿到 **16/23 个资产**且 `policy=extracted`；证据节点
+  `status=supports page=8 anchor=有 quote='r 小波的相关系数…'`。
+- 回归测试 `test_graph_node_props.py`（5 条：投影保留 `media_id`、透传节点 props、
+  证据带判定与页码、两个 props 构造器）。
+
 ## D-47 附（措辞修正）
 
 原文写"Compose 的 `.env` 是按当前工作目录查找的"，实测更精确的说法是：**Compose 先看当前工作目录的 `.env`、再看项目目录（compose 文件所在目录）的 `.env`，前者优先**。证据：`backend/.env` 存在时（以 `backend/` 为 CWD）端口/CORS 被它覆盖成 8001/3001；把它改名后，同样的工作目录又能正确读到根 `.env`（8002/4002、`DEMO_MODE=false`）。

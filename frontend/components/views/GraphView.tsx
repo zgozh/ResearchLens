@@ -13,10 +13,10 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Circle, GitBranch, FlaskConical, Target, FileSearch, Image as ImageIcon, X, Quote, ArrowRight } from 'lucide-react';
+import { Circle, GitBranch, FlaskConical, Target, FileSearch, Image as ImageIcon, X, Quote, ArrowRight, Loader2 } from 'lucide-react';
 import type { GraphOut, GraphNode, ClaimOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
-import { api } from '@/lib/api';
+import { api, absoluteApiUrl } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
 // D29 修复：此前只写死 problem/method/experiment/claim/evidence/media 六类，
@@ -69,14 +69,20 @@ function LensNode({ data }: NodeProps) {
 
 const nodeTypes = { lens: LensNode };
 
-export function GraphView({ graph, accent, onClaimSelected, paperId }: {
+export function GraphView({ graph, accent, onClaimSelected, paperId, onNavigate, scope }: {
   graph: GraphOut; accent: string; paperId?: number;
   onClaimSelected?: (claimId: string, evidenceIdx?: number) => void;
+  /** 定位到原文（图表/证据节点要用：ADR-0058） */
+  onNavigate?: (target: { anchor_id: string; segment_index?: number }) => void;
+  scope?: { paper_id: number; revision_id: string };
 }) {
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [claimDetail, setClaimDetail] = useState<ClaimOut | null>(null);
   const [loadingClaim, setLoadingClaim] = useState(false);
   const [expandEv, setExpandEv] = useState(false);
+  // 图表节点：按需取**这张图本身**（assets 与视图策略都在这个接口里）
+  const [mediaDetail, setMediaDetail] = useState<any | null>(null);
+  const [loadingMedia, setLoadingMedia] = useState(false);
   // 只有**确实有可展开的长证据**时才显示"展开证据"（否则点了没任何变化）。
   const hasLongEvidence = useMemo(() => {
     const list = claimDetail?.evidence ?? [];
@@ -129,6 +135,7 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
     const found = graph.nodes.find((n) => n.id === node.id) || null;
     setSelected(found);
     setExpandEv(false);
+    setMediaDetail(null);
     // 断言节点：同步拉取完整证据，供图谱内直接弹看
     if (found?.kind === 'claim' && found.props?.claim_id && paperId) {
       setLoadingClaim(true);
@@ -139,6 +146,14 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
         .finally(() => setLoadingClaim(false));
     } else {
       setClaimDetail(null);
+    }
+    // 图表节点：取出**具体这张图/表**（此前只显示一个 id 片段，用户反馈"没有给具体的图表"）
+    if (found?.kind === 'media' && found.props?.media_id && paperId) {
+      setLoadingMedia(true);
+      api.getMedia(paperId, String(found.props.media_id), scope?.revision_id)
+        .then((m) => setMediaDetail(m))
+        .catch(() => setMediaDetail(null))
+        .finally(() => setLoadingMedia(false));
     }
   };
 
@@ -276,25 +291,96 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
             </div>
           )}
           {selected.kind !== 'claim' && (
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              {/* 证据/图表/方法节点此前只有一行 props 事实，没有"能去哪儿"的动作 */}
-              {(selected.props?.claim_id) && (
-                <button
-                  onClick={() => onClaimSelected?.((selected.props?.claim_id) as string)}
-                  className="inline-flex items-center gap-1 rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
-                  <ArrowRight className="h-3 w-3" /> 查看所属断言的证据
-                </button>
+            <div className="mt-3 space-y-3">
+              {/* 图表节点：显示**这张图表本身**（图片 + 编号 + caption），
+                  此前只有一个 media id 片段（用户反馈"没有给出具体的图表"）。 */}
+              {selected.kind === 'media' && (
+                <div className="rounded-xl border border-[var(--line)] bg-white/[0.02] p-3">
+                  <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-400">
+                    <ImageIcon className="h-3.5 w-3.5" />
+                    <span className="font-medium text-slate-200">
+                      {selected.props?.media_kind === 'table' ? '表' : '图'}
+                      {selected.props?.legacy_no != null ? ` ${selected.props.legacy_no}` : ''}
+                    </span>
+                    {selected.props?.caption && (
+                      <span className="truncate text-slate-500">{String(selected.props.caption).slice(0, 60)}</span>
+                    )}
+                  </div>
+                  {loadingMedia ? (
+                    <div className="flex h-24 items-center justify-center text-[11px] text-slate-500">
+                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> 正在取图表…
+                    </div>
+                  ) : mediaDetail?.assets?.length ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={absoluteApiUrl(`/api/assets/${mediaDetail.assets[0].id}`)}
+                      alt={String(selected.props?.caption || selected.label || '图表')}
+                      className="mx-auto max-h-64 w-auto rounded-lg border border-[var(--line)] bg-black/20 object-contain"
+                    />
+                  ) : mediaDetail ? (
+                    <p className="text-[11px] text-amber-300/80">
+                      该{selected.props?.media_kind === 'table' ? '表' : '图'}在解析结果里**没有图像资产**
+                      （策略：{mediaDetail.policy?.default_mode || '未知'}），只能定位到原文页查看。
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-slate-500">未能取到该图表资产。</p>
+                  )}
+                </div>
               )}
-              {selected.kind === 'media' && selected.props?.media_id && (
-                <span className="rounded-md bg-white/[0.05] px-2 py-1 font-mono text-[10px] text-slate-400">
-                  media: {String(selected.props.media_id).slice(0, 8)}…
-                </span>
+              {/* 证据节点：显示**判定 + 原文引文 + 页码**，并真的能定位过去。
+                  此前只有一个"可定位锚点 1 个"的标签（用户反馈"说不出任何内容"）。 */}
+              {selected.kind === 'evidence' && (
+                <div className="rounded-xl border border-[var(--line)] bg-white/[0.02] p-3">
+                  <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+                    <span className={cn('rounded-md px-1.5 py-0.5 font-medium',
+                      selected.props?.support_status === 'supports'
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : selected.props?.support_status === 'contradicts'
+                          ? 'bg-rose-500/15 text-rose-300'
+                          : 'bg-amber-500/15 text-amber-300')}>
+                      {selected.props?.support_status === 'supports' ? '支持'
+                        : selected.props?.support_status === 'contradicts' ? '反驳'
+                          : selected.props?.support_status === 'insufficient' ? '证据不足'
+                            : '未判定'}
+                    </span>
+                    {selected.props?.page ? (
+                      <span className="font-mono text-slate-400">原文第 {selected.props.page} 页</span>
+                    ) : null}
+                  </div>
+                  <p className="whitespace-pre-wrap text-[11.5px] leading-5 text-slate-300">
+                    {selected.props?.quote || selected.label || '（该证据没有留下原文片段）'}
+                  </p>
+                </div>
               )}
-              {(selected.props?.anchor_ids?.length ?? 0) > 0 && (
-                <span className="rounded-md bg-white/[0.05] px-2 py-1 font-mono text-[10px] text-slate-400">
-                  可定位锚点 {selected.props!.anchor_ids!.length} 个
-                </span>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* 证据/图表/方法节点此前只有一行 props 事实，没有"能去哪儿"的动作 */}
+                {(selected.props?.claim_id) && (
+                  <button
+                    onClick={() => onClaimSelected?.((selected.props?.claim_id) as string)}
+                    className="inline-flex items-center gap-1 rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
+                    <ArrowRight className="h-3 w-3" /> 查看所属断言的证据
+                  </button>
+                )}
+                {/* **真的能定位**：锚点 → 阅读器跳页（此前只是个静态标签） */}
+                {(selected.props?.anchor_id || (selected.props?.anchor_ids?.length ?? 0) > 0) && onNavigate && (
+                  <button
+                    onClick={() => {
+                      const anchorId = String(
+                        selected.props?.anchor_id || selected.props?.anchor_ids?.[0] || '',
+                      );
+                      if (anchorId) onNavigate({ anchor_id: anchorId, segment_index: 0 });
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-slate-200 transition hover:bg-white/10">
+                    <FileSearch className="h-3 w-3" />
+                    在原文中定位{selected.props?.page ? `（第 ${selected.props.page} 页）` : ''}
+                  </button>
+                )}
+                {selected.kind === 'media' && selected.props?.media_id && (
+                  <span className="rounded-md bg-white/[0.05] px-2 py-1 font-mono text-[10px] text-slate-500">
+                    media: {String(selected.props.media_id).slice(0, 8)}…
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </div>

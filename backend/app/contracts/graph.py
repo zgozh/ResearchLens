@@ -1,7 +1,7 @@
 """M00 — 研究图谱契约（REFACTOR_SPEC §5.5 前半）。"""
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import Field
 
@@ -25,6 +25,10 @@ class GraphNodeRecord(ContractModel):
     media_id: Optional[Id] = None
     anchor_ids: List[AnchorId] = Field(default_factory=list)
     status: NodeStatus = "unverified"
+    #: **展示用的补充事实**（图表节点的编号/图片 URL/页码、证据节点的判定与引文…）。
+    #: 用 dict 而不是继续加字段：这些是投影/UI 关心的展示事实，不该污染图谱的语义字段。
+    #: 投影层必须原样透传（曾经用白名单投影丢掉 ``media_id``，整块"图表节点"因此失效）。
+    props: Dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphEdgeRecord(ContractModel):

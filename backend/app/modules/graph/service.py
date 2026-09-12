@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.contracts.common import CallContext, Scope, Warning
 from app.contracts.evidence import ArtifactText, ClaimRecord
@@ -166,6 +166,9 @@ def build(
             evidence_id=ev_id,
             anchor_ids=[row.anchor_id] if row.anchor_id else [],
             status="verified" if row.support_status == "supports" else "unverified",
+            # 展示事实：判定结论 + 定位信息。用户实测反馈"证据节点只有一个标签"，
+            # 给上前端才有的可说：这条证据支持/反驳、在第几页、原文引文是什么。
+            props=_evidence_node_props(row),
         ))
 
     media_nodes: List[GraphNodeRecord] = []
@@ -184,6 +187,9 @@ def build(
             label=ArtifactText(text=_media_node_label(row)),
             media_id=media_id,
             status="verified" if media_id in verified_targets else "unverified",
+            # 展示事实：前端要能**直接看到这张图表**（图片 URL / 编号 / 页码 / caption），
+            # 而不是只有一个 id。此前投影层连 media_id 都丢，图表节点等于空壳（ADR-0058）。
+            props=_media_node_props(row),
         ))
 
     edges = _build_edges(
@@ -471,6 +477,35 @@ def _evidence_node_id(evidence_id: str) -> str:
 
 def _media_node_id(media_id: str) -> str:
     return f"n:media:{media_id}"
+
+
+def _media_node_props(row) -> Dict[str, Any]:
+    """图表节点的**展示事实**：让前端能直接显示这张图表（ADR-0058）。
+
+    图片本身由前端用 ``GET /api/papers/{id}/media/{media_id}`` 取（那里同时给出
+    assets 与**视图策略**，缺原图时才有正确的降级行为），这里给出识别信息。
+    """
+    return {
+        "media_id": getattr(row, "id", None) or "",
+        "media_kind": (row.kind or ""),
+        "legacy_no": row.legacy_no,
+        "caption": (row.label or ""),
+    }
+
+
+def _evidence_node_props(row) -> Dict[str, Any]:
+    """证据节点的**展示事实**：判定结论 + 引文 + 页码（ADR-0058）。
+
+    用户实测反馈"证据节点只有一个'可定位锚点 1 个'标签"—— 标签说不出任何内容。
+    这里给出**这条证据是什么**（引文）、**判定是什么**（支持/反驳/不足）、
+    **在第几页**（``source_page`` 是 1-based 页码，见 ``gate.build_evidence``）。
+    """
+    return {
+        "support_status": (row.support_status or ""),
+        "quote": (row.source_text or "")[:400],
+        "page": int(getattr(row, "source_page", 0) or 0),
+        "anchor_id": row.anchor_id or "",
+    }
 
 
 def _anchor_node_id(anchor_id: str) -> str:

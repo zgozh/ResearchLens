@@ -437,7 +437,7 @@ export default function Workspace() {
                     onSelect={(cid) => selectClaim(cid)}
                   />
                 )}
-                {view === 'graph' && <GraphView graph={graph} accent={accent} paperId={resolvedPaperId} onClaimSelected={(cid, evIdx) => { selectClaim(cid, evIdx); changeView('claim'); }} />}
+                {view === 'graph' && <GraphView graph={graph} accent={accent} paperId={resolvedPaperId} scope={scope ?? undefined} onNavigate={(t) => jumpToPaper(t.anchor_id)} onClaimSelected={(cid, evIdx) => { selectClaim(cid, evIdx); changeView('claim'); }} />}
                 {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} detail={detail} claims={claims} statements={exhibits?.statements} />}
                 {view === 'qa' && <QAView scope={scope} accent={accent} detail={detail} onNavigate={(t) => { jumpToPaper(t.anchor_id); }} messages={qaMessages} onMessagesChange={setQaMessages} />}
                 {view === 'eval' && <EvalView evalData={evalData} accent={accent} report={exhibits?.evaluation ?? null} claims={claims} />}
