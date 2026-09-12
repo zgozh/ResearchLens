@@ -84,6 +84,10 @@ export function EvalView({
   const unsupportedRate = toNumber(metrics.unsupported_fact_escape_rate);
   // **只有真的算出来过**才允许说"通过"；null 必须显示"未评测"。
   const gatePassed = unsupportedRate !== null && unsupportedRate === 0;
+  // 金标集来源：机器构造的集合**不是人工真值**（规格 §5.9），不能让它给自己打分。
+  const goldenTuning = (report?.warnings ?? []).some(
+    (w) => w.code === 'golden_not_annotated',
+  );
 
   return (
     <div className="space-y-6">
@@ -128,7 +132,10 @@ export function EvalView({
             <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-[12px] text-amber-200">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
               <span>
-                本篇尚未产出可用的综合评分：核心指标缺真值（需要 Golden Set 与已跑通的问答轨迹）。
+                {goldenTuning
+                  ? '综合评分尚未产出：金标集是**机器从原文自动构造的草案**，未经过人工确认，'
+                    + '因此不当作真值（避免"让模型给自己出卷子"）。确认后即可出分。'
+                  : '本篇尚未产出可用的综合评分：核心指标缺真值（需要 Golden Set 与已跑通的问答轨迹）。'}
                 界面**不以 0 分冒充通过**，缺失项一律标注"未评测"。
               </span>
             </div>
@@ -173,8 +180,10 @@ export function EvalView({
       <GlassCard className="p-6">
         <div className="mb-4 flex items-center gap-2">
           <Kicker>评测指标 · METRICS</Kicker>
-          {report?.golden_id ? (
-            <Badge tone="emerald">Golden Set 已挂载</Badge>
+          {goldenTuning ? (
+            <Badge tone="amber">金标集待人工确认</Badge>
+          ) : report?.golden_id ? (
+            <Badge tone="emerald">Golden Set 已确认</Badge>
           ) : (
             <Badge tone="amber">缺少 Golden Set</Badge>
           )}

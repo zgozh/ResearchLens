@@ -159,8 +159,33 @@ def _compute_entries(
         precision, recall = golden_mod.support_precision_recall(
             predicted_texts, list(golden_set.claims), predicted_ok=predicted_ok,
         )
-        entries["support_precision"] = precision
-        entries["support_recall"] = recall
+        if input.golden_is_tuning:
+            # 规格（§5.9 / L613）：``support_precision/recall`` **必须有标注集**才叫
+            # measured；调参集（机器自动构造、未经人工确认）**不用于对外报告**。
+            # 否则 `overall_score` 会拿机器自造的"真值"给自己打分——那是自我确认。
+            # 这里如实降级为 not_evaluated，并把 proxy 数值写进 method 便于排查。
+            proxy = ""
+            for entry in (precision, recall):
+                if entry.value.value is not None:
+                    proxy += f"{entry.name}={entry.value.value:.3f} "
+            warnings.append(Warning(
+                code="golden_not_annotated",
+                message=(
+                    "金标集为**调参集**（机器从原文自动构造、未经人工确认），"
+                    "因此 support_precision/recall 不计为 measured，综合评分保持 null；"
+                    f"确认后即可出分（proxy：{proxy.strip() or 'n/a'}）"
+                ),
+                stage="evaluation",
+            ))
+            entries["support_precision"] = not_evaluated(
+                "support_precision", method="金标集未经人工确认（proxy 不当真值）", unit="ratio",
+            )
+            entries["support_recall"] = not_evaluated(
+                "support_recall", method="金标集未经人工确认（proxy 不当真值）", unit="ratio",
+            )
+        else:
+            entries["support_precision"] = precision
+            entries["support_recall"] = recall
     else:
         precision, recall, escape = M.support_metrics(statements)
         entries["support_precision"] = precision

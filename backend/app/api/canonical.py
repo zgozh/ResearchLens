@@ -562,4 +562,69 @@ def build_golden_set(
     }
 
 
+@router.get("/papers/{paper_id}/golden-set")
+def get_golden_set(
+    paper_id: int,
+    revision_id: Optional[str] = None,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """读取该 revision 的**金标集草案**，供人工复核。
+
+    为什么需要（规格 §5.9）：``support_precision/recall`` 必须有**标注集**才叫 measured，
+    且综合评分只在"包含人工真值的核心指标均可测"时才计算。机器自动构造的集合只是
+    **草案/调参集**，必须有人看过并确认（``POST .../golden-set/confirm``）才能当真值。
+    这里把草案逐条列出来，让"确认"是**看过之后的确认**，而不是盖空章。
+    """
+    require_admin(x_admin_token)
+    scope, _rev = _resolve_scope(paper_id, revision_id)
+    from app.core.db import session_scope
+    from app.modules.evaluation import golden_builder
+
+    with session_scope() as db:
+        golden, is_tuning = golden_builder.find_for_scope_ex(db, scope)
+    if golden is None:
+        raise not_found("该 revision 尚无金标集，先 POST /golden-set 生成草案")
+    return {
+        "scope": {"paper_id": scope.paper_id, "revision_id": scope.revision_id},
+        "golden": {
+            "id": golden.id, "version": golden.version,
+            "is_tuning": is_tuning,
+            "status": "draft（机器构造，待人工确认）" if is_tuning else "confirmed（人工已确认）",
+        },
+        "claims": [
+            {"id": c.id, "text": c.text, "acceptable_block_ids": c.acceptable_block_ids}
+            for c in golden.claims
+        ],
+        "questions": [
+            {"id": q.id, "question": q.question, "answerable": q.answerable}
+            for q in golden.questions
+        ],
+    }
+
+
+@router.post("/papers/{paper_id}/golden-set/confirm")
+def confirm_golden_set(
+    paper_id: int,
+    revision_id: Optional[str] = None,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """把金标集标记为**人工已确认**（此后 precision/recall 才算 measured、才出综合评分）。
+
+    **调用即表示人工复核通过**（admin 凭据承担确认责任）。机器自动构造的集合在此之前
+    一律按调参集处理，不参与对外报告——避免"让模型给自己出卷子"。
+    """
+    actor = require_admin(x_admin_token)
+    scope, _rev = _resolve_scope(paper_id, revision_id)
+    from app.modules.evaluation import golden_builder
+
+    golden = golden_builder.confirm_for_scope(scope)
+    if golden is None:
+        raise not_found("该 revision 尚无金标集，先 POST /golden-set 生成草案")
+    return {
+        "scope": {"paper_id": scope.paper_id, "revision_id": scope.revision_id},
+        "confirmed": {"id": golden.id, "version": golden.version},
+        "actor": getattr(actor, "kind", "") or str(actor),
+    }
+
+
 __all__ = ["router"]

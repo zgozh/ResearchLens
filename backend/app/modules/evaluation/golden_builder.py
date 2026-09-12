@@ -65,7 +65,15 @@ _CLAIM_SIGNAL_RE = re.compile(
     r"性能|实验|方法|模型|指标",
     re.I,
 )
+#: 更强的"量化结论"信号：**有数字**或**有结论动词**。实测（ADR-0050）：
+#: 只用泛化的 `_CLAIM_SIGNAL_RE` 取句时，paper 1 的 golden 与预测断言最高相似度仅
+#: **0.21**（远低于阈值 0.42）——两批句子根本不是同一类内容：golden 取的是
+#: "每块首个实质句"，而抽取产出的是**实验/结论句**。要让该指标有意义，golden 必须
+#: 瞄准同一类内容：**原文里的量化结论句**（真值仍只来自原文，不是模型自证）。
+_QUANT_SIGNAL_RE = re.compile(r"\d|%|提高|降低|优于|低于|达到|平均|显著|相比|提升", re.I)
 
+#: 这些章节 kind 里出现"结论句"的概率最高，取句时加权。
+_RESULT_SECTION_KINDS = ("method", "experiment", "result", "conclusion", "limitation")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;.!?！？])\s*")
 
 
@@ -152,6 +160,35 @@ def _is_front_matter(text: str, kind: str) -> bool:
     return False
 
 
+def _section_kind_of_blocks(scope: Scope) -> dict:
+    """``block_id → 所属章节 kind``（用于取句时偏向方法/实验/结论章）。"""
+    from app.modules import claims as claims_mod
+
+    try:
+        structure = claims_mod.get_structure(scope)
+    except Exception:  # noqa: BLE001 - 结构不可用时退化为无权重
+        return {}
+    out: dict = {}
+    for sec in (structure.sections or []):
+        for bid in (sec.source_block_ids or []):
+            out[bid] = (sec.kind or "")
+    return out
+
+
+def _sentence_score(sentence: str, section_kind: str) -> int:
+    """给候选句打分：**量化结论句**得分最高（与产品抽取的目标内容一致）。"""
+    score = 0
+    if _QUANT_SIGNAL_RE.search(sentence):
+        score += 3
+    if _CLAIM_SIGNAL_RE.search(sentence):
+        score += 1
+    if section_kind in _RESULT_SECTION_KINDS:
+        score += 2
+    if 40 <= len(sentence) <= 140:
+        score += 1
+    return score
+
+
 def _golden_candidates(blocks: List[Tuple[str, str, int]], kind_of) -> List[Tuple[str, str, int, int]]:
     """选出「像断言」的原文句，并**按文档位置均匀铺开**。
 
@@ -185,13 +222,15 @@ def build_golden_set(
 
     kinds = _block_kinds(scope)
     candidates = _golden_candidates(blocks, lambda bid, _t: kinds.get(bid, ""))
+    section_kind = _section_kind_of_blocks(scope)
 
-    # 轮转取样：先按"像断言"的信号排序，再在 4 个位置桶之间轮流取，兼顾相关性与覆盖面
+    # 轮转取样：先按"量化结论句"强度排序，再在 4 个位置桶之间轮流取，
+    # 兼顾**内容相关性**（与产品抽取目标一致）与**覆盖面**（不只看开头）。
     by_bucket: List[List[Tuple[str, str, int, int]]] = [[], [], [], []]
     for item in candidates:
         by_bucket[item[3]].append(item)
     for group in by_bucket:
-        group.sort(key=lambda it: (0 if _CLAIM_SIGNAL_RE.search(it[1]) else 1,))
+        group.sort(key=lambda it: -_sentence_score(it[1], section_kind.get(it[0], "")))
 
     picked: List[Tuple[str, str, int, int]] = []
     while len(picked) < claim_limit and any(by_bucket):
@@ -264,20 +303,44 @@ def _golden_id(scope: Scope) -> str:
     return f"golden-{scope.paper_id}-{scope.revision_id[:8]}"
 
 
-def build_and_save(scope: Scope) -> GoldenSet:
-    """构造并持久化（幂等：同 ``(golden_id, version)`` 覆盖写）。"""
+def build_and_save(scope: Scope, *, annotated: bool = False) -> GoldenSet:
+    """构造并持久化（幂等：同 ``(golden_id, version)`` 覆盖写）。
+
+    ``annotated=False``（默认）→ 记为**调参集**（``is_tuning=True``）：
+    机器从原文自动构造、**未经人工确认**，因此按规格不参与对外报告
+    （``golden.py`` 的既有约定），评测侧会把 precision/recall 降级为 not_evaluated。
+    只有 ``annotated=True``（人工确认过）才算真值、才允许出综合评分。
+    """
     from . import golden as golden_mod
 
     golden = build_golden_set(scope)
     with session_scope() as db:
         golden_mod.save_golden_set(
             db, golden, blob_id=f"{golden.id}:{golden.version}",
+            is_tuning=not annotated,
         )
     return golden
 
 
-def find_for_scope(db, scope: Scope) -> Optional[GoldenSet]:
-    """找该 revision 的 Golden Set（按 scope 校验，不匹配视为不存在）。"""
+def confirm_for_scope(scope: Scope) -> Optional[GoldenSet]:
+    """把该 revision 的金标集**标记为人工确认**（``is_tuning=False``）。
+
+    语义即"人工复核通过"：调用方（admin）承担确认责任。返回 ``None`` 表示没有可确认的集合。
+    """
+    from . import golden as golden_mod
+
+    with session_scope() as db:
+        golden, _is_tuning = find_for_scope_ex(db, scope)
+        if golden is None:
+            return None
+        golden_mod.save_golden_set(
+            db, golden, blob_id=f"{golden.id}:{golden.version}", is_tuning=False,
+        )
+    return golden
+
+
+def find_for_scope_ex(db, scope: Scope) -> Tuple[Optional[GoldenSet], bool]:
+    """找该 revision 的金标集，并返回 ``(golden, is_tuning)``。"""
     from sqlalchemy import select
 
     from app.models.audit import GoldenSetORM
@@ -292,13 +355,20 @@ def find_for_scope(db, scope: Scope) -> Optional[GoldenSet]:
         if golden is None:
             continue
         if golden_mod.golden_scope_ok(golden, scope.paper_id, scope.revision_id):
-            return golden
-    return None
+            return golden, bool(row.is_tuning)
+    return None, False
+
+
+def find_for_scope(db, scope: Scope) -> Optional[GoldenSet]:
+    """兼容入口：只要集合本身（不含 provenance）。"""
+    return find_for_scope_ex(db, scope)[0]
 
 
 __all__ = [
     "GOLDEN_VERSION",
     "build_golden_set",
     "build_and_save",
+    "confirm_for_scope",
     "find_for_scope",
+    "find_for_scope_ex",
 ]

@@ -167,14 +167,18 @@ def _input_for(scope: Scope):
 
     # Golden Set：没有它 precision / 拒答率就没有分母（ADR-0046）。
     # 用 ``find_for_scope`` 按 scope 校验，避免把别篇真值套上来。
+    # Golden Set：没有它 precision / 拒答率就没有分母（ADR-0046）。
+    # 用 ``find_for_scope_ex`` 同时取回**是否为调参集**——机器自动构造的集合
+    # 不能当人工真值（规格 L613），交由评测层降级为 not_evaluated。
     golden = None
+    golden_is_tuning = False
     try:
         from app.modules.evaluation import golden_builder
 
         with session_scope() as db:
-            golden = golden_builder.find_for_scope(db, scope)
+            golden, golden_is_tuning = golden_builder.find_for_scope_ex(db, scope)
     except Exception:  # noqa: BLE001
-        golden = None
+        golden, golden_is_tuning = None, False
 
     # 媒体：``source_asset_coverage`` 的分母（此前不传 → 该指标永远 not_evaluated，
     # 而实际上 media 表里有真实数据）。
@@ -188,7 +192,8 @@ def _input_for(scope: Scope):
 
     return EvaluationInput(
         scope=scope, statements=statements, answers=answers, media=media,
-        golden=golden, navigation_checks=_navigation_checks(scope),
+        golden=golden, golden_is_tuning=golden_is_tuning,
+        navigation_checks=_navigation_checks(scope),
     )
 
 

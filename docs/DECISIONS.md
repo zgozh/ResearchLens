@@ -565,3 +565,40 @@
   - 用**前端同款 KaTeX** 对 3 篇论文的 180/156/224 个公式逐个渲染：**失败 0 个**。所以"看起来没转义"**不是**公式渲染失败。
   - 逐字段扫描 `$` / 公式外反斜杠：`body/pages/abstract/caption/key_points/method_steps/map_summary/scenes` 等**全部干净**，只发现**1 处**真实问题：paper 2 的 `rf\$importance` —— `clean_text_markup` 的转义字符类里**没有 `$`**（怕解转义后与公式定界符配错）。
   - 修法：不在后端解 `\$`（会产生不成对的 `$`），而在 `MathText` 里**先保护再切分**：把 `\$` 替换成占位符、切完公式再还原为字面 `$`。否则那个 `$` 会和后面任意一个 `$` 配成一对，把中间大段正文吞进"公式"里——那才真的看起来像乱码。
+
+## D-50 金标集来源纪律：机器构造的集合**不得当人工真值**（自我纠正）
+
+- **我上一轮的错误**：新增自动构造的 Golden Set 后，`support_precision` 被算成 measured、`overall_score` 出了 **60/55/75**。但 `docs/REFACTOR_SPEC.md:613` 明确写着：
+  > 自动流水线只可报告可直接测量项或 proxy；**support precision/recall 等必须有标注集才叫 measured**。……只在**包含人工真值的核心指标均可测**时计算 overall_score；否则 canonical null。
+  把机器从原文自动构造的集合当成真值，等于**让机器给自己出卷子**——既违反规格，也违背"不以假数字冒充"的产品纪律。已修正。
+- **修正内容**：
+  1. `build_and_save(scope, annotated=False)`：默认产出的是**调参集**（`GoldenSetORM.is_tuning=True`，`golden.py` 既有约定"调参集不用于对外报告"）；
+  2. `EvaluationInput.golden_is_tuning`：评测层据此把 `support_precision/recall` 降级为 `not_evaluated`，并追加 `golden_not_annotated` 告警（**proxy 数值写进告警便于排查，但不当真值**）；
+  3. 综合评分因此恢复为 **null**（`overall_score_available=false`），符合规格；
+  4. 新增「机器提议 → 人工确认」链路：`GET /papers/{id}/golden-set` 列出草案逐条内容（让确认是**看过之后的确认**）、`POST /papers/{id}/golden-set/confirm` 标记人工已确认（此后 precision/recall 才 measured、才出分）；
+  5. 前端 EvalView 区分三态：**缺少 Golden Set** / **金标集待人工确认** / **Golden Set 已确认**，并说明"不以 0 分冒充"。
+- **一个需要保留的例外（说明清楚）**：`unanswerable_refusal_rate` 在草案状态下仍算 **measured**——因为"不可答"不是模型判断，而是**经程序在全文检索确认该术语不出现**的客观属性，且问题确实被问过（`qa.build_bank`）。它不依赖人工真值。
+- **仍未人工确认**：三篇的金标集都是草案。要出综合评分需要**你**（人或受委托者）看过 `GET /golden-set` 的内容后调用 `confirm`。我没有替你盖这个章。
+- 回归测试 `test_golden_provenance.py`（5 条：默认是调参集 / 确认清除标记 / 无集合时确认返回 None / 调参集不得出分且告警 / 确认后不再报未确认）。
+
+## D-51 抽取提示词强化：直击 paper 2 的"翻译/改写"失败模式
+
+- **决策**：`CLAIM_EXTRACTION_PROMPT` 增加一节显式规则——**quote 必须原样复制该块文字**：① 保持原文语言（中文块严禁译成英文、英文块不译中文）；② 标点/数字/单位/公式照抄，不增删字词、不合并句子；③ 一个 quote 只能来自一个 block；④ 不加任何前后缀说明（如"原文为："）。
+- **背景（D-45 的实测归因）**：paper 2 一轮 12 条断言里最多 **10 条** `quote_not_in_block`，逐条诊断显示失败模式是**把中文原文翻译成英文**、漏字并句、以及引用语料外的句子。原先的提示词只写了"必须是原文中真实存在的片段，不得改写"，但对"翻译"这种"看起来忠实、实则不是原文"的行为约束不够。
+- **实测效果（paper 2，同一语料同一模型）**：
+
+  | 指标 | 强化前 | 强化后 |
+  |---|---|---|
+  | claims | 10 | 12 |
+  | **已验证** | **1** | **11** |
+  | **quote_not_in_block** | **10** | **0** |
+  | method_steps | 0 | 1 |
+  | 分镜 | 1 | 3 |
+  | 图谱节点/边 | 11 / 1 | **25 / 13** |
+
+  这是本轮最大的一处数据改善：paper 2 从"整篇几乎不可用"变成"与另两篇同一水平"。
+- **纪律**：这属于**收紧产出质量**（要求逐字引用），不是放宽 gate；跨块纠错（D-40）与最长逐字子串恢复（D-45）仍然只认"逐字存在"，两条安全网不变。
+
+## D-47 附（措辞修正）
+
+原文写"Compose 的 `.env` 是按当前工作目录查找的"，实测更精确的说法是：**Compose 先看当前工作目录的 `.env`、再看项目目录（compose 文件所在目录）的 `.env`，前者优先**。证据：`backend/.env` 存在时（以 `backend/` 为 CWD）端口/CORS 被它覆盖成 8001/3001；把它改名后，同样的工作目录又能正确读到根 `.env`（8002/4002、`DEMO_MODE=false`）。

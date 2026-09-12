@@ -91,6 +91,11 @@ class EvaluationInput(ContractModel):
     answers: List[Any] = Field(default_factory=list)     # AnswerRecord（避免循环导入）
     navigation_checks: List[NavigationCheck] = Field(default_factory=list)
     golden: Optional[GoldenSet] = None
+    #: ``golden`` 是否为**调参集**（机器自动构造、未经人工确认）。
+    #: 规格要求：``support_precision/recall`` 必须有**标注集**才叫 measured，
+    #: 且 ``overall_score`` 只在"包含人工真值的核心指标均可测"时才计算；
+    #: 调参集**不用于对外报告**（``golden.py`` 的既有约定）。
+    golden_is_tuning: bool = False
 
 
 class EvaluationReport(ContractModel):
