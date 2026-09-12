@@ -306,26 +306,70 @@ def section_body_and_pages(section: Any, blocks: Any, page_no_by_id: Dict[str, i
     return body, (min(pages) if pages else 0), (max(pages) if pages else 0)
 
 
-def method_step_extras(step: Any, media_legacy_no: Dict[str, Any]) -> Dict[str, Any]:
-    """方法步骤 → 旧 DTO 的 ``text`` / ``figure_ref``（前端"方法动画"需要的两个字段）。
+def method_step_extras(
+    step: Any, media_legacy_no: Dict[str, Any], statement_media: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """方法步骤 → 旧 DTO 的 ``text`` / ``figure_refs`` / ``table_refs``。
 
     - ``text``：canonical ``label`` 就是该步骤的**原文陈述**。前端 ``MethodView`` 在
-      ``st.text`` 存在时走 ``RichText``（把"图 N/表 N"渲染成**可点击引用**），
-      为空则退化 —— 实测真实论文 ``text`` 恒为空，所以"方法动画"里点不到图表。
-    - ``figure_ref``：从 ``step.media_ids`` 解析出第一个可用的 ``legacy_no``
-      （前端用它 ``find(fig_no === figure_ref)`` 显示"查看关联图"）。
-    - **没有来源就不给键**（前端据此不显示对应 UI），不编造编号。
+      ``st.text`` 存在时走 ``RichText``（把"图 N/表 N"渲染成**可点击引用**）。
+    - ``figure_refs`` / ``table_refs``：**该步骤自己的**图表编号（可能有多个），来源优先级：
+      ① 该步骤断言的 ``statement→media`` 绑定（由 caption↔陈述词面重合建立，相关性最好）；
+      ② 步骤自带的 ``media_ids``。
+    ③ **绝不回退到"全篇第一张图"**：用户实测 5 个步骤都指向同一张 ``(a) 原图`` 子图面板，
+      就是因为缺 binds 时前端落回 ``detail.figures[0]``（ADR-0048）。
+    - 没有来源就不给键（前端据此不显示对应 UI），不编造编号。
     """
     out: Dict[str, Any] = {}
     label = _text(getattr(step, "label", None)).strip()
     if label:
         out["text"] = label
-    for media_id in (getattr(step, "media_ids", None) or []):
-        legacy_no = (media_legacy_no or {}).get(media_id)
-        if isinstance(legacy_no, int):
-            out["figure_ref"] = legacy_no
-            break
+
+    figure_refs: List[int] = []
+    table_refs: List[int] = []
+
+    def _collect(media_ids) -> None:
+        for media_id in media_ids or []:
+            legacy_no = (media_legacy_no or {}).get(media_id)
+            if not isinstance(legacy_no, int):
+                continue
+            kind = _media_kind_of(media_id, statement_media)
+            if kind == "table":
+                if legacy_no not in table_refs:
+                    table_refs.append(legacy_no)
+            elif kind == "figure":
+                if legacy_no not in figure_refs:
+                    figure_refs.append(legacy_no)
+
+    # ① 该步骤断言的 statement→media 绑定
+    # ``MethodStepRecord`` 只有 ``claim_ids``（没有 statement_id），所以这里按
+    # statement_id **与** claim_id 双向查（调用方把同一份绑定同时挂到两个键上）。
+    keys: List[str] = []
+    statement_id = getattr(step, "statement_id", None)
+    if statement_id:
+        keys.append(str(statement_id))
+    keys.extend(str(c) for c in (getattr(step, "claim_ids", None) or []))
+    for key in keys:
+        bound = (statement_media or {}).get(key, [])
+        _collect([mid for mid, _kind in bound])
+    # ② 步骤自带 media_ids（绑定缺失时的补充）
+    _collect(getattr(step, "media_ids", None))
+
+    if figure_refs:
+        out["figure_refs"] = figure_refs
+        out["figure_ref"] = figure_refs[0]      # 兼容旧字段
+    if table_refs:
+        out["table_refs"] = table_refs
     return out
+
+
+def _media_kind_of(media_id: str, statement_media: Optional[Dict[str, Any]]) -> str:
+    """从 ``statement→media`` 绑定里取该媒体的 kind；找不到返回 ``figure``（保守）。"""
+    for entries in (statement_media or {}).values():
+        for mid, kind in entries:
+            if mid == media_id:
+                return str(kind or "")
+    return "figure"
 
 
 def figure_image_url(media: Any) -> str:
@@ -482,6 +526,31 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
     # 步骤写进 section_records/method_steps 产物），故用 canonical 结构覆盖。
     if steps:
         media_legacy_no = {m.id: m.legacy_no for m in media_items}
+        # statement → [(media_id, kind)]：方法步骤的图表引用必须按**该步骤自己的**
+        # 证据取（ADR-0048）。绑定由 ``bind_media_for_statements`` 依 caption↔陈述
+        # 词面重合建立，所以相关性直接对应"这张图的题注在讲这件事"。
+        statement_media: Dict[str, List[Any]] = {}
+        media_kind = {m.id: (getattr(m, "kind", "") or "") for m in media_items}
+        try:
+            from app.modules.claims import repository as claims_repo
+            from app.modules.evidence import repository as evidence_repo
+
+            claim_of_statement: Dict[str, str] = {}
+            with _session() as bdb:
+                for row in claims_repo.list_claim_rows(bdb, revision_id):
+                    if row.statement_id:
+                        claim_of_statement[row.statement_id] = row.claim_id
+                for row in evidence_repo.list_binding_rows(bdb, revision_id):
+                    if (row.from_kind or "") != "statement" or (row.to_kind or "") != "media":
+                        continue
+                    entry = (row.to_id, media_kind.get(row.to_id, "figure"))
+                    # 同时挂到 statement_id 与 claim_id：方法步骤只带 claim_ids
+                    statement_media.setdefault(row.from_id, []).append(entry)
+                    claim_id = claim_of_statement.get(row.from_id)
+                    if claim_id:
+                        statement_media.setdefault(claim_id, []).append(entry)
+        except Exception:  # noqa: BLE001 - 绑定不可读不得让详情 500（只是少图表引用）
+            statement_media = {}
         detail = detail.model_copy(update={
             "method_steps": [
                 _legacy_step(
@@ -490,8 +559,9 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
                         "label": _text(st.label),
                         "detail": _text(st.detail),
                         "phase": st.phase,
-                        # text/figure_ref：前端"方法动画"的 RichText 与"查看关联图"
-                        **method_step_extras(st, media_legacy_no),
+                        # text/figure_refs/table_refs：前端"方法动画"的 RichText
+                        # 与"查看关联图/表"（每个步骤各自的图表）
+                        **method_step_extras(st, media_legacy_no, statement_media),
                     },
                     i,
                 )

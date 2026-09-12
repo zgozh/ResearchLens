@@ -42,6 +42,10 @@ class LegacyMethodStepOut(LegacyModel):
     detail: Optional[str] = None
     text: Optional[str] = None
     figure_ref: Optional[int] = None
+    #: **该步骤自己的**关联图/表编号（可能多个）。由该断言的 ``statement→media``
+    #: 绑定得出；此前 DTO 是固定字段表，新字段会被静默丢弃（实测 figure_refs 恒 None）。
+    figure_refs: List[int] = Field(default_factory=list)
+    table_refs: List[int] = Field(default_factory=list)
     color: Optional[str] = None
 
 

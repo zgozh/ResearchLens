@@ -36,18 +36,24 @@ function toKatex(tex: string, display: boolean): string {
   }
 }
 
+/** 受保护的美元符号占位符：``\$`` 是"字面美元"，不能参与公式定界符匹配。 */
+const DOLLAR_PLACEHOLDER = '\u0001';
+
 /**
  * 渲染可能含 LaTeX 公式的文本：
  * - `$...$` / `\(...\)` → 行内公式（KaTeX）
  * - `$$...$$` / `\[...\]` → 块级公式（KaTeX）
  * - 其余文本做 LaTeX 命令清理 + HTML 实体转义，避免显示未转义符号
+ *
+ * **`\$` 必须先保护再切分**（实测 paper 2 的 `rf\$importance`）：否则这个 `$`
+ * 会和后面任意一个 `$` 配成一对，把中间大段正文吞进"公式"里，看起来就是乱码。
  */
 export function MathText({ text, className }: { text: string; className?: string }) {
   const parts = useMemo(() => {
     if (!text) return [{ type: 'plain', val: '' }] as { type: 'plain' | 'math'; val: string; display?: boolean }[];
     // 先切块级公式，再切行内公式
     const tokens: { type: 'plain' | 'math'; val: string; display?: boolean }[] = [];
-    let rest = text;
+    const rest = text.replace(/\\\$/g, DOLLAR_PLACEHOLDER);
     // 块级：$$...$$ 或 \[...\]
     const blockRe = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g;
     let last = 0;
@@ -95,7 +101,12 @@ export function MathText({ text, className }: { text: string; className?: string
             dangerouslySetInnerHTML={{ __html: toKatex(p.val, !!p.display) }}
           />
         ) : (
-          <span key={i} dangerouslySetInnerHTML={{ __html: escapeHtml(cleanPlain(p.val)) }} />
+          <span
+            key={i}
+            dangerouslySetInnerHTML={{
+              __html: escapeHtml(cleanPlain(p.val)).split(DOLLAR_PLACEHOLDER).join('$'),
+            }}
+          />
         ),
       )}
     </span>

@@ -138,6 +138,9 @@ def _legacy_step(step: Any, index: int = 0) -> LegacyMethodStepOut:
         detail=data.get("detail"),
         text=data.get("text"),
         figure_ref=data.get("figure_ref") if isinstance(data.get("figure_ref"), int) else None,
+        # 与 figure_ref 同一纪律：只保留 int，字符串/其它类型一律丢弃（不猜编号）
+        figure_refs=[n for n in (data.get("figure_refs") or []) if isinstance(n, int)],
+        table_refs=[n for n in (data.get("table_refs") or []) if isinstance(n, int)],
         color=data.get("color"),
     )
 

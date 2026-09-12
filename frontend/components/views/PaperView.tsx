@@ -24,6 +24,7 @@ import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { FigureImage } from '@/components/FigureImage';
 import { TableRender } from '@/components/TableRender';
 import { MathText } from '@/components/MathText';
+import { LongText } from '@/components/LongText';
 import { api } from '@/lib/api';
 import { findAsset, resolveMediaPolicy } from '@/lib/sourcePolicy';
 import { cn } from '@/lib/cn';
@@ -271,9 +272,12 @@ export function PaperView({
                   <div className="mb-2 flex items-center gap-2">
                     <span className="rounded-md bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-slate-500">p.{pg.page_no}</span>
                   </div>
-                  <div className="whitespace-pre-wrap text-[14px] leading-relaxed text-slate-400">
-                    <MathText text={pg.text} className="text-[14px]" />
-                  </div>
+                  <LongText
+                    text={pg.text}
+                    paragraphClassName="text-[14px] leading-7 text-slate-400"
+                    collapsible
+                    collapsedHeight={420}
+                  />
                 </div>
               ))}
             </div>
@@ -294,7 +298,12 @@ export function PaperView({
                 </span>
               ) : null}
             </div>
-            <MathText text={sec.body || sec.summary} className="block text-[14px] leading-relaxed text-slate-400" />
+            <LongText
+              text={sec.body || sec.summary}
+              paragraphClassName="text-[14px] leading-7 text-slate-300"
+              collapsible
+              collapsedHeight={320}
+            />
             {sec.key_points.length > 0 && (
               <ul className="mt-3 space-y-1.5">
                 {sec.key_points.map((kp, j) => (

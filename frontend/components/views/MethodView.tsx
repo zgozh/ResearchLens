@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Play, RotateCcw, ChevronRight, Info, FileText, Layers, Table2 } from 'lucide-react';
 import type { PaperDetail, MethodStep } from '@/lib/types';
@@ -29,10 +29,25 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
   const [media, setMedia] = useState<MediaItem | null>(null);
   const heroRef = useRef<HTMLDivElement>(null);
   const total = steps.length;
-  const stepFigure = detail.figures.find((f) => f.fig_no === steps[explored ?? -1]?.figure_ref);
-  const relatedTables = detail.tables.filter((t) =>
-    steps[explored ?? -1]?.text?.includes(`表${t.table_no}`) || steps[explored ?? -1]?.detail?.includes(`表${t.table_no}`),
-  );
+  const current = steps[explored ?? -1];
+  // 每个步骤的图表**按该步骤自己的证据**取（后端 figure_refs/table_refs，
+  // 由该断言的 statement→media 绑定得出）；旧的单一 figure_ref 仅作兼容。
+  const stepFigures = useMemo(() => {
+    const refs = current?.figure_refs?.length
+      ? current.figure_refs
+      : current?.figure_ref != null
+        ? [current.figure_ref]
+        : [];
+    return refs
+      .map((no) => detail.figures.find((f) => f.fig_no === Number(no)))
+      .filter((f): f is NonNullable<typeof f> => !!f);
+  }, [current, detail.figures]);
+  const relatedTables = useMemo(() => {
+    const refs = current?.table_refs ?? [];
+    return refs
+      .map((no) => detail.tables.find((t) => t.table_no === Number(no)))
+      .filter((t): t is NonNullable<typeof t> => !!t);
+  }, [current, detail.tables]);
 
   useEffect(() => {
     if (!playing) return;
@@ -52,7 +67,12 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
         <div className="mb-5 flex items-center justify-between">
           <div>
             <Kicker>方法动画 · METHOD</Kicker>
-            <p className="mt-1 text-sm text-slate-400">点击任意步骤可探索其作用 → 输入 → 骨干 → 模块 → 预测</p>
+            {/* 这行此前写死"作用 → 输入 → 骨干 → 模块 → 预测"，与实现不符（会误导）：
+                实际是"方法/实验章里按原文顺序排列的已验证断言，每条一步"。 */}
+            <p className="mt-1 text-sm text-slate-400">
+              每个步骤 = 方法/实验章节里的一条**已验证断言**，按原文顺序排列；点击可查看该步骤的
+              原文依据与关联图表。
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <Btn variant="outline" onClick={play} className="text-xs">
@@ -69,11 +89,15 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
             下方仍展示论文原图与关联图表。
           </div>
         ) : (
+        <>
         <div className="flex items-stretch gap-2">
           {steps.map((s, i) => {
             const revealed = i < active;
-            const current = i === active - 1;
+            const isCurrent = i === active - 1;
             const exploredHere = explored === i;
+            // 阶段只在**变化处**标注：同章步骤不再每张卡片都重复同一个标签
+            // （用户反馈"点开每个步骤标签都显示同一个实验"）。
+            const phaseChanged = i === 0 || (steps[i - 1]?.phase || '') !== (s.phase || '');
             return (
               <div key={s.id} className="flex flex-1 items-center gap-2">
                 <button
@@ -87,12 +111,25 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
                         <div
                           className={cn('relative flex h-full min-h-[130px] flex-col justify-between rounded-2xl border p-3 transition',
                             exploredHere && 'ring-2 ring-white/30')}
-                          style={{ borderColor: current ? s.color || accent : 'transparent',
+                          style={{ borderColor: isCurrent ? s.color || accent : 'transparent',
                             background: `linear-gradient(180deg, ${(s.color || accent)}1e, ${(s.color || accent)}0a)`,
-                            boxShadow: current ? `0 12px 40px -12px ${(s.color || accent)}66` : 'none' }}>
-                          <div className="grid h-7 w-7 place-items-center rounded-lg font-mono text-[11px] font-bold"
-                            style={{ background: s.color || accent, color: '#0B1220' }}>{i + 1}</div>
+                            boxShadow: isCurrent ? `0 12px 40px -12px ${(s.color || accent)}66` : 'none' }}>
+                          <div className="flex items-center gap-2">
+                            <span className="grid h-7 w-7 place-items-center rounded-lg font-mono text-[11px] font-bold"
+                              style={{ background: s.color || accent, color: '#0B1220' }}>{i + 1}</span>
+                            {(s.figure_refs?.length || s.table_refs?.length) ? (
+                              <span className="font-mono text-[10px] text-slate-400">
+                                {s.figure_refs?.length ? `图×${s.figure_refs.length}` : ''}
+                                {s.table_refs?.length ? ` 表×${s.table_refs.length}` : ''}
+                              </span>
+                            ) : null}
+                          </div>
                           <div>
+                            {phaseChanged && (s.phase) && (
+                              <div className="mb-0.5 font-mono text-[10px] uppercase tracking-wide text-slate-500">
+                                {PHASE_LABEL[s.phase || ''] || s.phase}
+                              </div>
+                            )}
                             <div className="text-sm font-semibold text-white">{shortLabel(s.label)}</div>
                             {s.detail && <div className="mt-1 text-[11px] leading-snug text-slate-400">{s.detail}</div>}
                           </div>
@@ -110,6 +147,10 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
             );
           })}
         </div>
+        <p className="mt-3 text-[11px] text-slate-500">
+          播放会按顺序揭示每一步；点任意步骤查看它的原文依据与关联图表。
+        </p>
+        </>
         )}
 
         {active > 0 && (
@@ -148,27 +189,38 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
                   })()}
                 </span>
               </p>
-              {/* 关联图 + 关联表（可点击放大） */}
-              {(stepFigure || relatedTables.length > 0) && (
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {stepFigure && (
-                    <button onClick={() => setMedia({ type: 'figure', figure: stepFigure })}
-                      className="inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
-                      <Layers className="h-4 w-4" /> 查看关联图（图 {stepFigure.fig_no}）
-                    </button>
-                  )}
-                  {relatedTables.map((t) => (
-                    <button key={`rt${t.table_no}`} onClick={() => setMedia({ type: 'table', table: t })}
-                      className="inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
-                      <Table2 className="h-4 w-4" /> 查看关联表（表 {t.table_no}）
-                    </button>
-                  ))}
+              {/* 关联图 + 关联表：**该步骤自己的**证据（可能多个），可点击放大 */}
+              {(stepFigures.length > 0 || relatedTables.length > 0) && (
+                <div className="mt-4">
+                  <div className="mb-2 text-[11px] text-slate-500">
+                    该步骤的关联图表（来自它引用的证据）
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {stepFigures.map((f) => (
+                      <button key={`rf${f.fig_no}`} onClick={() => setMedia({ type: 'figure', figure: f })}
+                        className="inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
+                        <Layers className="h-4 w-4" /> 图 {f.fig_no}
+                      </button>
+                    ))}
+                    {relatedTables.map((t) => (
+                      <button key={`rt${t.table_no}`} onClick={() => setMedia({ type: 'table', table: t })}
+                        className="inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
+                        <Table2 className="h-4 w-4" /> 表 {t.table_no}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
-              {hero && !stepFigure && relatedTables.length === 0 && (
+              {stepFigures.length === 0 && relatedTables.length === 0 && (
+                <p className="mt-4 text-[12px] text-slate-500">
+                  该步骤的断言尚未绑定图表（证据门只把 caption 与陈述词面重合的图表绑上；
+                  不重合就不绑，避免给出无关的图）。
+                </p>
+              )}
+              {hero && stepFigures.length === 0 && relatedTables.length === 0 && (
                 <button onClick={() => heroRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-                  className="mt-4 inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
-                  <FileText className="h-4 w-4" /> 查看方法原图（图 {hero.fig_no}）
+                  className="mt-2 inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
+                  <FileText className="h-4 w-4" /> 查看论文原图（图 {hero.fig_no}，非本步骤专属）
                 </button>
               )}
             </GlassCard>

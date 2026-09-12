@@ -60,10 +60,15 @@ export interface TableOut {
 export interface MethodStep {
   id: string;
   label: string;
+  /** 步骤所属章节标题（后端按"方法/实验章归属"给出；同章步骤会相同）。 */
   phase?: string;
   detail?: string;
   text?: string;
+  /** 兼容字段：第一个关联图。 */
   figure_ref?: number;
+  /** **该步骤自己的**关联图/表编号（可能多个）——不再回退到"全篇第一张图"。 */
+  figure_refs?: number[];
+  table_refs?: number[];
   color?: string;
 }
 
@@ -84,6 +89,15 @@ export interface EvidenceOut {
   text: string;
   quote: string;
   confidence: number;
+  // --- canonical 扩展（后端 `adapters.to_legacy_evidence` 已返回）---
+  evidence_id?: string;
+  anchor_id?: string;
+  locator_status?: string;
+  /** 证据的支撑结论：supports / contradicts / insufficient / unreviewed。 */
+  verification_status?: string;
+  media_ids?: string[];
+  confidence_assessed?: boolean;
+  confidence_method?: string;
 }
 
 export interface ClaimSummary {
@@ -104,6 +118,14 @@ export interface ClaimOut {
   status: string;
   rationale: string;
   evidence: EvidenceOut[];
+  // --- canonical 扩展（后端 `adapters.to_legacy_claim` 已返回）---
+  statement_id?: string;
+  /** 断言的真实校验状态：verified / inference / contested / unverified / rejected。 */
+  verification_status?: string;
+  visibility?: string;
+  revision_id?: string;
+  confidence_assessed?: boolean;
+  evidence_ids?: string[];
 }
 
 export interface GraphNode {

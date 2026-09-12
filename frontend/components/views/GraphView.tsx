@@ -77,6 +77,11 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
   const [claimDetail, setClaimDetail] = useState<ClaimOut | null>(null);
   const [loadingClaim, setLoadingClaim] = useState(false);
   const [expandEv, setExpandEv] = useState(false);
+  // 只有**确实有可展开的长证据**时才显示"展开证据"（否则点了没任何变化）。
+  const hasLongEvidence = useMemo(() => {
+    const list = claimDetail?.evidence ?? [];
+    return list.some((e: any) => ((e?.quote || e?.text || '') as string).length > 60);
+  }, [claimDetail]);
 
   // 按图中真实出现的 kind 生成列位/配色/中文名（新 kind 自动有位有颜色）
   const kindMeta = useMemo(() => {
@@ -210,11 +215,19 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
             <div className="mt-3 space-y-3">
               {/* 图谱内直接弹出该断言的证据 */}
               {loadingClaim && <div className="text-[12px] text-slate-500">正在加载证据…</div>}
+              {!loadingClaim && !claimDetail && (
+                <p className="text-[11px] text-amber-300/80">读取该断言详情失败，可点下方按钮在左侧证据链中查看。</p>
+              )}
               {claimDetail && (
                 <div className="rounded-xl border border-[var(--line)] bg-white/[0.02] p-3">
                   <div className="mb-2 flex items-center gap-2">
                     <Badge tone="slate">该断言的证据</Badge>
                     <span className="font-mono text-[10px] text-slate-500">{claimDetail.evidence?.length || 0} 条</span>
+                    {claimDetail.verification_status && (
+                      <span className="ml-auto font-mono text-[10px] text-slate-500">
+                        {claimDetail.verification_status}
+                      </span>
+                    )}
                   </div>
                   <div className="space-y-2">
                     {claimDetail.evidence?.length === 0 && (
@@ -225,36 +238,63 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
                         <div className="flex items-center gap-2 text-[10px] text-slate-500">
                           <Quote className="h-3 w-3 text-slate-600" />
                           <span className="font-mono">p.{e.page} · {e.region}</span>
+                          {/* 证据的**支撑结论**要如实显示：此前任何非 supports 都不显示状态 */}
+                          <span className="font-mono">
+                            {e.verification_status === 'supports' ? '· 支持'
+                              : e.verification_status === 'contradicts' ? '· 反驳'
+                                : e.verification_status === 'insufficient' ? '· 证据不足'
+                                  : e.verification_status ? `· ${e.verification_status}` : ''}
+                          </span>
                         </div>
-                        <p className={cn('mt-1 text-[11.5px] text-slate-300', !expandEv && 'line-clamp-2')}>{e.quote || e.text}</p>
+                        <p className={cn('mt-1 whitespace-pre-wrap text-[11.5px] leading-5 text-slate-300',
+                          !expandEv && hasLongEvidence && 'line-clamp-2')}>{e.quote || e.text}</p>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
               <div className="flex flex-wrap items-center gap-2">
-                <button onClick={() => setExpandEv((v) => !v)}
-                  className="rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/10">
-                  {expandEv ? '收起证据' : '在本页展开证据'}
-                </button>
+                {/* 只有**确实有可展开内容**时才给这个按钮：此前无条件渲染，
+                    证据本身不足两行时点了没有任何变化（用户反馈"点了没反应"）。 */}
+                {claimDetail && hasLongEvidence && (
+                  <button onClick={() => setExpandEv((v) => !v)}
+                    className="rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/10">
+                    {expandEv ? '收起证据' : '在本页展开证据'}
+                  </button>
+                )}
                 {claimDetail && claimDetail.evidence?.length > 0 && (
                   <button onClick={() => onClaimSelected?.(selected.props!.claim_id as string, 0)}
                     className="inline-flex items-center gap-1 rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
                     <ArrowRight className="h-3 w-3" /> 定位到该证据
                   </button>
                 )}
+                <button onClick={() => onClaimSelected?.(selected.props!.claim_id as string, 0)}
+                  className="inline-flex items-center gap-1 rounded-md bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/10">
+                  <FileSearch className="h-3 w-3" /> 在证据链中打开
+                </button>
               </div>
             </div>
           )}
-          {selected.kind === 'evidence' && selected.props?.claim_id && (
-            <div className="mt-2 inline-flex items-center gap-2">
-              <span className="inline-flex rounded-md bg-white/[0.05] px-2 py-1 font-mono text-[11px] text-slate-400">
-                claim_id: {selected.props.claim_id}
-              </span>
-              <button onClick={() => onClaimSelected?.(selected.props!.claim_id as string)}
-                className="rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
-                查看该断言的证据 →
-              </button>
+          {selected.kind !== 'claim' && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {/* 证据/图表/方法节点此前只有一行 props 事实，没有"能去哪儿"的动作 */}
+              {(selected.props?.claim_id) && (
+                <button
+                  onClick={() => onClaimSelected?.((selected.props?.claim_id) as string)}
+                  className="inline-flex items-center gap-1 rounded-md bg-indigo-500/20 px-2.5 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/30">
+                  <ArrowRight className="h-3 w-3" /> 查看所属断言的证据
+                </button>
+              )}
+              {selected.kind === 'media' && selected.props?.media_id && (
+                <span className="rounded-md bg-white/[0.05] px-2 py-1 font-mono text-[10px] text-slate-400">
+                  media: {String(selected.props.media_id).slice(0, 8)}…
+                </span>
+              )}
+              {(selected.props?.anchor_ids?.length ?? 0) > 0 && (
+                <span className="rounded-md bg-white/[0.05] px-2 py-1 font-mono text-[10px] text-slate-400">
+                  可定位锚点 {selected.props!.anchor_ids!.length} 个
+                </span>
+              )}
             </div>
           )}
         </div>

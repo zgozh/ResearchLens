@@ -8,6 +8,7 @@ import { Badge, Btn, GlassCard, Kicker } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { FigureImage } from '@/components/FigureImage';
 import { TableRender } from '@/components/TableRender';
+import { LongText } from '@/components/LongText';
 
 /** 讲解里出现的长句断言/步骤，单行展示前必须截断。 */
 function shortText(text: string | undefined, max: number): string {
@@ -159,7 +160,10 @@ export function PresenterView({ presentation, accent, detail, claims, statements
 
             <div className="rounded-2xl border border-[var(--line)] bg-white/[0.03] p-5">
               <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500"><FileText className="h-3.5 w-3.5" style={{ color }} /> 讲解词 · 内容</div>
-              <p className="text-[17px] leading-relaxed text-slate-100">{narr.script}</p>
+              <LongText
+                text={narr.script}
+                paragraphClassName="text-[16px] leading-8 text-slate-100"
+              />
             </div>
 
             {/* 涉及内容（可点击 → 右侧证据） */}

@@ -176,8 +176,18 @@ def _input_for(scope: Scope):
     except Exception:  # noqa: BLE001
         golden = None
 
+    # 媒体：``source_asset_coverage`` 的分母（此前不传 → 该指标永远 not_evaluated，
+    # 而实际上 media 表里有真实数据）。
+    media = []
+    try:
+        from app.modules import visual as visual_mod
+
+        media = list(visual_mod.list_media(scope, limit=500).items)
+    except Exception:  # noqa: BLE001
+        media = []
+
     return EvaluationInput(
-        scope=scope, statements=statements, answers=answers,
+        scope=scope, statements=statements, answers=answers, media=media,
         golden=golden, navigation_checks=_navigation_checks(scope),
     )
 

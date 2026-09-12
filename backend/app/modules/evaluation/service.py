@@ -106,6 +106,35 @@ def run_golden(
     return compute(input, ctx)
 
 
+def _ingest_ms(scope: Scope) -> Optional[float]:
+    """入库时延：该 revision 最近一次**成功作业**的 ``created_at→updated_at``。
+
+    真实数据（作业表），不是估算；拿不到就返回 ``None``，由 ``ms_entry`` 降级为
+    ``not_evaluated``——**绝不用 0 冒充**（ADR-0046 的同一纪律）。
+    """
+    try:
+        from sqlalchemy import select
+
+        from app.core.db import session_scope
+        from app.models.jobs import JobORM
+
+        with session_scope() as db:
+            row = db.execute(
+                select(JobORM)
+                .where(
+                    JobORM.revision_id == scope.revision_id,
+                    JobORM.state.in_(("succeeded", "partial")),
+                )
+                .order_by(JobORM.updated_at.desc())
+                .limit(1)
+            ).scalars().first()
+            if row is None or row.created_at is None or row.updated_at is None:
+                return None
+            return max(0.0, (row.updated_at - row.created_at).total_seconds() * 1000.0)
+    except Exception:  # noqa: BLE001 - 作业表不可读不得让评测 500
+        return None
+
+
 def _compute_entries(
     input: EvaluationInput,
     golden_set: Optional[GoldenSet],
@@ -158,7 +187,9 @@ def _compute_entries(
     entries["source_asset_coverage"] = M.source_asset_coverage(list(input.media or []))
 
     # ---- 时延 / token
-    for entry in M.timing_metrics(list(input.answers or []), checks):
+    for entry in M.timing_metrics(
+        list(input.answers or []), checks, ingest_ms=_ingest_ms(input.scope)
+    ):
         entries[entry.name] = entry
     for entry in M.token_metrics(list(input.answers or [])):
         entries[entry.name] = entry

@@ -11,6 +11,7 @@ import { FigureImage } from '@/components/FigureImage';
 import { TableRender } from '@/components/TableRender';
 import { cn } from '@/lib/cn';
 import { MathText } from '@/components/MathText';
+import { LongText } from '@/components/LongText';
 
 const KIND_LABEL: Record<string, string> = {
   intro: '引言', problem: '问题与背景', method: '方法', experiment: '实验',
@@ -80,7 +81,13 @@ export function MapView({ detail, accent, onOpenSection }: {
                   <span className="h-2 w-2 rounded-full" style={{ background: b.c }} />
                   <span className="font-mono text-[11px] uppercase tracking-[0.2em]" style={{ color: b.c }}>{b.label}</span>
                 </div>
-                <MathText text={map[b.key]} className="mt-3 text-sm leading-relaxed text-slate-300" />
+                <LongText
+                  text={map[b.key]}
+                  className="mt-3"
+                  paragraphClassName="text-sm leading-relaxed text-slate-300"
+                  collapsible
+                  collapsedHeight={140}
+                />
               </GlassCard>
             </motion.div>
           ))}
@@ -101,7 +108,11 @@ export function MapView({ detail, accent, onOpenSection }: {
                   <span className="grid h-7 w-7 place-items-center rounded-lg bg-white/[0.04] font-mono text-[11px] text-slate-400">{s.page_end && s.page_end !== s.page_start ? `${s.page_start}–${s.page_end}` : s.page}</span>
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-slate-100">{s.heading}</div>
-                    <MathText text={s.summary} className="mt-0.5 line-clamp-2 text-[12px] text-slate-500" />
+                    <LongText
+                      text={s.summary}
+                      className="mt-0.5"
+                      paragraphClassName="line-clamp-2 text-[12px] text-slate-500"
+                    />
                   </div>
                   <Badge tone={TONE[s.kind] || 'slate'}>{KIND_LABEL[s.kind] || s.kind}</Badge>
                   <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', open && 'rotate-180')} />
@@ -110,7 +121,14 @@ export function MapView({ detail, accent, onOpenSection }: {
                   <div className="space-y-3 px-5 pb-4 pl-14">
                     {open && (
                       <>
-                        <MathText text={s.body} className="text-[13px] leading-relaxed text-slate-300" />
+                        {/* 章节正文 = 该节原文全文（实测最长 6647 字）→ 必须切段 + 默认折叠，
+                            否则展开后是一大坨没有段落间距的文字（用户反馈"挤在一起很乱"）。 */}
+                        <LongText
+                          text={s.body}
+                          paragraphClassName="text-[13px] leading-7 text-slate-300"
+                          collapsible
+                          collapsedHeight={260}
+                        />
                         {(s.key_points?.length ?? 0) > 0 && (
                           <ul className="space-y-1">
                             {s.key_points.map((kp, j) => (

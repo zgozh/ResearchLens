@@ -34,22 +34,36 @@ function EvidenceContent({
   }
   return (
     <ul className="space-y-3 p-4">
-      {evidence.map((e) => (
+      {evidence.map((e) => {
+        // 此前任何非 supports 的证据都显示"待核验"——那是错的：`contradicts` 是**已被反驳**、
+        // `insufficient` 是**证据不足**，两者都已经有结论，不是"待核验"。
+        // 只有真正没有判定（空/undefined/unreviewed）才叫待核验。
+        const meta = SUPPORT_META[e.support_status as string] ?? {
+          status: 'unverified' as const, label: '待核验',
+        };
+        return (
         <li key={e.id} className="rounded-xl border border-slate-200 bg-white p-3">
           <div className="mb-2 flex items-center gap-2">
-            <VerificationStatus
-              status={e.support_status === 'supports' ? 'verified' : 'unverified'}
-              label={e.support_status === 'supports' ? '支持' : '待核验'}
-            />
+            <VerificationStatus status={meta.status} label={meta.label} />
             <span className="ml-auto font-mono text-[10px] text-slate-400">{e.claim_id}</span>
           </div>
-          <p className="mb-2 text-sm leading-relaxed text-slate-700">{e.source_text}</p>
+          <p className="mb-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{e.source_text}</p>
           {onNavigate && <CitationLink evidence={e} onNavigate={onNavigate} />}
         </li>
-      ))}
+        );
+      })}
     </ul>
   );
 }
+
+/** 证据的支撑结论 → 展示状态与文案（一一对应，不再把所有非 supports 都说成"待核验"）。 */
+const SUPPORT_META: Record<string, { status: 'verified' | 'unverified' | 'contested' | 'inference'; label: string }> = {
+  supports: { status: 'verified', label: '支持' },
+  contradicts: { status: 'contested', label: '反驳' },
+  insufficient: { status: 'unverified', label: '证据不足' },
+  unreviewed: { status: 'unverified', label: '未判定' },
+  '': { status: 'unverified', label: '未判定' },
+};
 
 export function EvidenceDrawer({
   scope,

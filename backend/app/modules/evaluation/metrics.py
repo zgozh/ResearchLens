@@ -334,7 +334,9 @@ def _question_id_of(answer) -> Optional[str]:
     return str(question) if question else None
 
 
-def timing_metrics(answers: Sequence, navigation_checks: Sequence) -> List[MetricEntry]:
+def timing_metrics(
+    answers: Sequence, navigation_checks: Sequence, ingest_ms: Optional[float] = None,
+) -> List[MetricEntry]:
     firsts: List[float] = []
     totals: List[float] = []
     for answer in answers:
@@ -354,7 +356,9 @@ def timing_metrics(answers: Sequence, navigation_checks: Sequence) -> List[Metri
         ms_entry("qa_total_ms",
                  (sum(totals) / len(totals)) if totals else None,
                  method="answer_usage_elapsed_mean"),
-        not_evaluated("ingest_ms", method="由任务流水线侧记录", unit="ms"),
+        # ``ingest_ms`` 由调用方从**成功作业**的 created_at→updated_at 得出；
+        # 拿不到就是 not_evaluated（此前恒 not_evaluated，因为没人传）。
+        ms_entry("ingest_ms", ingest_ms, method="job_created_to_updated"),
     ]
 
 
