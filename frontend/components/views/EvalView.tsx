@@ -82,6 +82,13 @@ export function EvalView({
   const scoreValue = toNumber(report?.overall_score) ?? toNumber(evalData.overall_score);
   // 「可用」必须由后端显式声明，且分数确实是数字；否则一律按未评测处理。
   const scoreAvailable = metrics.overall_score_available !== false && scoreValue !== null;
+  // **AI 口径**综合分（ADR-0056）：人工真值缺失时由 LLM 语义裁判给出，标着口径显示，
+  // 绝不与人工真值口径混为一谈。展示优先级：人工真值 > AI 裁判 > 未评测。
+  const aiScoreValue = toNumber(metrics.ai_overall_score);
+  const aiScoreAvailable =
+    !scoreAvailable && metrics.ai_overall_score_available !== false && aiScoreValue !== null;
+  const shownScore = scoreAvailable ? scoreValue : aiScoreAvailable ? aiScoreValue : null;
+  const scoreBasis = scoreAvailable ? 'human' : aiScoreAvailable ? 'ai' : null;
 
   const claimCount = claims?.length ?? 0;
   const supportedCount = claims?.filter((c) => c.status === 'SUPPORTED').length ?? 0;
@@ -99,21 +106,23 @@ export function EvalView({
       {/* 总评 */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[300px,1fr]">
         <GlassCard className="flex flex-col items-center justify-center p-6 text-center">
-          <Kicker className="mb-3">综合评分 · SCORE</Kicker>
-          {scoreAvailable ? (
+          <Kicker className="mb-3">
+            综合评分 · SCORE{scoreBasis === 'ai' ? '（AI 评测）' : ''}
+          </Kicker>
+          {shownScore !== null ? (
             <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
               className="relative grid h-40 w-40 place-items-center">
               <svg viewBox="0 0 120 120" className="h-full w-full -rotate-90">
                 <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="10" />
                 <motion.circle cx="60" cy="60" r="52" fill="none" stroke={accent} strokeWidth="10" strokeLinecap="round"
-                  strokeDasharray={`${(Math.max(0, Math.min(100, scoreValue!)) / 100) * 326.7} 326.7`}
+                  strokeDasharray={`${(Math.max(0, Math.min(100, shownScore)) / 100) * 326.7} 326.7`}
                   initial={{ strokeDasharray: '0 326.7' }}
-                  animate={{ strokeDasharray: `${(Math.max(0, Math.min(100, scoreValue!)) / 100) * 326.7} 326.7` }}
+                  animate={{ strokeDasharray: `${(Math.max(0, Math.min(100, shownScore)) / 100) * 326.7} 326.7` }}
                   transition={{ duration: 1.1, ease: 'easeOut' }} />
               </svg>
               <div className="absolute inset-0 grid place-items-center">
                 <div>
-                  <div className="text-4xl font-bold text-white">{Math.round(scoreValue!)}</div>
+                  <div className="text-4xl font-bold text-white">{Math.round(shownScore)}</div>
                   <div className="font-mono text-[10px] uppercase text-slate-500">/ 100</div>
                 </div>
               </div>
@@ -129,6 +138,12 @@ export function EvalView({
           <div className="mt-4 flex items-center gap-1.5 text-[11px] text-slate-500">
             <Gauge className="h-3.5 w-3.5" /> 自动质量评测
           </div>
+          {scoreBasis === 'ai' && (
+            <p className="mt-2 text-[10px] leading-relaxed text-amber-300/70">
+              AI 口径：support_precision/recall 由 **LLM 语义裁判**按语义判等给出（proxy），
+              金标集未经人工确认 → 不是人工真值分。
+            </p>
+          )}
         </GlassCard>
 
         <GlassCard className="p-6">
@@ -137,10 +152,18 @@ export function EvalView({
             <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-[12px] text-amber-200">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
               <span>
-                {goldenTuning
-                  ? '综合评分尚未产出：金标集是**机器从原文自动构造的草案**，未经过人工确认，'
-                    + '因此不当作真值（避免"让模型给自己出卷子"）。确认后即可出分。'
-                  : '本篇尚未产出可用的综合评分：核心指标缺真值（需要 Golden Set 与已跑通的问答轨迹）。'}
+                {scoreAvailable ? null : aiScoreAvailable ? (
+                  <>
+                    上面是 **AI 评测口径**的分数：金标集是机器从原文构造的草案（未人工确认），
+                    所以 support_precision/recall 标为 proxy、由 LLM 语义裁判判等给出。
+                    人工真值口径的综合评分仍不出（避免"让模型给自己出卷子"）。
+                  </>
+                ) : goldenTuning ? (
+                  '综合评分尚未产出：金标集是**机器从原文自动构造的草案**，未经过人工确认，'
+                  + '因此不当作真值（避免"让模型给自己出卷子"）；AI 裁判本次也未给出结论。'
+                ) : (
+                  '本篇尚未产出可用的综合评分：核心指标缺真值（需要 Golden Set 与已跑通的问答轨迹）。'
+                )}
                 界面**不以 0 分冒充通过**，缺失项一律标注"未评测"。
               </span>
             </div>

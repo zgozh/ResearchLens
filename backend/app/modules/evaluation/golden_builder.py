@@ -26,7 +26,10 @@ from app.contracts.common import Scope
 from app.contracts.evaluation import GoldenAnchor, GoldenClaim, GoldenQuestion, GoldenSet
 from app.core.db import session_scope
 
-GOLDEN_VERSION = "rl.golden/1"
+#: 构造规则版本：取句/过滤规则一变必须 bump（`(golden_id, version)` 决定覆盖写哪个集合）
+#: ``/2``：按章节排除参考文献/致谢 + 文献条目形态兜底；
+#: ``/3``：块内取**最像断言的句子**而不是首句（ADR-0056）
+GOLDEN_VERSION = "rl.golden/3"
 
 #: 不可答题的候选术语。**不硬编码"哪些论文没有它"**——运行时逐个检查是否真的不在全文里，
 #: 通过检查才用（"不可答"必须被验证，不能是猜测）。
@@ -58,6 +61,20 @@ _FRONT_MATTER_RE = re.compile(
 _AFFILIATION_HINT = ("大学", "学院", "研究所", "实验室", "University", "Institute",
                      "School", "Laboratory", "College")
 
+#: **非正文**章节：整章都不能当参考断言（ADR-0056 实测）。为什么不能只靠句子里的
+#: ``References`` 关键词：参考文献**条目本身**不含 "References" 字样，而是
+#: ``[12] Lim SL, Bentley PJ, …`` 这种形态 —— 实测 paper 2 的 12 条参考断言里
+#: 有 3 条是文献条目，AI 语义裁判因此判"0 命中"（分母脏，不是指标不行）。
+_NON_BODY_SECTION_RE = re.compile(
+    r"reference|bibliograph|works\s+cited|致谢|acknowledg|附录|appendix|"
+    r"作者简介|基金项目|作者贡献",
+    re.I,
+)
+
+#: 参考文献条目形态：以 ``[12]`` / ``［12］`` / ``12.`` 开头，且后面跟着作者式拉丁文
+_BIB_ENTRY_RE = re.compile(r"^\s*[\[［]\s*\d{1,3}\s*[\]］]")
+_BIB_AUTHOR_RE = re.compile(r"[A-Z][a-z]+\s+[A-Z]{1,3}\b")
+
 #: "像断言"的信号：数字/百分比/结论性动词。用来在全文里挑**事实句**，
 #: 让 golden 覆盖到断言真正出现的位置（方法/实验/结论），而不是首页杂项。
 _CLAIM_SIGNAL_RE = re.compile(
@@ -74,7 +91,9 @@ _QUANT_SIGNAL_RE = re.compile(r"\d|%|提高|降低|优于|低于|达到|平均|�
 
 #: 这些章节 kind 里出现"结论句"的概率最高，取句时加权。
 _RESULT_SECTION_KINDS = ("method", "experiment", "result", "conclusion", "limitation")
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;.!?！？])\s*")
+#: 句子边界。**小数点不能当边界**（真实缺陷：``8.5%`` 被切成 ``8.`` 与 ``5%``，
+#: 于是"最优句"取到半截数字、参考断言变成残句）。所以 ``.`` 只在后面跟空白/结尾时才算边界。
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;!?！？])\s*|\.(?=\s|$)")
 
 
 def _norm(text: str) -> str:
@@ -90,6 +109,36 @@ def _first_sentence(text: str) -> str:
         if _MIN_SENTENCE_CHARS <= len(piece) <= _MAX_SENTENCE_CHARS:
             return piece
     return body[:_MAX_SENTENCE_CHARS] if len(body) >= _MIN_SENTENCE_CHARS else ""
+
+
+def _candidate_sentences(text: str) -> List[str]:
+    """块内所有可用长度的句子（用于挑**最优句**，而不是无脑拿首句）。"""
+    body = " ".join((text or "").split())
+    if len(body) < _MIN_SENTENCE_CHARS:
+        return []
+    out: List[str] = []
+    for piece in _SENTENCE_SPLIT_RE.split(body):
+        piece = piece.strip()
+        if _MIN_SENTENCE_CHARS <= len(piece) <= _MAX_SENTENCE_CHARS:
+            out.append(piece)
+    if not out and len(body) >= _MIN_SENTENCE_CHARS:
+        out.append(body[:_MAX_SENTENCE_CHARS])
+    return out
+
+
+def _best_sentence(text: str, section_kind: str) -> str:
+    """块内**最像断言**的句子（量化结论优先）。
+
+    为什么不能只取首句（实测，ADR-0056）：paper 2 的参考集全是"每块首句"——
+    数据集规模、算法对比之类的铺垫句，而抽取产出的是**定义/量化断言**
+    （评分趋势、下载比例、卸载率…），两批内容**根本不重合**，AI 语义裁判只能判 0 命中。
+    模块自己的注释早就写着"要瞄准量化结论句"，实现却只拿首句；这里补上。
+    仍**只从原文取句**，真值来源不变（不引入模型生成的内容）。
+    """
+    sentences = _candidate_sentences(text)
+    if not sentences:
+        return ""
+    return max(sentences, key=lambda s: _sentence_score(s, section_kind))
 
 
 def _load_blocks(scope: Scope) -> List[Tuple[str, str, int]]:
@@ -154,10 +203,18 @@ def _is_front_matter(text: str, kind: str) -> bool:
         return True
     if _FRONT_MATTER_RE.search(body):
         return True
+    # 参考文献条目形态（章节判不出来时的兜底）：``[12] Lim SL, …``
+    if _BIB_ENTRY_RE.match(body) and _BIB_AUTHOR_RE.search(body[:120]):
+        return True
     # 单位行：既是"某大学/学院/研究所"又带邮编数字
     if any(h in body for h in _AFFILIATION_HINT) and re.search(r"\d{5,6}", body):
         return True
     return False
+
+
+def _is_non_body_section(heading: str) -> bool:
+    """参考文献/致谢/附录等非正文章节：整章都不取句。"""
+    return bool(_NON_BODY_SECTION_RE.search(heading or ""))
 
 
 def _section_kind_of_blocks(scope: Scope) -> dict:
@@ -189,19 +246,42 @@ def _sentence_score(sentence: str, section_kind: str) -> int:
     return score
 
 
-def _golden_candidates(blocks: List[Tuple[str, str, int]], kind_of) -> List[Tuple[str, str, int, int]]:
+def _section_heading_of_blocks(scope: Scope) -> dict:
+    """``block_id → 所属章节标题``（用于整章排除参考文献/致谢等）。"""
+    from app.modules import claims as claims_mod
+
+    try:
+        structure = claims_mod.get_structure(scope)
+    except Exception:  # noqa: BLE001 - 结构不可用时退化为不排除
+        return {}
+    out: dict = {}
+    for sec in (structure.sections or []):
+        heading = (sec.heading or "")
+        for bid in (sec.source_block_ids or []):
+            out[bid] = heading
+    return out
+
+
+def _golden_candidates(
+    blocks: List[Tuple[str, str, int]], kind_of, heading_of=None, section_kind_of=None,
+) -> List[Tuple[str, str, int, int]]:
     """选出「像断言」的原文句，并**按文档位置均匀铺开**。
 
     返回 ``(block_id, sentence, page_index, position_bucket)``。
     为什么要铺开：断言在真实论文里主要出现在方法/实验/结论章，而**只看前 12 个块**
     会全落在题名/作者/摘要上（实测 paper 1 的 golden 与预测断言最高相似度仅 0.13）。
+    ``heading_of`` 给 ``block_id → 章节标题``，用于**整章排除**参考文献/致谢（ADR-0056）。
     """
     total = max(1, len(blocks))
+    heading_of = heading_of or {}
+    section_kind_of = section_kind_of or {}
     out: List[Tuple[str, str, int, int]] = []
     for idx, (block_id, text, page_index) in enumerate(blocks):
+        if _is_non_body_section(heading_of.get(block_id, "")):
+            continue
         if _is_front_matter(text, kind_of(block_id, text)):
             continue
-        sentence = _first_sentence(text)
+        sentence = _best_sentence(text, section_kind_of.get(block_id, ""))
         if not sentence:
             continue
         # 位置分桶（4 段）：后续轮转取样，保证覆盖全文而不是只覆盖开头
@@ -221,8 +301,11 @@ def build_golden_set(
         return GoldenSet(id=_golden_id(scope), version=GOLDEN_VERSION)
 
     kinds = _block_kinds(scope)
-    candidates = _golden_candidates(blocks, lambda bid, _t: kinds.get(bid, ""))
     section_kind = _section_kind_of_blocks(scope)
+    candidates = _golden_candidates(
+        blocks, lambda bid, _t: kinds.get(bid, ""),
+        _section_heading_of_blocks(scope), section_kind,
+    )
 
     # 轮转取样：先按"量化结论句"强度排序，再在 4 个位置桶之间轮流取，
     # 兼顾**内容相关性**（与产品抽取目标一致）与**覆盖面**（不只看开头）。

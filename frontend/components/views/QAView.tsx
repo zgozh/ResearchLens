@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Send, ShieldCheck, ShieldAlert, Quote, FileText, CornerDownLeft, ChevronDown, Loader2 } from 'lucide-react';
+import { Send, ShieldCheck, ShieldAlert, Quote, FileText, CornerDownLeft, ChevronDown, Loader2, Info } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { AskResponse, EvidenceOut, PaperDetail } from '@/lib/types';
 import type {
@@ -296,6 +296,11 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
                   )}
                   {m.resp && !m.resp.grounded && (
                     <div className="mt-2 text-[11px] text-amber-400/80">{m.resp.note || '检索到的证据不足以支撑回答，已拒答。'}</div>
+                  )}
+                  {m.resp && m.resp.mode === 'general' && (
+                    <div className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-sky-500/25 bg-sky-500/10 px-2 py-1 text-[10px] text-sky-200/90">
+                      <Info className="h-3 w-3" /> 通用回答（非论文内容，未使用原文证据）
+                    </div>
                   )}
                 </div>
               )}

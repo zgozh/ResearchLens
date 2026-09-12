@@ -177,10 +177,13 @@ export interface AskResponse {
   confidence: string;
   evidence: EvidenceOut[];
   note: string;
+  /** 回答模式：generated/extractive/cached/abstained/general（ADR-0057）。
+   *  ``general`` = 与论文无关的通用回答（未使用原文证据）。 */
+  mode?: string;
 }
 
 export interface EvaluationOut {
-  // 未评估时是 null，不是 0（ADR-0055）；可用性见 metrics.overall_score_available
+  // 未评估时是 null，不是 0（ADR-0055）；AI 口径见 metrics.ai_overall_score（ADR-0056）
   overall_score: number | null;
   metrics: Record<string, any>;
 }

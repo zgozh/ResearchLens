@@ -15,7 +15,7 @@ from .common import ContractModel, Id, RevisionId, Scope, Warning
 from .evidence import ArtifactText, EvidenceRecord, VerifiedStatement
 
 Confidence = Literal["High", "Medium", "Low"]
-AnswerMode = Literal["generated", "extractive", "cached", "abstained"]
+AnswerMode = Literal["generated", "extractive", "cached", "abstained", "general"]
 StreamEventType = Literal["meta", "status", "citation", "sentence", "final", "error"]
 StreamStage = Literal["retrieving", "reranking", "drafting", "verifying", "degraded"]
 

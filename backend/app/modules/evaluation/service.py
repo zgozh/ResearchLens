@@ -14,13 +14,14 @@
 from __future__ import annotations
 
 import uuid
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from app.contracts.common import CallContext, Scope, Warning
 from app.contracts.evaluation import (
     METRIC_NAMES,
     EvaluationInput,
     EvaluationReport,
+    GoldenClaim,
     GoldenSet,
     MetricEntry,
     MetricValue,
@@ -61,7 +62,7 @@ def compute(
         ))
         golden_set = None
 
-    entries = _compute_entries(input, golden_set, warnings)
+    entries = _compute_entries(input, golden_set, warnings, ctx)
 
     report = EvaluationReport(
         scope=scope,
@@ -73,8 +74,12 @@ def compute(
         warnings=warnings,
     )
 
-    # overall_score 只依赖 report 内部指标；缺失核心指标时为 None（不是 0）
-    report = report.model_copy(update={"overall_score": M.compute_overall(report)})
+    # overall_score 只依赖 report 内部指标；缺失核心指标时为 None（不是 0）。
+    # ``ai_overall_score`` 是**另一个口径**（允许 AI 裁判的 proxy 参与），两者并存。
+    report = report.model_copy(update={
+        "overall_score": M.compute_overall(report),
+        "ai_overall_score": M.compute_ai_overall(report),
+    })
 
     missing_core = M.core_metric_missing(report)
     if missing_core:
@@ -139,16 +144,14 @@ def _compute_entries(
     input: EvaluationInput,
     golden_set: Optional[GoldenSet],
     warnings: List[Warning],
+    ctx: Optional[CallContext] = None,
 ) -> List[MetricEntry]:
     """按固定 15 项构建指标；**missing 一律 not_evaluated，不填 0**。"""
     entries: Dict[str, MetricEntry] = {}
 
     # ---- 证据与断言（可能来自 golden 的精确率/召回率）
     statements = list(input.statements or [])
-    predicted_texts = [
-        getattr(s, "text", "") for s in statements
-        if getattr(s, "display_class", "unverified") in ("verified_fact", "attributed_quote")
-    ]
+    predicted_texts = _predicted_texts(input)
     predicted_ok = [
         bool(getattr(s, "evidence_ids", []) or [])
         for s in statements
@@ -163,26 +166,37 @@ def _compute_entries(
             # 规格（§5.9 / L613）：``support_precision/recall`` **必须有标注集**才叫
             # measured；调参集（机器自动构造、未经人工确认）**不用于对外报告**。
             # 否则 `overall_score` 会拿机器自造的"真值"给自己打分——那是自我确认。
-            # 这里如实降级为 not_evaluated，并把 proxy 数值写进 method 便于排查。
-            proxy = ""
-            for entry in (precision, recall):
-                if entry.value.value is not None:
-                    proxy += f"{entry.name}={entry.value.value:.3f} "
-            warnings.append(Warning(
-                code="golden_not_annotated",
-                message=(
-                    "金标集为**调参集**（机器从原文自动构造、未经人工确认），"
-                    "因此 support_precision/recall 不计为 measured，综合评分保持 null；"
-                    f"确认后即可出分（proxy：{proxy.strip() or 'n/a'}）"
-                ),
-                stage="evaluation",
-            ))
-            entries["support_precision"] = not_evaluated(
-                "support_precision", method="金标集未经人工确认（proxy 不当真值）", unit="ratio",
+            #
+            # 但"未评测"的**技术卡点**是文本相似度：预测与参考常是"同一事实不同措辞"，
+            # 实测最高相似度 0.21（**不是**阈值问题，ADR-0052）。所以这里改用
+            # **LLM 裁判按语义判等**（ADR-0056）：数值可见，但状态仍是 proxy，不是 measured。
+            judged = _ai_judged_support(
+                input, predicted_texts, predicted_ok, list(golden_set.claims), ctx, warnings,
             )
-            entries["support_recall"] = not_evaluated(
-                "support_recall", method="金标集未经人工确认（proxy 不当真值）", unit="ratio",
-            )
+            if judged is not None:
+                entries["support_precision"], entries["support_recall"] = judged
+            else:
+                proxy = ""
+                for entry in (precision, recall):
+                    if entry.value.value is not None:
+                        proxy += f"{entry.name}={entry.value.value:.3f} "
+                warnings.append(Warning(
+                    code="golden_not_annotated",
+                    message=(
+                        "金标集为**调参集**（机器从原文自动构造、未经人工确认），"
+                        "support_precision/recall 不计为 measured；AI 裁判本次未给出结论，"
+                        f"综合评分保持 null（文本相似度 proxy：{proxy.strip() or 'n/a'}）"
+                    ),
+                    stage="evaluation",
+                ))
+                entries["support_precision"] = not_evaluated(
+                    "support_precision",
+                    method="金标集未经人工确认且 AI 裁判未出结论（不以 0 冒充）", unit="ratio",
+                )
+                entries["support_recall"] = not_evaluated(
+                    "support_recall",
+                    method="金标集未经人工确认且 AI 裁判未出结论（不以 0 冒充）", unit="ratio",
+                )
         else:
             entries["support_precision"] = precision
             entries["support_recall"] = recall
@@ -326,6 +340,91 @@ def _warnings_from(raw) -> List[Warning]:
 
 
 # =============================================================== 辅助
+
+
+def _predicted_texts(input: EvaluationInput) -> List[str]:
+    """进入精确率/召回率的预测断言文本（只看对外展示的展示类）。"""
+    return [
+        getattr(s, "text", "") for s in list(input.statements or [])
+        if getattr(s, "display_class", "unverified") in ("verified_fact", "attributed_quote")
+    ]
+
+
+def ai_judge_digest_for(input: EvaluationInput) -> Optional[str]:
+    """当前输入的 AI 裁判摘要（无 golden 时为 ``None``）。
+
+    供 **缓存层**（``legacy.compute_evaluation``）判断"这次能不能复用上次的裁判结论"，
+    用的抽取口径必须与 ``_compute_entries`` 完全一致，否则会出现"永远缓存不命中"
+    或更糟的"用旧结论套新断言"。
+    """
+    golden = input.golden
+    if golden is None or not golden.claims:
+        return None
+    from . import ai_grader
+
+    return ai_grader.judge_digest(_predicted_texts(input), [c.text for c in golden.claims])
+
+
+def _ai_judged_support(
+    input: EvaluationInput,
+    predicted_texts: List[str],
+    predicted_ok: List[bool],
+    golden_claims: List[GoldenClaim],
+    ctx: Optional[CallContext],
+    warnings: List[Warning],
+) -> Optional[Tuple[MetricEntry, MetricEntry]]:
+    """用 AI 裁判给出 support_precision/recall（``proxy``）—— 可能返回 ``None``。
+
+    取数顺序（ADR-0056）：
+    1. ``input.ai_judge`` 且**摘要匹配** → 直接用（不花云调用）；
+    2. 否则 ``ctx`` 可用且配置了模型 → 调 LLM 裁判；
+    3. 都不行 → ``None``，调用方如实降级为 ``not_evaluated``（**不用 0 冒充**）。
+    """
+    from . import ai_grader
+
+    golden_texts = [c.text for c in golden_claims]
+    digest = ai_grader.judge_digest(predicted_texts, golden_texts)
+
+    cached = input.ai_judge
+    if cached is not None and cached.digest and cached.digest == digest:
+        # **缓存复用时必须直接用持久化的真阳性计数**：持久化时不回写配对，
+        # 用 ``matches`` 重算会得到 0，把好数据写坏（这是真实踩过的坑，见 ADR-0056）。
+        tp = int(cached.true_positive or 0)
+        total_predicted = cached.total_predicted or len(predicted_texts)
+        total_golden = cached.total_golden or len(golden_texts)
+        method_suffix = "cached"
+    else:
+        if ctx is None:
+            return None
+        result = ai_grader.judge_support(predicted_texts, golden_texts, ctx)
+        if result is None:
+            return None
+        result.digest = digest
+        matched = {p for p, _ in result.matches}
+        tp = sum(1 for idx in matched if idx < len(predicted_ok) and predicted_ok[idx])
+        result.true_positive = tp
+        total_predicted = len(predicted_texts)
+        total_golden = len(golden_texts)
+        method_suffix = result.model or "llm"
+
+    method = f"ai_judge_semantic_match（{ai_grader.AI_JUDGE_VERSION} / {method_suffix}）"
+    precision = M.ratio_entry(
+        "support_precision", tp, total_predicted, method=method, status="proxy",
+    )
+    recall = M.ratio_entry(
+        "support_recall", tp, total_golden, method=method, status="proxy",
+    )
+    warnings.append(Warning(
+        code="support_metrics_ai_judged",
+        message=(
+            f"金标集为机器调参集，support_precision/recall 由 **LLM 语义裁判**判等得出"
+            f"（proxy，非人工真值；命中 {tp}/{total_predicted} 条预测，"
+            f"参考 {total_golden} 条）。综合评分请区分两种口径："
+            f"``overall_score`` 仍要求人工真值，``ai_overall_score`` 是 AI 口径。"
+        ),
+        stage="evaluation",
+    ))
+    return precision, recall
 
 
 def _report_id(revision_id: str, golden_id: Optional[str]) -> str:

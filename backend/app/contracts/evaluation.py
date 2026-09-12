@@ -79,6 +79,25 @@ class GoldenSet(ContractModel):
     anchors: List[GoldenAnchor] = Field(default_factory=list)
 
 
+class AiJudgeResult(ContractModel):
+    """AI 裁判（LLM 语义判等）的结论 —— 用于在**没有人工真值**时也能出分。
+
+    纪律：它只提供"哪些预测断言与参考断言是同一事实"，分数仍由评测层算，
+    并且算出来的 support_precision/recall 标 ``proxy``（**不是 measured**）。
+    """
+
+    matches: List[List[int]] = Field(default_factory=list)
+    #: **真阳性条数**（命中且预测本身有证据支持）。缓存复用时直接用它，
+    #: 不能靠 ``matches`` 重算——持久化时不回写配对，重算会得到 0（真实踩过的坑）。
+    true_positive: int = Field(default=0, ge=0)
+    total_predicted: int = Field(default=0, ge=0)
+    total_golden: int = Field(default=0, ge=0)
+    model: str = ""
+    #: 输入摘要：与当前输入不一致的缓存必须被忽略（ADR-0056）
+    digest: str = ""
+    judge_version: str = ""
+
+
 class EvaluationInput(ContractModel):
     """M12 接收 DTO，不调用 pipeline，不触发生成。"""
 
@@ -96,13 +115,19 @@ class EvaluationInput(ContractModel):
     #: 且 ``overall_score`` 只在"包含人工真值的核心指标均可测"时才计算；
     #: 调参集**不用于对外报告**（``golden.py`` 的既有约定）。
     golden_is_tuning: bool = False
+    #: **已缓存的 AI 裁判结果**（摘要匹配时复用，避免每次打开评测页都调用模型）。
+    ai_judge: Optional[AiJudgeResult] = None
 
 
 class EvaluationReport(ContractModel):
     scope: Scope
     id: Id
     version: str = "rl.eval/1"
+    #: **人工真值口径**的综合分：只在四项核心指标全部 measured 时才有值（规格纪律）。
     overall_score: Optional[float] = None
+    #: **AI 裁判口径**的综合分（ADR-0056）：四项核心指标"可用"（measured 或
+    #: AI 裁判 proxy）即可算。与 ``overall_score`` 并存、语义不同、绝不互相冒充。
+    ai_overall_score: Optional[float] = None
     metrics: List[MetricEntry] = Field(default_factory=list)
     golden_id: Optional[str] = None
     computed_at: Optional[datetime] = None
@@ -146,6 +171,6 @@ def not_evaluated(name: str, *, method: str = "", sample_size: int = 0,
 
 __all__ = [
     "MetricValue", "MetricEntry", "NavigationCheck", "GoldenClaim", "GoldenQuestion",
-    "GoldenAnchor", "GoldenSet", "EvaluationInput", "EvaluationReport",
+    "GoldenAnchor", "GoldenSet", "EvaluationInput", "EvaluationReport", "AiJudgeResult",
     "METRIC_NAMES", "not_evaluated",
 ]

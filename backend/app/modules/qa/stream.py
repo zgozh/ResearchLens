@@ -147,11 +147,17 @@ async def stream(
             ))
         return
 
-    # status：告知已进入验证/降级
-    stage = "verifying" if record.grounded else "degraded"
+    # status：告知已进入验证/降级/通用回答（ADR-0057）
+    mode = str(getattr(record, "mode", "") or "")
+    if mode == "general":
+        stage, message = "drafting", "通用回答（未使用论文证据）"
+    elif record.grounded:
+        stage, message = "verifying", "正在逐句核验证据"
+    else:
+        stage, message = "degraded", "按拒答返回"
     yield encoder.encode(_event(
         encoder.next_id(), request_id, "status",
-        QAStatus(stage=stage, message="正在逐句核验证据" if record.grounded else "按拒答返回"),
+        QAStatus(stage=stage, message=message),
     ))
 
     sent_evidence: List[str] = []

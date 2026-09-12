@@ -220,6 +220,9 @@ class AskResponse(LegacyModel):
     confidence: str
     evidence: List[EvidenceOut] = Field(default_factory=list)
     note: str = ""
+    #: ``generated``/``extractive``/``cached``/``abstained``/``general``（ADR-0057）。
+    #: ``general`` = 与论文无关的通用回答：前端要把它与"拒答"区分开显示。
+    mode: str = ""
 
 
 # --- Evaluation (Spec §21) ---

@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 
 from app.contracts.common import Scope
-from app.contracts.evaluation import EvaluationReport
+from app.contracts.evaluation import AiJudgeResult, EvaluationReport
 
 from . import service as svc
 
@@ -41,8 +41,21 @@ def compute_evaluation(db: Session, paper_id: int) -> Any:
             db.refresh(ev)
         return ev
 
-    report = svc.compute(_input_for(Scope(paper_id=paper_id, revision_id=revision_id)))
+    # AI 裁判结果缓存（ADR-0056）：摘要命中就直接复用，**不再调用模型**——
+    # 这个入口每次 GET /evaluation 都会走到，不缓存的话每打开一次评测页就花一次云调用。
+    previous = _latest_row(db, paper_id)
+    cached_judge = _cached_ai_judge(previous)
+
+    scope = Scope(paper_id=paper_id, revision_id=revision_id)
+    inp = _input_for(scope, ai_judge=cached_judge)
+    report = svc.compute(inp, _judge_ctx(scope))
     payload = to_legacy_evaluation(report)
+
+    # 把本次的 AI 裁判结论按摘要存回 metrics，下一次打开评测页就不必再花云调用
+    digest = svc.ai_judge_digest_for(inp)
+    judged = _ai_judge_from_report(report, digest)
+    if judged is not None:
+        payload["metrics"]["ai_judge"] = judged.model_dump(mode="json")
 
     ev = _latest_row(db, paper_id)
     if ev is None:
@@ -53,6 +66,59 @@ def compute_evaluation(db: Session, paper_id: int) -> Any:
     db.commit()
     db.refresh(ev)
     return ev
+
+
+def _ai_judge_from_report(report: EvaluationReport, digest: Optional[str]):
+    """从报告里回读 AI 裁判计数（用于缓存）；不是 AI 裁判口径时返回 ``None``。"""
+    if not digest:
+        return None
+    precision = report.metric("support_precision")
+    recall = report.metric("support_recall")
+    if precision is None or precision.status != "proxy":
+        return None
+    if "ai_judge" not in (precision.method or ""):
+        return None
+    return AiJudgeResult(
+        matches=[],   # 计数足够复现指标；具体配对不必回写
+        true_positive=int(precision.numerator or 0),
+        total_predicted=int(precision.denominator or 0),
+        total_golden=int((recall.denominator if recall else 0) or 0),
+        model="cached",
+        digest=digest,
+        judge_version="",
+    )
+
+
+def _judge_ctx(scope: Scope):
+    """AI 裁判用的调用上下文（带论文快照与预算）；取不到就当没有裁判。"""
+    try:
+        from app.contracts.common import Budget, new_ctx
+        from app.modules import papers as papers_mod
+
+        snapshot = papers_mod.snapshot_for_revision(scope)
+        if snapshot is None:
+            return None
+        return new_ctx(
+            scope, snapshot=snapshot, deadline_ms=120_000,
+            budget=Budget(max_calls=4, max_input_tokens=200_000,
+                          max_output_tokens=8_000, max_wall_ms=120_000,
+                          max_repair_rounds=1),
+        )
+    except Exception:  # noqa: BLE001  拿不到 ctx 就退化为"本次不判"
+        return None
+
+
+def _cached_ai_judge(row) -> Optional[AiJudgeResult]:
+    """从上一行评测里取回 AI 裁判缓存（摘要校验交给评测层做）。"""
+    if row is None:
+        return None
+    raw = (getattr(row, "metrics", None) or {}).get("ai_judge")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return AiJudgeResult.model_validate(raw)
+    except Exception:  # noqa: BLE001  旧数据/形状不符一律当没有
+        return None
 
 
 def to_legacy_evaluation(report: EvaluationReport) -> Dict[str, Any]:
@@ -80,6 +146,13 @@ def to_legacy_evaluation(report: EvaluationReport) -> Dict[str, Any]:
 
     canonical = report.overall_score
     metrics["overall_score_available"] = canonical is not None
+    # AI 裁判口径的综合分（ADR-0056）：与 canonical 并存，**语义不同**，永不互相冒充。
+    metrics["ai_overall_score"] = report.ai_overall_score
+    metrics["ai_overall_score_available"] = report.ai_overall_score is not None
+    metrics["overall_score_basis"] = (
+        "human_annotated" if canonical is not None
+        else ("ai_judge" if report.ai_overall_score is not None else None)
+    )
     metrics["not_evaluated"] = not_evaluated_names
     metrics["proxy"] = proxy_names
     metrics["golden_id"] = report.golden_id
@@ -154,7 +227,7 @@ def _navigation_checks(scope: Scope):
     return out
 
 
-def _input_for(scope: Scope):
+def _input_for(scope: Scope, *, ai_judge: Optional[AiJudgeResult] = None):
     """旧入口没有现成 EvaluationInput：从库中收集 statements/answers/golden 等。"""
     from app.contracts.evaluation import EvaluationInput
     from app.core.db import session_scope
@@ -209,6 +282,7 @@ def _input_for(scope: Scope):
         scope=scope, statements=statements, answers=answers, media=media,
         golden=golden, golden_is_tuning=golden_is_tuning,
         navigation_checks=_navigation_checks(scope),
+        ai_judge=ai_judge,
     )
 
 

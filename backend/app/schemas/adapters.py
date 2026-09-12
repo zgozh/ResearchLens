@@ -485,6 +485,7 @@ def to_legacy_answer(answer: AnswerRecord) -> AskResponse:
         confidence=answer.confidence,
         evidence=[to_legacy_evidence(e) for e in (answer.evidence or [])],
         note=answer.note or "",
+        mode=str(getattr(answer, "mode", "") or ""),   # general/abstained 前端要区分（ADR-0057）
     )
 
 
@@ -512,6 +513,12 @@ def to_legacy_evaluation(report: EvaluationReport) -> EvaluationOut:
             metrics[entry.name] = value.value
     canonical = report.overall_score
     metrics["overall_score_available"] = canonical is not None
+    metrics["ai_overall_score"] = report.ai_overall_score
+    metrics["ai_overall_score_available"] = report.ai_overall_score is not None
+    metrics["overall_score_basis"] = (
+        "human_annotated" if canonical is not None
+        else ("ai_judge" if report.ai_overall_score is not None else None)
+    )
     metrics["not_evaluated"] = not_evaluated_names
     metrics["proxy"] = proxy_names
     metrics["golden_id"] = report.golden_id

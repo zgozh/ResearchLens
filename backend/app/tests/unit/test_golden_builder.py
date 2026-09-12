@@ -204,3 +204,96 @@ class TestPersistAndFind:
 
         with session_scope() as db:
             assert golden_builder.find_for_scope(db, other) is None
+
+
+class TestReferencesAreNotGoldenClaims:
+    """**参考文献条目不能当参考断言**（ADR-0056 实测出来的构造器缺陷）。
+
+    实测 paper 2：12 条参考断言里 **3 条是参考文献条目**
+    （``[12] Lim SL, Bentley PJ, Kanakam N, Ishikawa F, Honiden S.``），
+    导致 AI 语义裁判判定"0 命中"——那是**分母脏**，不是产品指标不行。
+    只靠 ``_FRONT_MATTER_RE`` 里的 ``References`` 关键词拦不住：参考文献条目本身
+    并不含 "References" 字样，必须按**章节归属 + 条目形态**判定。
+    """
+
+    @pytest.fixture
+    def ref_world(self, world):
+        import uuid
+
+        from app.core import db as db_mod
+        from app.models.artifacts import BlockORM
+
+        scope = world["scope"]
+        with db_mod.SessionLocal() as db:
+            db.add(BlockORM(
+                id=f"blk-{uuid.uuid4().hex[:8]}", paper_id=scope.paper_id,
+                revision_id=scope.revision_id, page_id=world["pages"][1], ordinal=2,
+                kind="paragraph", section_path=["References:"],
+                text="[12] Lim SL, Bentley PJ, Kanakam N, Ishikawa F, Honiden S. "
+                     "Investigating country differences in mobile app user behavior. 2015.",
+                origin="source_extraction",
+            ))
+            db.add(BlockORM(
+                id=f"blk-{uuid.uuid4().hex[:8]}", paper_id=scope.paper_id,
+                revision_id=scope.revision_id, page_id=world["pages"][1], ordinal=3,
+                kind="paragraph", section_path=["7 结论"],
+                text="实验结果表明,本文方法在 3 个数据集上的平均准确率比基线提高 8.5%,"
+                     "验证了评分趋势作为用户接受度指标的有效性.",
+                origin="source_extraction",
+            ))
+            db.commit()
+        return world
+
+    def test_bibliography_entries_are_excluded_by_section(self, ref_world):
+        from app.modules.evaluation.golden_builder import build_golden_set
+
+        golden = build_golden_set(ref_world["scope"])
+        texts = [c.text for c in golden.claims]
+        assert texts, "仍应产出参考断言"
+        assert not any(t.lstrip().startswith("[12]") for t in texts), \
+            f"参考文献条目混进了参考断言：{texts}"
+
+    def test_bibliography_entries_are_excluded_by_shape(self):
+        """形态兜底：即使章节没被判出来，``[12] 作者…`` 形态也不能当参考断言。"""
+        from app.modules.evaluation.golden_builder import _is_front_matter
+
+        assert _is_front_matter(
+            "[12] Lim SL, Bentley PJ, Kanakam N, Ishikawa F, Honiden S. "
+            "Investigating country differences. 2015.", "paragraph",
+        ) is True
+        assert _is_front_matter(SENTENCE_A, "paragraph") is False
+
+    def test_normal_conclusion_sentence_still_usable(self, ref_world):
+        """别把正文结论句一起误杀。"""
+        from app.modules.evaluation.golden_builder import build_golden_set
+
+        golden = build_golden_set(ref_world["scope"])
+        assert any("平均准确率" in c.text for c in golden.claims), \
+            f"结论章的正常断言不该被过滤：{[c.text[:40] for c in golden.claims]}"
+
+
+class TestBestSentenceIsPicked:
+    """取**块内最像断言的句子**，不是无脑拿首句（ADR-0056）。
+
+    实测 paper 2：参考集全是"每块首句"（数据集规模、算法对比等铺垫句），
+    而抽取产出的是定义/量化断言（评分趋势、下载比例、卸载率…），两批**根本不重合**，
+    AI 语义裁判只能判 0 命中 —— 是**参考集取错了内容**，不是产品指标不行。
+    """
+
+    def test_picks_quantitative_sentence_over_leading_filler(self):
+        from app.modules.evaluation.golden_builder import _best_sentence
+
+        block = (
+            "本节介绍用户接受度指标的定义与来源。"
+            "实验结果表明,加入评分趋势特征后,预测准确率从 54% 提升到 76%,"
+            "在 4 天时滞区间上的相关性最高。"
+        )
+        picked = _best_sentence(block, "method")
+        assert "76%" in picked or "准确率" in picked, \
+            f"应挑量化结论句，而不是首句铺垫：{picked!r}"
+
+    def test_single_sentence_block_is_unchanged(self):
+        from app.modules.evaluation.golden_builder import _best_sentence
+
+        only = "本文提出的方法在 3 个数据集上的平均准确率比基线提高 8.5%,验证了有效性。"
+        assert _best_sentence(only, "result") == only

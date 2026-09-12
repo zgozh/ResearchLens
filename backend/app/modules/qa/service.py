@@ -97,6 +97,16 @@ def answer(
     hits, rwarnings = _retrieve(scope, question, top_k, ctx)
     warnings.extend(rwarnings)
 
+    # ---- 阶段 2.5：与论文无关的问题走**通用回答**（ADR-0057）
+    # 用户要的是"不受限问答"：只有聊到论文相关的东西才去查论文；
+    # 不相干的问题（闲聊/领域常识）不该因为"检索不到证据"被拒答。
+    # 但**问了论文却没有证据时仍然拒答**——不编造这条纪律不变。
+    if not _is_paper_related(question, hits):
+        general = _general_answer(scope, question, ctx, warnings)
+        if general is not None:
+            _persist(scope, general, source_digest, key)
+            return general
+
     # ---- 阶段 3：生成/抽取（云调用，无写事务）
     draft_text, sentences, usage, snapshot_id, dwarnings = _draft(
         scope, question, hits, ctx
@@ -153,6 +163,103 @@ def build_bank(
 
 
 # =============================================================== 检索/生成
+
+
+#: 问句里指向"这篇论文"的词。命中它就按**论文问题**处理（没有证据要如实拒答）。
+_PAPER_HINT_RE = re.compile(
+    r"论文|本文|该文|这篇|本工作|本研究|作者|摘要|引言|相关工作|方法|实验|结论|"
+    r"章节|这一部分|这一节|本节|图\s*\d|表\s*\d|公式|参考文献|"
+    r"\bpaper\b|\bthis\s+(paper|work|study)\b|\bsection\b|\bfigure\b|\btable\b",
+    re.I,
+)
+
+#: 语义相似度到这条线以上，就认为问的正是论文里的内容（即使没提"论文"二字）
+_PAPER_SEMANTIC_HIT = 0.6
+
+#: 通用回答的提示词：**明确不引用论文**，避免把领域常识说成"论文里写的"
+GENERAL_ANSWER_PROMPT = (
+    "你是一个科研与技术问答助手。用户的问题与当前论文**无关**，"
+    "请直接、简明地回答问题本身（可以讲通用概念、给例子）。\n"
+    "纪律：\n"
+    "1. **不要**假装引用某篇论文或凭空编造该论文的内容；\n"
+    "2. 不确定的地方直接说明不确定，不要编造数据或来源；\n"
+    "3. 用中文回答（除非用户用英文提问），控制在 300 字以内。\n"
+)
+
+
+def _is_paper_related(question: str, hits: Sequence[RetrievalHit]) -> bool:
+    """判断问题是否**指向这篇论文**（ADR-0057）。
+
+    判据有两路，任一路成立即算论文问题：
+    1. 问句里出现"论文/本文/这一节/图 3/实验"这类指向词；
+    2. 检索命中里有**足够高**的语义相似度（问的正是文中内容，只是没用"论文"二字）。
+
+    **不把"检索有没有命中"当判据**：问"什么是量子纠缠"时检索也会返回一堆片断，
+    但那是无关命中；反过来"这篇论文用了什么数据集"即便索引空也仍是论文问题。
+    """
+    text = (question or "").strip()
+    if text and _PAPER_HINT_RE.search(text):
+        return True
+    for hit in list(hits or []):
+        vector = getattr(hit, "vector_score", None)
+        if isinstance(vector, (int, float)) and float(vector) >= _PAPER_SEMANTIC_HIT:
+            return True
+    return False
+
+
+def _general_answer(
+    scope: Scope, question: str, ctx: Optional[CallContext], warnings: List[Warning],
+) -> Optional[AnswerRecord]:
+    """与论文无关的问题：**通用回答**（不引用论文、不产生断言）。
+
+    返回 ``None`` 表示"没法给通用回答"（没有可用模型 / 调用失败）——
+    此时调用方按原来的拒答路径走，**绝不硬编一段文字冒充回答**。
+    """
+    warnings_list = list(warnings)
+    if not settings.has_llm or not _snapshot_id(ctx):
+        return None
+    try:
+        from app.contracts.ai import ChatMessage, CompletionRequest
+        from app.modules import ai as ai_svc
+
+        result = ai_svc.complete(
+            CompletionRequest(
+                messages=[
+                    ChatMessage(role="system", content=GENERAL_ANSWER_PROMPT),
+                    ChatMessage(role="user", content=question[:2000]),
+                ],
+                max_output_tokens=800,
+                temperature=0.3,
+                model_snapshot=_snapshot(ctx),
+            ),
+            ctx,
+        )
+    except Exception as exc:  # noqa: BLE001  通用回答失败不得中断
+        warnings_list.append(Warning(
+            code="general_answer_failed",
+            message=f"通用回答调用失败，按无证据处理：{type(exc).__name__}",
+            stage="qa",
+        ))
+        return None
+
+    body = str(getattr(result, "text", "") or "").strip()
+    if not body:
+        return None
+    return AnswerRecord(
+        scope=scope,
+        id=_answer_id(scope.revision_id, question),
+        question=question,
+        text=ArtifactText(text=body, spans=[]),
+        statements=[],
+        evidence=[],
+        grounded=False,          # 没有论文证据：**绝不能标 grounded**
+        confidence="Low",
+        note="通用回答（未使用论文原文证据，不是论文内容）",
+        mode="general",
+        model_snapshot_id=_snapshot_id(ctx),
+        usage=getattr(result, "usage", None) or Usage(),
+        warnings=warnings_list,
+    )
 
 
 def _retrieval_version() -> str:

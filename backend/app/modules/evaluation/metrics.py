@@ -193,21 +193,49 @@ def ms_entry(name: str, value: Optional[float], *, method: str = "") -> MetricEn
 # --------------------------------------------------------------- overall
 
 
-def compute_overall(report: EvaluationReport) -> Optional[float]:
-    """§5.9 公式。**仅在 4 个核心指标全部 measured 时计算**，否则 None。
+def _overall(report: EvaluationReport, *, proxy_allowed: frozenset = frozenset()) -> Optional[float]:
+    """§5.9 公式。核心指标必须"可用"才计算，否则 None。
 
+    ``proxy_allowed`` 里的指标名允许以 ``proxy`` 状态参与（仅用于 **AI 裁判口径**，
+    ADR-0056）；除它以外仍只认 ``measured``。
     绝不用 0 代替缺失指标 —— 否则会把「无法评估」伪装成「表现很差」。
     """
     total = 0.0
     for name, weight in OVERALL_WEIGHTS.items():
         metric = report.metric(name)
-        if metric is None or metric.status != "measured" or metric.value is None:
+        if metric is None or metric.value is None:
+            return None
+        ok = metric.status == "measured" or (
+            metric.status == "proxy" and name in proxy_allowed
+        )
+        if not ok:
             return None
         value = metric.value
         if metric.unit == "ratio":
             value = value * 100.0
         total += weight * value
     return round(total, 2)
+
+
+def compute_overall(report: EvaluationReport) -> Optional[float]:
+    """**人工真值口径**的综合分：四项核心指标全部 ``measured`` 才算（规格纪律）。"""
+    return _overall(report)
+
+
+#: 允许以 proxy 参与 AI 评分的核心指标：只有 AI 裁判给出的 support_precision。
+#: 其余核心指标本来就是程序可测（quote/anchor/refusal），不该出现 proxy。
+AI_PROXY_CORE = frozenset({"support_precision"})
+
+
+def compute_ai_overall(report: EvaluationReport) -> Optional[float]:
+    """**AI 裁判口径**的综合分（ADR-0056）。
+
+    为什么需要：没有人工标注集时 ``support_precision`` 只能是 proxy，于是
+    ``overall_score`` 恒 null；而用户需要看到分数。这里用同一公式，但允许
+    ``support_precision`` 以 **proxy** 参与，**并存的** ``overall_score`` 规则不变
+    （仍是"四项 measured"），两者绝不互相冒充。
+    """
+    return _overall(report, proxy_allowed=AI_PROXY_CORE)
 
 
 def core_metric_missing(report: EvaluationReport) -> List[str]:
