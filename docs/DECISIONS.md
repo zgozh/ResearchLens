@@ -356,3 +356,18 @@
   `AttributeError: 'AnchorSegment' object has no attribute 'block_id'`。该路径此前因"详情恒 404"从未被执行，所以长期潜伏——**修好一个 bug 才会暴露下一个**。
 - **修**：抽出 `_legacy_region_label(segment)`，对 `block_id` / `block_ids[0]` / `page_label` 三种历史形态都容忍，取不到返回空串。单测加了"证据带真实 `source_region`（`block_ids` 是列表）时详情不得 500"。
 - **教训**：桥接/投影层的代码如果长期不可达，就等于没有测试覆盖；恢复可达性后必须立刻补真实形状的用例。
+
+## D-37 研究图谱的 claim → evidence 边：由已判定证据行投影
+
+- **决策**：新增 `_derived_evidence_bindings()`——把**已判定**的 `evidence_records` 投影成等价的 `claim → evidence` 绑定输入，**只补图谱边、不写库**；同时给 `GraphArtifact` 补上 `warnings` 字段（此前 `build()` 收集的告警**无处可放**，"为什么这张图没有边"在 API 里完全不可见）。
+- **背景（Postgres 实测）**：`bindings` 全库只有 **6 行**，且**全部**是 `statement → media / illustrates`；`claim → evidence` **一条都没有**。于是图谱只有 `illustrates` 边：paper 1 = 8 节点 / 4 边、paper 3 = 15 节点 / 2 边、**paper 2 = 12 节点 / 0 边（整张散点图）**。这正是用户说的"节点不全且连线不齐"。
+  而 gate 早已把判定写进 `evidence_records.support_status`，`claim_records.evidence_ids` 也指向它——那是**已验证的证据**，不是编造。
+- **取舍**：
+  - 为什么不在 gate 里补写 binding（否决）：那要动写路径 + 回填全部历史数据；而投影层现算**立即可用**且不动数据。真正该记的缺口是"bindings 表没有被 gate 填充"，已由 `evidence_bindings_derived` 告警显式暴露。
+  - 只认 `supports` / `contradicts`：`insufficient` / `unreviewed` 一律不进图——**投影不等于放宽判定**（单测含否定用例）。
+  - 已有显式绑定的 `(claim, evidence)` 不重复补，避免重复边。
+  - 一次读全 revision 的证据行（实测 10–30 行），而不是"先按绑定查、再补查"。
+- **结论**：重建快照后实测——**paper 1：8 节点/4 边 → 26 节点/17 边**（13 supports + 4 illustrates + 13 evidence 节点）；**paper 3：15/2 → 29/14**（12 supports）；paper 2：12/0 → 13/1。所有边两端都在节点集内（0 条悬空）。`exhibits.graph.warnings` 可见 `evidence_bindings_derived` 与 `isolated_claim`。
+  paper 2 仍只有 1 条证据边，是因为该篇的证据本身只有 1 行（8/12 条引文 `quote_not_in_block` 被判不通过）——那是**抽取质量**问题，不是图谱问题。
+- **回归测试**：`test_graph_evidence_edges.py`（5 条：无绑定时必须成边 / `insufficient` 不成边 / `contradicts` 连 `contradicts` / 显式绑定不重复 / 推导必须留告警）。
+- **仍存缺口（未做，两处同源）**：`retrieval.index` 与 `graph.build` 这类**派生产物重建**没有公开入口，存量论文只能跑脚本补（本次分别跑了 `retrieval.index` 与 `graph.build`）。建议后续加 `POST /papers/{id}/rebuild-derived`（admin）把 re-index 与 rebuild-graph 变成可触发、可观测的作业，而不是运维手动介入。

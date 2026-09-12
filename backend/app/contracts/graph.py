@@ -5,7 +5,7 @@ from typing import List, Literal, Optional
 
 from pydantic import Field
 
-from .common import AnchorId, ContractModel, Id, Scope
+from .common import AnchorId, ContractModel, Id, Scope, Warning
 from .evidence import ArtifactText
 
 NodeKind = Literal[
@@ -44,6 +44,10 @@ class GraphArtifact(ContractModel):
     id: Id
     nodes: List[GraphNodeRecord] = Field(default_factory=list)
     edges: List[GraphEdgeRecord] = Field(default_factory=list)
+    #: 图谱构建告警（``isolated_claim`` / ``edge_endpoint_missing`` /
+    #: ``evidence_bindings_derived`` …）。此前 ``build()`` 收集了告警却**无处可放**，
+    #: 于是"为什么这张图没有边"在 API 里完全不可见——数据缺口必须可见。
+    warnings: List[Warning] = Field(default_factory=list)
 
 
 __all__ = [

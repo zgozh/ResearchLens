@@ -78,12 +78,12 @@ def build(
             repo.binding_snapshots(db, scope.revision_id, "claim")
             + repo.binding_snapshots(db, scope.revision_id, "statement")
         )
-        evidence_ids = sorted({
-            b.to_id for b in support_bindings
-            if b.to_kind == "evidence" and b.to_id
-        })
-        evidence_rows = repo.list_evidence(db, scope.revision_id, evidence_ids)
-        evidence_by_id = {row.id: row for row in evidence_rows}
+        # 一次读全该 revision 的证据行：既服务显式绑定的 evidence 目标，
+        # 也服务"由已判定证据行推导 claim→evidence 绑定"（实测每篇 10–30 行，
+        # 全量读取比"先按绑定查、再补查"更简单也更不容易漏）。
+        evidence_by_id = {
+            row.id: row for row in repo.list_all_evidence(db, scope.revision_id)
+        }
         media_ids = sorted({
             b.to_id for b in support_bindings
             if b.to_kind == "media" and b.to_id
@@ -102,6 +102,22 @@ def build(
     statement_to_claim = {
         r.statement_id: r.claim_id for r in records if getattr(r, "statement_id", "")
     }
+
+    # 老数据缺口（实测）：gate 把判定写进 evidence_records（claim.evidence_ids 指得到），
+    # 但**没人写 claim→evidence 绑定**（bindings 表 6 行全是 statement→media）→
+    # 图谱一条 supports 边都没有，paper 2 甚至是 12 节点 / 0 边的散点图。
+    # 这里把"已判定的证据行"投影成等价绑定：只补边、不改库、不放宽判定。
+    derived_bindings = _derived_evidence_bindings(records, support_bindings, evidence_by_id)
+    if derived_bindings:
+        support_bindings = list(support_bindings) + derived_bindings
+        warnings.append(Warning(
+            code="evidence_bindings_derived",
+            message=(
+                f"{len(derived_bindings)} 条 claim→evidence 绑定由已判定的证据行推导"
+                "（bindings 表缺这些行，本图投影不写库）"
+            ),
+            stage="graph",
+        ))
 
     nodes: List[GraphNodeRecord] = []
     node_ids: set[str] = set()
@@ -179,7 +195,7 @@ def build(
 
     artifact = GraphArtifact(
         scope=scope, id=_graph_id(scope.revision_id),
-        nodes=nodes, edges=edges,
+        nodes=nodes, edges=edges, warnings=warnings,
     )
 
     with session_scope() as db:
@@ -276,6 +292,48 @@ def _media_node_label(row) -> str:
     if caption.startswith(head):
         return caption[:60]
     return f"{head} {caption[:60]}"
+
+
+def _derived_evidence_bindings(
+    records: Sequence[ClaimRecord], explicit: Sequence, evidence_by_id: Dict[str, object]
+) -> List:
+    """把**已判定**的证据行投影为 claim→evidence 绑定（只补图谱边，不写库）。
+
+    真实缺陷（Postgres 实测）：``bindings`` 全库 6 行、全是 ``statement → media``，
+    ``claim → evidence`` 一条都没有 → 研究图谱没有任何 supports 边（用户："连线不齐"）。
+    而 ``evidence_records.support_status`` 就是 gate 的判定结论，
+    ``claim_records.evidence_ids`` 也已经指向它——那是**已验证的证据**，不是编造。
+
+    保守规则：
+    - 只认 ``supports`` / ``contradicts``；``insufficient`` / ``unreviewed`` 一律不进图；
+    - ``(claim_id, evidence_id)`` 已有显式绑定时不重复补；
+    - ``state`` 固定 ``verified``：证据行本身携带判定结论，不是候选。
+    """
+    from app.modules.graph.repository import BindingSnapshot
+
+    taken = {(b.from_id, b.to_id) for b in explicit}
+    out: List[BindingSnapshot] = []
+    for record in records:
+        for evidence_id in (getattr(record, "evidence_ids", None) or []):
+            if not evidence_id or (record.claim_id, evidence_id) in taken:
+                continue
+            row = evidence_by_id.get(evidence_id)
+            status = (getattr(row, "support_status", "") or "").lower()
+            if status not in ("supports", "contradicts"):
+                continue
+            taken.add((record.claim_id, evidence_id))
+            out.append(BindingSnapshot(
+                # id 需 ≤36 字符且稳定；用 claim/evidence 的短前缀拼
+                id=f"dv-{record.claim_id[:10]}-{evidence_id[-10:]}",
+                from_kind="claim",
+                from_id=record.claim_id,
+                to_kind="evidence",
+                to_id=evidence_id,
+                relation=status,
+                state="verified",
+                method="evidence_record_projection",
+            ))
+    return out
 
 
 def _claim_of_binding(

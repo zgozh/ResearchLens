@@ -202,6 +202,21 @@ def list_evidence(db: Session, revision_id: str, ids: List[str]) -> List[Evidenc
     ]
 
 
+def list_all_evidence(db: Session, revision_id: str) -> List[EvidenceSnapshot]:
+    """该 revision 的**全部**证据快照（图谱推导 claim→evidence 边要用）。"""
+    stmt = select(EvidenceRowORM).where(EvidenceRowORM.revision_id == revision_id)
+    return [
+        EvidenceSnapshot(
+            id=row.id,
+            anchor_id=row.anchor_id or "",
+            source_text=row.source_text or "",
+            support_status=row.support_status or "unreviewed",
+            source_page=int(row.source_page or 1),
+        )
+        for row in db.execute(stmt).scalars().all()
+    ]
+
+
 def paper_exists(db: Session, paper_id: int) -> bool:
     from app.models.source import RevisionORM
 
