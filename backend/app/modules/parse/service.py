@@ -150,6 +150,10 @@ def parse(source: SourceDocument, ctx: Optional[CallContext] = None) -> ParseRes
 
     warnings.extend(raw.warnings)
 
+    # 图片字节落库（MinerU 解包出的 images/）：必须在 _persist_raw_asset 之前，
+    # 这样 block.image_asset_id 会被一起存档，重放路径才不会又丢图（ADR-0024）。
+    _persist_media_images(scope, raw)
+
     page_ids = [_new_id() for _ in raw.pages]
     block_ids = [[_new_id() for _ in rp.blocks] for rp in raw.pages]
     pages = normalize.build_pages(scope, raw, page_ids=page_ids)
@@ -252,6 +256,10 @@ def _persist_raw_asset(scope: Scope, raw: RawDocument, data: bytes, parser_name:
                         "units": b.bbox_units,
                         "table_html": getattr(b, "table_html", None),
                         "table_caption": getattr(b, "table_caption", None),
+                        # 图片块：路径与已落库的 image asset id 都要存档，
+                        # 否则重放（load_media_candidates）还原不出图（ADR-0024）。
+                        "img_path": getattr(b, "img_path", None),
+                        "image_asset_id": getattr(b, "image_asset_id", None),
                     }
                     for b in p.blocks
                 ],
@@ -274,6 +282,59 @@ def _persist_raw_asset(scope: Scope, raw: RawDocument, data: bytes, parser_name:
     except DomainError as exc:
         log.warning("raw asset 存档失败：%s", exc.code.value)
         return None
+
+
+def _persist_media_images(scope: Scope, raw: RawDocument) -> int:
+    """把解包出的图片字节落成 ``kind="image"`` 资产，并把 asset id 写回 block。
+
+    为什么需要它（ADR-0024）：此前 ``build_media_candidates`` 用
+    ``embedded_asset_id = raw_asset_id``（那份 **parser_raw JSON**）顶替"MinerU 提取图"，
+    于是 ``Media.original_asset_ids`` 指向一个 JSON 文件——前端把它当图片渲染，
+    图表全空（实测 ``GET /api/assets/{id}`` 返回 ``application/json`` 161KB）。
+
+    图片字节一直都在解析产物 ZIP 里，只是没人读。适配器保持纯粹
+    （只给 ``RawBlock.img_path`` 与 ``RawDocument.images``），落库放在这里
+    （有 scope、能调 papers 服务），并**幂等**（``put_asset`` 按 paper+sha256+kind 去重）。
+
+    返回成功落库的图片数量。缺字节/落库失败只记 warning，不中断解析。
+    """
+    from app.contracts.artifacts import AssetWrite
+    from app.modules.papers import service as papers_service
+    from app.modules.papers import storage as storage_mod
+
+    images = getattr(raw, "images", None) or {}
+    if not images:
+        return 0
+
+    stored = 0
+    for page in raw.pages:
+        for block in page.blocks:
+            if getattr(block, "kind", "") != "image" or block.image_asset_id:
+                continue
+            path = (getattr(block, "img_path", "") or "").replace("\\", "/")
+            if not path:
+                continue
+            data = images.get(path.split("/")[-1])
+            if not data:
+                continue
+            try:
+                asset = papers_service.put_asset(
+                    AssetWrite(
+                        paper_id=scope.paper_id,
+                        revision_id=scope.revision_id,
+                        # 契约 AssetKind 里表示"图像字节"的取值是 ``crop``
+                        # （与 PyMuPDF 渲染的 pdf_crop 同一类），不新增 Literal。
+                        kind="crop",
+                        mime=storage_mod.sniff_mime(data[:2048]),
+                    ),
+                    data,
+                )
+            except DomainError as exc:
+                log.warning("图片资产落库失败（%s）：%s", path, exc.code.value)
+                continue
+            block.image_asset_id = asset.id
+            stored += 1
+    return stored
 
 
 def _source_id_for_scope(scope: Scope) -> Optional[str]:
@@ -544,6 +605,8 @@ def _raw_document_from_payload(payload: dict) -> RawDocument:
                 ordinal=int(b.get("ordinal") or i),
                 table_html=b.get("table_html"),
                 table_caption=b.get("table_caption"),
+                img_path=b.get("img_path"),
+                image_asset_id=b.get("image_asset_id"),
             )
             for i, b in enumerate(p.get("blocks") or [])
         ]

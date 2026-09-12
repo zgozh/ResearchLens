@@ -30,12 +30,12 @@ os.environ["LLM_BASE_URL"] = ""
 os.environ["LLM_FALLBACKS"] = ""
 
 
-def _row(idx: int, text: str):
+def _row(idx: int, text: str, kind: str = "paragraph"):
     from app.modules.claims.repository import BlockRow
 
     return BlockRow(
         id=f"blk-{idx}", page_id=f"pg-{idx // 20}", ordinal=idx,
-        kind="paragraph", text=text, anchor_id=None, origin="source_extraction",
+        kind=kind, text=text, anchor_id=None, origin="source_extraction",
     )
 
 
@@ -173,9 +173,60 @@ class TestNoHeadingFallback:
         assert all(v[1].strip() for v in block_index.values()), "空白块不得进入索引"
 
 
+class TestNonEvidenceFurniture:
+    """页眉/页脚/页码**永远不可能成为断言的一级依据**，不应占用语料预算。
+
+    实测（fresh seed，2026-09-12）它们占掉 paper 1/2/3 语料的
+    22%（header 6 + footer 6 + page_number 5 = 17/77）、24%、21%；
+    更糟的是模型会**引用页码/标题当证据**，被 gate 以
+    ``semantic_status=insufficient`` 拒绝（paper 1 的 6 条 claim 全部因此被拒）。
+    """
+
+    def test_furniture_blocks_are_excluded(self):
+        rows = [
+            _row(0, "1 引言"),
+            _row(1, "SEC1-B0 " + "内容" * 300),
+            _row(2, "第 3 页", kind="page_number"),
+            _row(3, "软件学报 ISSN 1000-9825", kind="header"),
+            _row(4, "2024 年 1 月 软件学报", kind="footer"),
+            _row(5, "SEC1-B1 " + "内容" * 300),
+        ]
+        corpus, block_index, _ = _corpus(rows)
+
+        assert "第 3 页" not in corpus, "页码不得进入语料"
+        assert "ISSN 1000-9825" not in corpus, "页眉不得进入语料"
+        assert "2024 年 1 月" not in corpus, "页脚不得进入语料"
+        assert "SEC1-B0" in corpus and "SEC1-B1" in corpus, "正文必须仍在"
+
+    def test_headings_stay_for_context(self):
+        """标题要保留（给模型章节上下文），只清页码/页眉/页脚。"""
+        rows = [_row(0, "2 方法"), _row(1, "SEC1-B0 " + "内容" * 300)]
+        corpus, _, _ = _corpus(rows)
+
+        assert "2 方法" in corpus
+
+    def test_furniture_does_not_starve_later_sections(self):
+        """大量页眉页脚不得把后面章节挤出去。"""
+        rows = []
+        idx = 0
+        for _ in range(3):
+            rows.append(_row(idx, "1 引言")); idx += 1
+            rows.append(_row(idx, "SEC1-B0 " + "内容" * 400)); idx += 1
+            for n in range(30):   # 大量"页脚污水"
+                rows.append(_row(idx, f"软件学报 第 {n} 页", kind="footer")); idx += 1
+        rows.append(_row(idx, "3 方法")); idx += 1
+        rows.append(_row(idx, "SEC3-B0 " + "内容" * 400)); idx += 1
+
+        corpus, _, _ = _corpus(rows)
+
+        assert "SEC1-B0" in corpus
+        assert "SEC3-B0" in corpus, "页脚污水不得挤掉后续章节"
+
+
 class TestReferenceSections:
     """参考文献/致谢产生不了断言，占份额纯属浪费预算（实测 paper 1/2/3 各被分走
     12/16/9 块），还会诱发模型去引用文献而非正文。"""
+
     def test_english_reference_section_does_not_consume_budget(self):
         rows = _section_doc(
             [("1 引言", "SEC1"), ("2 方法", "SEC2"), ("References:", "REF")],

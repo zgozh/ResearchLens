@@ -196,6 +196,14 @@ _PREAMBLE_LABEL = "题名与摘要"
 #: 每条语料条目的固定开销（"[B123] "）
 _ENTRY_OVERHEAD = 12
 
+#: **不进入语料**的页码/页眉/页脚类块：它们永远不可能成为断言的一级依据
+#: （与解析层 ``mineru_adapter._META_KINDS`` 同一概念），实测却占掉
+#: paper 1/2/3 语料的 22%(17/77)/24%/21% 预算。更糟的是模型会**引用页码或
+#: 论文标题当证据**，被 gate 以 ``semantic_status=insufficient`` 拒掉 ——
+#: fresh seed 实测 paper 1 的 6 条 claim 全部因此被拒、讲解为空（ADR-0025）。
+#: 标题块仍保留（提供章节上下文）。
+_NON_EVIDENCE_KINDS = frozenset({"header", "footer", "page_number", "page_footnote"})
+
 #: 不进入语料的章节：参考文献/致谢产生不了断言，占份额纯属浪费预算，
 #: 还会诱发模型去引用文献而非正文。实测 paper 1/2/3 的 ``References:``
 #: 各占走 12/16/9 块（约 10% 预算）。
@@ -233,9 +241,14 @@ def _heading_groups(rows) -> List[Tuple[str, List]]:
 
 
 def _nonblank(rows) -> List[Tuple[object, str]]:
-    """(row, 去空白文本) 列表，跳过空白块。"""
+    """(row, 去空白文本) 列表；跳过空白块与页码/页眉/页脚类块。
+
+    排除后者见 ``_NON_EVIDENCE_KINDS``：白占预算，且会被模型当引文。
+    """
     out: List[Tuple[object, str]] = []
     for row in rows:
+        if (getattr(row, "kind", "") or "").lower() in _NON_EVIDENCE_KINDS:
+            continue
         text = (row.text or "").strip()
         if text:
             out.append((row, text))
@@ -421,16 +434,33 @@ def _draft_batch_from_raw(
             uuid, block_text = block_index[short_id]
             cite_quote = (q.get("quote") or "").strip()
             if not cite_quote:
-                continue
-            # 引用必须真的出现在该原文块中；否则丢弃（gate 还会再判一次）
-            if cite_quote not in block_text:
+                # 以前这里是**静默 continue**：模型没给引用这件事在 warning 里完全
+                # 看不到（ADR-0022 记录的观测性缺口）。现在显式报告。
                 warnings.append(Warning(
-                    code="quote_not_in_block",
-                    message=f"引用不在 block {short_id} 原文中，已丢弃",
+                    code="quote_missing",
+                    message=f"block {short_id} 的引用为空，已丢弃该引用",
                     stage="claims",
                 ))
                 continue
-            citations.append(CitationCandidate(block_id=uuid, proposed_quote=cite_quote))
+            # 复用 M04 的定位器（精确 → 规范化 → 空白无关 → 模糊），而不是自己做
+            # 精确子串比较：MinerU 排版插空格/全角/连字会让**真实存在**的引用被误判
+            # 为"不在原文中"丢弃（实测 paper 2 一轮 12 条 claim 里 8 条因此变成
+            # "证据原文为空"、全被 gate 拒）。命中后回填**原文真实切片**，不伪造 quote。
+            from app.modules.evidence import locator as locator_mod
+
+            matched = locator_mod.match_quote_text(
+                block_id=uuid, text=block_text, proposed_quote=cite_quote
+            )
+            if matched.span is None:
+                warnings.append(Warning(
+                    code="quote_not_in_block",
+                    message=f"引用不在 block {short_id} 原文中，已丢弃（{matched.kind}）",
+                    stage="claims",
+                ))
+                continue
+            citations.append(CitationCandidate(
+                block_id=uuid, proposed_quote=matched.span.source_text,
+            ))
 
         drafts.append(StatementDraft(
             scope=scope,
@@ -466,16 +496,34 @@ def reextract(scope: Scope, ctx: CallContext) -> ClaimBuildResult:
     batch = extract(scope, [], ctx)
     built = verify_and_store(batch, ctx)
 
-    detail = "、".join(f"{k}={v}" for k, v in removed.items())
-    return built.model_copy(update={
-        "warnings": [
-            Warning(
-                code="reextract_reset",
-                message=f"重抽取前已清理该 revision 的断言派生数据（{detail}）",
+    warnings = [
+        Warning(
+            code="reextract_reset",
+            message=(
+                "重抽取前已清理该 revision 的断言派生数据（"
+                + "、".join(f"{k}={v}" for k, v in removed.items()) + "）"
+            ),
+            stage="claims",
+        )
+    ]
+    # **deadline 陷阱**（ADR-0026）：``new_ctx()`` 默认只有 120s，而真实作业由
+    # ``pipeline.service`` 按 ``budget.max_wall_ms``（默认 600s）设置。重抽取要跑
+    # 「一次抽取 + 每条陈述一次语义判定」，用 120s 会中途过期——语义判定全部降级为
+    # "未判定"，于是**所有 claim 变成 unverified**，看起来像"这篇论文没有可验证断言"。
+    # 这里把它显式报出来，避免再次被误读成内容质量问题。
+    if ctx is not None and getattr(ctx, "deadline_at", None) is not None:
+        from app.core.clock import is_expired
+
+        if is_expired(ctx.deadline_at):
+            warnings.append(Warning(
+                code="reextract_deadline_exceeded",
+                message=(
+                    "重抽取期间全局 deadline 已过期，语义判定可能已降级为未判定——"
+                    "结果偏悲观；请用作业级 deadline（budget.max_wall_ms）重试"
+                ),
                 stage="claims",
-            )
-        ] + list(built.warnings or []),
-    })
+            ))
+    return built.model_copy(update={"warnings": warnings + list(built.warnings or [])})
 
 
 def register_statement(

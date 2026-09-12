@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.contracts.common import Warning
 from app.core.logging import get_logger
@@ -47,6 +47,11 @@ class RawBlock:
     #: 表格**独立 caption**（MinerU ``table_caption``），与 body 分离，避免
     #: caption 与正文粘连、以及"同一张表英文+中文 caption 被当成两张表"。
     table_caption: Optional[str] = None
+    #: 图片块在解析产物 ZIP 内的相对路径（MinerU ``img_path``，纯数据，不落库）。
+    img_path: Optional[str] = None
+    #: 该图字节落库后的 asset id —— 由 ``parse.service._persist_media_images``
+    #: 在存好字节后回填，供 ``build_media_candidates`` 挂到媒体候选上（ADR-0024）。
+    image_asset_id: Optional[str] = None
 
 
 @dataclass
@@ -71,6 +76,9 @@ class RawDocument:
     parser_name: str = ADAPTER_NAME
     parser_version: str = ADAPTER_VERSION
     full_text: str = ""
+    #: 解析产物 ZIP 里解包出的图片字节（文件名 → bytes）。适配器只做纯数据搬运；
+    #: 落库由 ``parse.service`` 负责（那里有 scope）。缺此字段时媒体候选无图可用。
+    images: Dict[str, bytes] = field(default_factory=dict)
 
 
 #: PyMuPDF block 类型编号 → 契约 BlockKind

@@ -144,7 +144,11 @@ class ArtifactBlobORM(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     paper_id: Mapped[int] = mapped_column(Integer, ForeignKey("papers.id"), index=True)
     revision_id: Mapped[str] = mapped_column(String(36), index=True)
-    kind: Mapped[str] = mapped_column(String(32))
+    #: 判别符。既有取值：``graph`` / ``presentation`` / ``page_preview:<sha256>``。
+    #: 页预览用 ``kind`` 承载 64 位缓存键，故必须 ≥ 13+1+64=78；原为 32 ——
+    #: SQLite 不校验长度所以单测没发现，Postgres 上直接 ``StringDataRightTruncation``
+    #: 让 /pages/{n}/preview 全部 500（ADR-0023）。
+    kind: Mapped[str] = mapped_column(String(128))
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

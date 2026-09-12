@@ -194,7 +194,43 @@
   - 合计：已验证陈述 17 → 24，场景 1/3/1 → 2/3/4。
   - 新警告 `section_truncated` / `reextract_reset` 让"哪节被截""清了什么"可见——这次缺陷不可见正是因为缺这个信号。
   - 回归测试 `test_corpus_allocation.py`（12 条）+ `test_reextract.py`（5 条）；全量 **314 passed**。
-- **同源缺口（一并记录，未修）**：`_draft_batch_from_raw` 对**空 quote** 是 `continue` 静默丢弃（无警告），所以"模型没给引用"这类失败在 warning 里看不到——这正是原作者只能靠手工发现 48000 问题的原因。建议补 `quote_missing` 警告计数。
+- **同源缺口（一并记录，未修）**：`_draft_batch_from_raw` 对**空 quote** 是 `continue` 静默丢弃（无警告），所以"模型没给引用"这类失败在 warning 里看不到——这正是原作者只能靠手工发现 48000 问题的原因。建议补 `quote_missing` 警告计数。**（已修，见 D-26）**
+
+## D-23 artifact_blobs.kind 加宽到 128：修 `/pages/{n}/preview` 全 500
+- **决策**：`artifact_blobs.kind` 由 `varchar(32)` 加宽到 `varchar(128)`（迁移 `0007`），并补一条**长度契约回归测试**。
+- **背景**：`/api/papers/{id}/pages/{n}/preview` **全部 500**。根因：`visual.ensure_page_preview` 用 `f"page_preview:{cache_key}"` 当 `kind`，而 `cache_key` 是 `preview_cache_key()` 的 **64 位 sha256 hex** → `13+1+64=78 > 32`，Postgres 报 `StringDataRightTruncation`：渲染成功但缓存写入失败、异常逃逸成 500。阅读器的页面图因此完全不可用（实测 51 页全废）。
+- **取舍**：
+  - 缩短缓存键（如取 hash 前 24 位）（否决）：要截断内容哈希，且 `kind` 仍被当成"判别符 + 缓存键"混用。
+  - 把缓存键挪到 `payload`、`kind` 只用 `'page_preview'`（否决）：`uq_artifact_revision_kind` 唯一约束按 `(revision_id, kind)`，同 revision 多页会互撞——现有设计正是靠把缓存键编进 `kind` 才让每页独立。
+  - **加宽列**（采纳）：纯 expand，旧值必然合法、无需回填，Postgres 下不重写表。
+- **结论**：迁移 0007 实测应用（`alembic_version=0007`、`kind`=128），预览由 **500 → 200 `image/png`**（278–398KB/页）。回归测试 `test_page_preview_cache.py` 用"组合出的 kind 长度 ≤ 列声明长度"断言，**把这一类"列太窄 + 只有 Postgres 报错"的缺陷变成 SQLite 也能拦住的测试**（SQLite 不校验 VARCHAR 长度，所以此前单测永远发现不了）。
+
+## D-24 图表字节：MinerU 提取图落成 asset，media 不再指向 parser_raw JSON
+- **决策**：`RawBlock` 增加 `img_path` / `image_asset_id`，`RawDocument` 增加 `images`（ZIP 解包出的图片字节）；新增 `parse.service._persist_media_images()` 把图字节落成 `AssetKind="crop"` 的 asset 并回填 asset id；`normalize.build_media_candidates` 的 `embedded_asset_id` **只取真实图资产，绝不回退成 `raw_asset_id`**；`_persist_raw_asset`/`_raw_document_from_payload` 增加这两个字段以保持**重放一致**。
+- **背景**：前端拿到的"图"其实是 **JSON**。`GET /api/papers/3/media/{figure}` → `GET /api/assets/{id}` 返回 `application/json` 161KB。成因链：ZIP 里的 `images/` 被 `safe_extract` 收进 `archive.images` 后**无人读取**；`img_path` 只进 `RawPage.image_blocks` 这个旁路字典，而 `build_media_candidates` 读的是 `RawBlock`，两边对不上；于是用 `raw_asset_id`（parser_raw）顶替"MinerU 提取图"。实测 `assets` 表图/裁剪类资产 **0 条**。
+- **取舍**：
+  - 适配器直接落库（否决）：适配器无 `scope`、不应碰 DB；改为适配器只传纯数据（`img_path` + `images`），落库放 `parse()`（有 scope、能调 papers）。
+  - 新增 `AssetKind="image"`（否决）：契约 `AssetKind` 已有 `crop`（与 PyMuPDF 渲染的 `pdf_crop` 同一类），复用现成字面量比扩契约更小改动。
+  - 让表格继续挂 `parser_raw` JSON（否决）：那是把 JSON 当图渲染；表格本就走 `extracted.table_html`（实测 `extracted_html=True`）。
+  - `sniff_mime` 只认 PDF（顺手补）：加 PNG/JPEG/GIF/WebP 魔数识别，否则资产 MIME 只能是 `application/octet-stream`。
+- **结论**：fresh seed 后 `assets` 出现 **39 个 `crop` 资产（786KB）**；实测 media 的图资产返回 **`image/jpeg`**（paper 1 9 张 / paper 2 3 张 / paper 3 12 张）。回归测试 `test_media_image_assets.py`（8 条）锁死：适配器必须交出 `img_path` 与 `images`、落库幂等、缺字节不崩、**没有真图时 `embedded_asset_id` 必须为 None（不得拿 JSON 冒充图）**、重放保持 `image_asset_id`。
+
+## D-25 语料排除页码/页眉/页脚（并修好 paper 1 讲解为空）
+- **决策**：`claims.service._nonblank` 过滤 `_NON_EVIDENCE_KINDS = {header, footer, page_number, page_footnote}`，这些块不进入抽取语料；**标题块保留**（提供章节上下文）。
+- **背景**：实测它们占掉 paper 1/2/3 语料的 **22%(17/77)/24%/21%** 预算，而且**永远不可能成为断言的一级依据**。更糟的是模型会**引用页码或论文标题当证据**——fresh seed 实测 paper 1 的 6 条 claim 全部被 gate 以 `semantic_status=insufficient` 拒掉、讲解为空；抽查引用可见其中一条引用的竟是**论文标题块**。
+- **取舍**：连标题一起去掉（否决）——标题给模型章节上下文；放宽 gate 让标题引用通过（否决）——违背"宁缺勿造"，标题不能支撑事实断言。
+- **结论**：过滤后 paper 1 的 `quote_not_in_block` 警告消失、**5/5 claim 通过验证**；讲解从「1 个空场景」变为「2 个场景（问题 2 条 + 实验 3 条，脚本 297+442 字）、4 条图边、挂 3 张图」，`method_steps` 由 0 变 1。回归测试 `test_corpus_allocation.py::TestNonEvidenceFurniture`（3 条）。
+
+## D-26 引用定位复用 M04 locator（+ 补"空白无关"一档与 `quote_missing`）
+- **决策**：`locator.match_quote` 抽出文本版 `match_quote_text(block_id, text, proposed_quote)`；M06 的 `_draft_batch_from_raw` 改用它（不再自己做 `quote not in text`）。新增 "2b) 空白无关"匹配档：规范化后去掉**所有**空白再找，命中后经紧凑索引 + offset map **回填原文真实切片**。空引用改为显式 `quote_missing` 警告。
+- **背景**：实测 paper 2 一轮抽出 12 条 claim，其中 **8 条**的 validation 是 `unsupported_entailment / 证据原文为空` —— 引用在抽取阶段就被丢光。根因是 M06 用了**精确子串**判断，而 MinerU 排版会在符号间插空格（`f _ {W B} = \frac {1}{3}`）、混用全角、拆开连字，模型复述几乎不可能逐字复现。**M04 的 locator 早就有 精确→规范化→模糊 三级匹配，M06 没有复用**。
+- **取舍**：放宽到"模糊相似即接受"（否决）——`match_quote` 的 fuzzy 档**只产生候选、绝不伪造精确 quote**，这条纪律必须守住，否则为了通过率把错误证据放进正文正是"乱"的来源；只做规范化（部分采纳为 2a）——救得了全角/连字/大小写，救不了符号间空格，故补 2b。
+- **结论**：回归测试 `test_quote_matching.py`（9 条）覆盖：精确命中回填原文切片、**空白变体必须命中且回填原文切片**、全角/连字命中、完全无关必须判缺失（不得放宽成"像就行"）、空引用报 `quote_missing`、未知块报 `unknown_block`。**注意**：paper 2 仍有 8 条 `quote_not_in_block` —— 那是模型**引错块/改写原文**，不是匹配过严；要改善需走"分块多次调用"（D-22 已登记）。
+
+### D-26 附：`new_ctx()` 默认 120s deadline 的陷阱（已加显式告警）
+排查中我一度把 paper 2「已验证陈述从 11 掉到 1」归因为**抽取质量方差**，实际是**deadline 陷阱**：`reextract` 要跑「一次抽取（~50–90s）+ 每条陈述一次语义判定」，而我用的是 `new_ctx()`（默认 **120s**）；真实作业由 `pipeline.service` 按 `budget.max_wall_ms`（默认 **600s**）设置 deadline。120s 中途过期 → `evidence.semantic` 的模型判定全部降级为"未判定" → **所有 claim 变 unverified**。日志里是成片的 `semantic judge 调用失败，降级为未判定：请求已超过全局 deadline`，但结果看起来就像"这篇论文没有可验证断言"。
+- **已做**：`reextract` 在 deadline 过期时显式追加 `reextract_deadline_exceeded` 警告（回归测试 2 条），避免再次被误读为内容质量问题；并用作业级 deadline（900s）重测，paper 3 提到 15 条 claim / 9 条已验证 / 6 个场景。
+- **未做（建议）**：`verify_and_store` 也应聚合报告"语义判定不可用"的条数；否则该陷阱在任何调用路径上都会伪装成"内容质量差"。
 
 
 

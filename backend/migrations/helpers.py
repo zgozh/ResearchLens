@@ -358,7 +358,7 @@ SOURCE_TABLES = {
         _pk_str(),
         sa.Column("paper_id", sa.Integer(), sa.ForeignKey("papers.id"), index=True),
         sa.Column("revision_id", sa.String(36), index=True),
-        sa.Column("kind", sa.String(32)),
+        sa.Column("kind", sa.String(128)),
         sa.Column("payload", sa.JSON(), default=dict),
         sa.Column("digest", sa.String(64), nullable=True),
         _created(),

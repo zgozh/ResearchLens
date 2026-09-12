@@ -633,7 +633,10 @@ def build_media_candidates(
                     anchor_ids=[],
                     raw_ref=_raw_ref(rb) if rb.bbox else None,
                     extracted=extracted,
-                    embedded_asset_id=raw_asset_id or None,
+                    # 只用**真实图字节**资产（由 ``parse.service._persist_media_images``
+                    # 落库后回填到 RawBlock）。**绝不**回退成 raw_asset_id —— 那是
+                    # parser_raw 的 JSON，前端会把它当图片渲染、图表全空（ADR-0024）。
+                    embedded_asset_id=getattr(rb, "image_asset_id", None) or None,
                     excluded=bool(exclusion_reason),
                     exclusion_reason=exclusion_reason,
                 )

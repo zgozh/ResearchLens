@@ -66,10 +66,25 @@ def looks_like_pdf(head: bytes) -> bool:
     return _PDF_MAGIC in (head or b"")[:_PDF_MAGIC_WINDOW]
 
 
+#: 图片魔数 → MIME（MinerU 提取图是 jpg/png，用于给 media 资产标注真实 MIME）
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
 def sniff_mime(head: bytes, declared: str = "") -> str:
-    """只做保守识别；PDF 以外不猜，沿用调用方声明。"""
-    if looks_like_pdf(head):
+    """只做保守识别；PDF/常见图片以外不猜，沿用调用方声明。"""
+    window = head or b""
+    if looks_like_pdf(window):
         return "application/pdf"
+    for magic, mime in _IMAGE_MAGIC:
+        if window.startswith(magic):
+            return mime
+    if window[:4] == b"RIFF" and window[8:12] == b"WEBP":
+        return "image/webp"
     return declared or "application/octet-stream"
 
 

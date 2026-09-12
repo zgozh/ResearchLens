@@ -188,51 +188,93 @@ class QuoteMatch:
 
 def match_quote(block: Block, proposed_quote: str) -> QuoteMatch:
     """在**单个 Block 的原文**中匹配候选引用。"""
+    return match_quote_text(
+        block_id=block.id, text=block.text or "", proposed_quote=proposed_quote
+    )
 
+
+def match_quote_text(*, block_id: str, text: str, proposed_quote: str) -> QuoteMatch:
+    """``match_quote`` 的**文本版**：调用方只有块 id + 原文（没有 ``Block`` DTO）时使用。
+
+    M06 抽取阶段手上只有 ``block_index`` 里的 ``(uuid, text)``，此前它自己做
+    ``quote not in text`` 的**精确子串**判断 —— 比这里弱得多：MinerU 排版会在符号间
+    插空格、给全角字符、用连字，模型复述时难以逐字复现，于是**真实存在的引用**
+    被误判成"不在原文中"而丢弃（实测 paper 2 一轮 12 条 claim 里 8 条因此变成
+    "证据原文为空"、全被 gate 拒）。抽成文本版让 M06 直接复用同一套匹配。
+    """
     quote = (proposed_quote or "").strip()
     if not quote:
-        return QuoteMatch(kind="missing", block_id=block.id, reason="引用为空")
+        return QuoteMatch(kind="missing", block_id=block_id, reason="引用为空")
 
-    raw = block.text or ""
+    raw = text or ""
     # 1) 精确子串（最高优先；大小写/空白都算不同）
     pos = raw.find(quote)
     if pos >= 0:
         span = QuoteSpan(
-            block_id=block.id, start_cp=pos, end_cp=pos + len(quote),
+            block_id=block_id, start_cp=pos, end_cp=pos + len(quote),
             source_text=raw[pos:pos + len(quote)], match_method="exact",
         )
-        return QuoteMatch(kind="exact", block_id=block.id, span=span, score=1.0)
+        return QuoteMatch(kind="exact", block_id=block_id, span=span, score=1.0)
 
     # 2) 规范化匹配（带回原始 offset map）
     if not raw:
-        return QuoteMatch(kind="missing", block_id=block.id, reason="原文为空")
+        return QuoteMatch(kind="missing", block_id=block_id, reason="原文为空")
     norm_block = normalize_with_map(raw)
     norm_quote = normalize_with_map(quote, fold_case=True)
     if norm_quote.norm and norm_block.norm:
+        mapped: Optional[Tuple[int, int]] = None
         npos = norm_block.norm.casefold().find(norm_quote.norm)
         if npos >= 0:
             mapped = norm_block.to_raw_span(npos, npos + len(norm_quote.norm))
-            if mapped is not None:
-                start, end = mapped
-                span = QuoteSpan(
-                    block_id=block.id, start_cp=start, end_cp=end,
-                    source_text=raw[start:end], match_method="normalized",
-                    normalizer_version=NORMALIZER_VERSION,
-                )
-                return QuoteMatch(
-                    kind="normalized", block_id=block.id, span=span, score=0.99,
-                    reason="规范化可回溯匹配",
-                )
+        else:
+            # 2b) 空白无关匹配：规范化后**去掉所有空白**再找。
+            # MinerU 把符号拆开排版（``f _ {W B} = \frac {1}{3}``），模型很难逐字
+            # 复现原样的空格；去空白后若仍能找到，说明引用**确实存在**，只是排版空白
+            # 不同——此时回填的仍是原文的真实切片，不伪造 quote。
+            compact, compact_index = _compact_without_whitespace(norm_block)
+            needle = "".join(c for c in norm_quote.norm if c.strip() != "")
+            cpos = compact.casefold().find(needle.casefold()) if needle else -1
+            if cpos >= 0:
+                n_start = compact_index[cpos]
+                n_end = compact_index[cpos + len(needle) - 1] + 1
+                mapped = norm_block.to_raw_span(n_start, n_end)
+        if mapped is not None:
+            start, end = mapped
+            span = QuoteSpan(
+                block_id=block_id, start_cp=start, end_cp=end,
+                source_text=raw[start:end], match_method="normalized",
+                normalizer_version=NORMALIZER_VERSION,
+            )
+            return QuoteMatch(
+                kind="normalized", block_id=block_id, span=span, score=0.99,
+                reason="规范化可回溯匹配",
+            )
 
     # 3) 模糊：只产生候选，绝不伪造精确 quote
     score = max(lexical_overlap(raw, quote), ratio(raw, quote))
     if score >= FUZZY_CANDIDATE_THRESHOLD:
         return QuoteMatch(
-            kind="fuzzy", block_id=block.id, score=round(score, 4),
+            kind="fuzzy", block_id=block_id, score=round(score, 4),
             reason="仅字面相似，需人工/模型复核，不作为精确 quote",
         )
-    return QuoteMatch(kind="missing", block_id=block.id, score=round(score, 4),
+    return QuoteMatch(kind="missing", block_id=block_id, score=round(score, 4),
                       reason="原文中找不到该引用")
+
+
+def _compact_without_whitespace(normalized: NormalizedText) -> Tuple[str, List[int]]:
+    """把规范化文本去掉所有空白，并给出每个紧凑字符对应的**规范化下标**。
+
+    用于"空白无关"匹配：命中后经 ``compact_index`` 回到规范化坐标，
+    再由 ``NormalizedText.to_raw_span`` 回到**原文真实切片**。
+    """
+    chars: List[str] = []
+    index: List[int] = []
+    for i, ch in enumerate(normalized.norm):
+        if ch.strip() == "":
+            continue
+        chars.append(ch)
+        index.append(i)
+    return "".join(chars), index
 
 
 def locate_in_blocks(

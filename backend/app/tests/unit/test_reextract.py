@@ -224,3 +224,36 @@ class TestReextract:
         assert result.scope.revision_id == scope.revision_id
         assert result.claims == []
         assert _counts(scope)["claim_records"] == 0
+
+    def test_expired_deadline_is_reported(self, world):
+        """**deadline 陷阱**：重抽取要跑「一次抽取 + 每条陈述一次语义判定」，
+        用 ``new_ctx()`` 的默认 120s 会中途过期 → 语义判定全降级为"未判定" →
+        所有 claim 变 unverified，看起来像"这篇论文没有可验证断言"。必须显式报出来。
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from app.contracts.common import new_ctx
+        from app.modules import claims as claims_mod
+
+        scope = world["scope"]
+        _seed_claim_stack(scope)
+        expired = new_ctx().model_copy(
+            update={"deadline_at": datetime.now(timezone.utc) - timedelta(seconds=1)}
+        )
+
+        result = claims_mod.reextract(scope, expired)
+
+        codes = {w.code for w in (result.warnings or [])}
+        assert "reextract_deadline_exceeded" in codes, f"必须报告 deadline 已过期，实际 {codes}"
+
+    def test_healthy_deadline_does_not_warn(self, world):
+        from app.contracts.common import new_ctx
+        from app.modules import claims as claims_mod
+
+        scope = world["scope"]
+        _seed_claim_stack(scope)
+
+        result = claims_mod.reextract(scope, new_ctx(deadline_ms=900_000))
+
+        codes = {w.code for w in (result.warnings or [])}
+        assert "reextract_deadline_exceeded" not in codes

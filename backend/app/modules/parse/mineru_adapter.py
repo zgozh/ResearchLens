@@ -269,7 +269,8 @@ def to_raw_document(archive: SafeArchive) -> RawDocument:
             Warning(code="no_content_list", message="MinerU 结果缺少 content_list", stage="parse")
         )
         return RawDocument(warnings=warnings, parser_name=ADAPTER_NAME,
-                           parser_version=ADAPTER_VERSION, full_text=archive.markdown)
+                           parser_version=ADAPTER_VERSION, full_text=archive.markdown,
+                           images=dict(archive.images or {}))
 
     max_idx = max(by_page)
     pages: List[RawPage] = []
@@ -299,6 +300,11 @@ def to_raw_document(archive: SafeArchive) -> RawDocument:
                 table_html=(item.get("table_body") or None) if kind == "table" else None,
                 table_caption=(_as_text(item.get("table_caption")) or None)
                 if kind == "table" else None,
+                # 图片块的 ZIP 内路径：必须落在 RawBlock 上（此前只进 RawPage.image_blocks
+                # 这个旁路字典，而 build_media_candidates 读的是 RawBlock，两边对不上
+                # → 媒体候选只能拿 parser_raw JSON 冒充图片，前端图表全空。ADR-0024）
+                img_path=(item.get("img_path") or item.get("image_path") or None)
+                if kind == "image" else None,
             )
             blocks.append(block)
             ordinal += 1
@@ -335,6 +341,9 @@ def to_raw_document(archive: SafeArchive) -> RawDocument:
         parser_name=ADAPTER_NAME,
         parser_version=ADAPTER_VERSION,
         full_text=archive.markdown,
+        # 把 ZIP 里解包出的图片字节一并交出：适配器不做落库（无 scope），
+        # 由 parse.service._persist_media_images 存成 image 资产（ADR-0024）。
+        images=dict(archive.images or {}),
     )
 
 
