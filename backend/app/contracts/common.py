@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Generic, List, Literal, Optional, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 T = TypeVar("T")
 
@@ -191,6 +191,13 @@ class CallContext(ContractModel):
     scope: Optional[Scope] = None
     deadline_at: datetime
     cancel_token: Any = Field(default_factory=NeverCancelled)
+    #: **预置语义判定**（受控编排器用）。`evidence.service.validate` 会读这两个值，
+    #: 命中就不再自己调用模型 —— 问答把**一次批量判定**的结果按句写进来，
+    #: 把"每句一次 LLM 判定"（实测 4 句 ≈ 80s）压成"一次调用"（ADR-0063）。
+    #: 必须是 PrivateAttr：`extra="forbid"` 的模型不允许任意属性赋值，
+    #: 此前没有声明 → 钩子**永远读到 None**（形同虚设）。
+    _semantic_verdict: Any = PrivateAttr(default=None)
+    _semantic_confidence: Any = PrivateAttr(default=None)
     #: 必须是 ``contracts.ai.ModelSnapshot`` 的**实例**（``new_ctx`` 负责归一化）。
     #:
     #: 这里**不能**声明成 ``ModelSnapshotLike``：那样 pydantic 会把传入的完整快照

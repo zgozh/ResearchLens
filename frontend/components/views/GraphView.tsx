@@ -16,7 +16,8 @@ import '@xyflow/react/dist/style.css';
 import { Circle, GitBranch, FlaskConical, Target, FileSearch, Image as ImageIcon, X, Quote, ArrowRight, Loader2 } from 'lucide-react';
 import type { GraphOut, GraphNode, ClaimOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
-import { api, absoluteApiUrl } from '@/lib/api';
+import { api } from '@/lib/api';
+import { SourceMedia } from '@/components/source/SourceMedia';
 import { cn } from '@/lib/cn';
 
 // D29 修复：此前只写死 problem/method/experiment/claim/evidence/media 六类，
@@ -310,18 +311,22 @@ export function GraphView({ graph, accent, onClaimSelected, paperId, onNavigate,
                     <div className="flex h-24 items-center justify-center text-[11px] text-slate-500">
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> 正在取图表…
                     </div>
-                  ) : mediaDetail?.assets?.length ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={absoluteApiUrl(`/api/assets/${mediaDetail.assets[0].id}`)}
-                      alt={String(selected.props?.caption || selected.label || '图表')}
-                      className="mx-auto max-h-64 w-auto rounded-lg border border-[var(--line)] bg-black/20 object-contain"
-                    />
-                  ) : mediaDetail ? (
-                    <p className="text-[11px] text-amber-300/80">
-                      该{selected.props?.media_kind === 'table' ? '表' : '图'}在解析结果里**没有图像资产**
-                      （策略：{mediaDetail.policy?.default_mode || '未知'}），只能定位到原文页查看。
-                    </p>
+                  ) : mediaDetail?.media ? (
+                    // **用应用里统一的来源媒体组件**（ADR-0062）：它按视图策略决定展示层级 ——
+                    // 有原图给原图、表格/公式走提取表示、缺原件回退整页预览、都没有就**明确说明**。
+                    // 此前这里直接 `<img src=assets[0].id>`，而 assets[0] 常常是
+                    // ``kind="source_pdf"``（实测 paper 1 的表媒体 original_asset_ids 为空），
+                    // 于是把 PDF 塞进 <img> → 用户看到的"什么都没有的断裂图"。
+                    <div className="text-slate-900">
+                      <SourceMedia
+                        media={mediaDetail.media}
+                        assets={mediaDetail.assets ?? []}
+                        onOpen={() => {}}
+                        onNavigate={(t) => onNavigate?.({
+                          anchor_id: t.anchor_id, segment_index: t.segment_index ?? 0,
+                        })}
+                      />
+                    </div>
                   ) : (
                     <p className="text-[11px] text-slate-500">未能取到该图表资产。</p>
                   )}

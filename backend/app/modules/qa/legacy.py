@@ -93,9 +93,11 @@ def _legacy_ctx(scope: Scope, snapshot_id: Optional[str]) -> Optional[CallContex
             return None
         budget = Budget(
             max_calls=24, max_input_tokens=200_000, max_output_tokens=40_000,
-            max_wall_ms=300_000, max_repair_rounds=2,
+            # 120s：与流式问答一致（ADR-0063）。此前 300s —— 实测"主要贡献是什么"
+            # 会跑满 300s 让前端超时；现在到点就降级为抽取式作答/明确拒答。
+            max_wall_ms=120_000, max_repair_rounds=2,
         )
-        ctx = new_ctx(scope, snapshot=snapshot, deadline_ms=300_000, budget=budget)
+        ctx = new_ctx(scope, snapshot=snapshot, deadline_ms=120_000, budget=budget)
         if snapshot_id and getattr(ctx, "model_snapshot", None) is None:
             return None
         return ctx

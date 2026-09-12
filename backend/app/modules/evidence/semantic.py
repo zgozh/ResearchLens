@@ -142,10 +142,102 @@ def judge(
     return verdict, conf, "模型语义判定"
 
 
+BATCH_JUDGE_PROMPT = (
+    "你是科研事实核验引擎。下面给出**多条**「陈述 + 原文证据」，逐条判断证据对陈述的支持关系。\n"
+    "每条只能填一个判定：\n"
+    "- supports —— 证据明确表达了陈述的内容（允许同义改写、数值单位换算），"
+    "且陈述没有超出证据的适用范围。\n"
+    "- contradicts —— 证据与陈述相互矛盾。\n"
+    "- insufficient —— 证据相关但不足以支持（缺关键数字、比较对象不同、放大了适用范围）。\n"
+    "纪律：证据里没有的数字/比较对象/条件，绝不能算 supports；"
+    "不要因为主题相近就判 supports。\n"
+    "输出 JSON：{\"items\": [{\"index\": 0, \"verdict\": \"supports\", \"confidence\": 0.8}, ...]}，"
+    "**每条都要有**，index 与输入序号一致。\n"
+)
+
+
+def batch_judge(
+    items: "list[tuple[str, str]]",
+    ctx,
+) -> dict:
+    """**一次调用**判定多条「陈述 + 引用原文」的支持关系（ADR-0063）。
+
+    为什么要批量：问答的一条回答里有 3–5 句，逐句判定就要 3–5 次 LLM 调用
+    （实测每句 ~20s），用户看到"一直在转"。批量把这段压成一次调用。
+
+    返回 ``{陈述文本: (verdict, confidence)}``；**任何失败都返回空 dict**
+    （调用方逐句回退到原来的单句判定，不改变正确性，只影响速度）。
+    """
+    pairs = [(str(s or "").strip(), str(e or "").strip()) for s, e in (items or [])]
+    pairs = [(s, e) for s, e in pairs if s and e]
+    if not pairs:
+        return {}
+
+    from app.core.config import settings
+
+    if not getattr(settings, "has_llm", False):
+        return {}
+
+    class _Item(BaseModel):
+        index: int = Field(description="第几条（从 0 开始，与输入顺序一致）")
+        verdict: str = Field(description="supports|contradicts|insufficient")
+        confidence: float = Field(description="判定强度 0~1 的小数")
+
+    class _Batch(BaseModel):
+        items: list[_Item] = Field(default_factory=list)
+
+    blocks = []
+    for idx, (stmt, ev) in enumerate(pairs):
+        blocks.append(
+            f"[{idx}] 陈述：{stmt[:MAX_STATEMENT_CHARS]}\n"
+            f"    原文证据：{ev[:MAX_EVIDENCE_CHARS]}"
+        )
+    try:
+        from app.contracts.ai import ChatMessage, CompletionRequest
+        from app.modules import ai as ai_module
+
+        result = ai_module.complete(
+            CompletionRequest(
+                messages=[
+                    ChatMessage(role="system", content=BATCH_JUDGE_PROMPT),
+                    ChatMessage(role="user", content="\n\n".join(blocks)),
+                ],
+                output_schema=_Batch,
+                max_output_tokens=2048,
+            ),
+            ctx,
+        )
+    except Exception as exc:  # noqa: BLE001  批量失败 → 调用方逐句回退
+        log.info("批量语义判定失败，回退逐句判定：%s", exc)
+        return {}
+
+    value = getattr(result, "value", None)
+    out: dict = {}
+    for item in (getattr(value, "items", None) or []):
+        try:
+            idx = int(getattr(item, "index", -1))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= idx < len(pairs)):
+            continue
+        verdict = str(getattr(item, "verdict", "") or "").strip().lower()
+        if verdict not in ("supports", "contradicts", "insufficient"):
+            continue
+        conf = getattr(item, "confidence", None)
+        try:
+            conf = float(conf) if conf is not None else None
+        except (TypeError, ValueError):
+            conf = None
+        out[pairs[idx][0]] = (verdict, conf)
+    return out
+
+
 __all__ = [
     "SEMANTIC_ASSESSOR_VERSION",
     "SEMANTIC_JUDGE_PROMPT",
+    "BATCH_JUDGE_PROMPT",
     "MAX_EVIDENCE_CHARS",
     "MAX_STATEMENT_CHARS",
     "judge",
+    "batch_judge",
 ]

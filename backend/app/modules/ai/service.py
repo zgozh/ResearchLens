@@ -69,6 +69,44 @@ def _messages_payload(messages: List[ChatMessage]) -> List[dict]:
     return [{"role": m.role, "content": m.content} for m in messages]
 
 
+#: 结构化输出被截断时，重试预算的放大倍数与上限（ADR-0063）。
+#: 为什么需要：截断重试若沿用同一预算，只会得到同样被截断的结果 —— 实测 qwen-plus
+#: 连撞 3 次、每次 26.8s，一次问答草稿因此烧掉 ~80s（用户看到"一直在转"）。
+TRUNCATION_ESCALATION = 1.8
+MAX_OUTPUT_TOKENS_CAP = 8192
+
+
+def _is_truncated(result, max_tokens: Optional[int]) -> bool:
+    """判断这次返回是否**被 token 上限截断**（输出正好用满上限）。
+
+    判据用 ``usage.output_tokens >= max_tokens``：供应商不一定会给 finish_reason，
+    但"输出正好等于上限"几乎必然意味着被截断（实测尾部是一串空白、JSON 不完整）。
+    """
+    if not max_tokens:
+        return False
+    usage = getattr(result, "usage", None)
+    used = None
+    if isinstance(usage, dict):
+        used = usage.get("output_tokens")
+    else:
+        used = getattr(usage, "output_tokens", None)
+    try:
+        return used is not None and int(used) >= int(max_tokens)
+    except (TypeError, ValueError):
+        return False
+
+
+def _escalated_budget(max_tokens) -> int:
+    """放大后的输出预算（封顶，避免无限膨胀）。"""
+    try:
+        current = int(max_tokens or 0)
+    except (TypeError, ValueError):
+        current = 0
+    if current <= 0:
+        return min(1200, MAX_OUTPUT_TOKENS_CAP)
+    return min(int(current * TRUNCATION_ESCALATION), MAX_OUTPUT_TOKENS_CAP)
+
+
 def _budget_guard(ctx: Optional[CallContext], used_calls: int) -> None:
     """统一守卫：取消 → deadline → 调用预算（顺序即优先级）。
 
@@ -114,10 +152,12 @@ def complete(
     total_calls = 0
 
     for provider in providers:
+        # 输出预算**独立于 base_body**：被截断时要能放大重试（ADR-0063）。
+        token_budget = request.max_output_tokens
         base_body: dict = {
             "messages": _messages_payload(request.messages),
             "temperature": request.temperature,
-            "max_tokens": request.max_output_tokens,
+            "max_tokens": token_budget,
             "model": model_override or provider.model,
         }
 
@@ -138,11 +178,33 @@ def complete(
                 schema_mode = "json_schema"
                 body = {
                     **base_body,
+                    "max_tokens": token_budget,
                     "response_format": validation.json_schema_format(binding),
                 }
                 try:
                     result = transport.chat_once(provider, body)
                     caps.observe(provider.model, json_schema=True)
+                    if _is_truncated(result, body.get("max_tokens")):
+                        # **被 token 上限截断**：内容不完整、JSON 必然解析失败。
+                        # 用同样的预算再问一次只会再截断一次（实测 qwen-plus 连撞 3 次、
+                        # 每次 26.8s，一次 QA 草稿因此烧掉 ~80s，用户看到"一直在转"）。
+                        # 所以这里放大预算再试，而不是原地重试。
+                        last_error = DomainError(
+                            ErrorCode.DEPENDENCY_UNAVAILABLE,
+                            "模型输出被 max_tokens 截断，已放大预算重试",
+                            retryable=True,
+                        )
+                        escalated = _escalated_budget(token_budget)
+                        warnings.append(Warning(
+                            code="output_truncated",
+                            message=(
+                                f"模型输出触顶 max_tokens={token_budget} 被截断，"
+                                f"已放大到 {escalated} 重试"
+                            ),
+                            stage="ai",
+                        ))
+                        token_budget = escalated
+                        continue
                     return _finish_structured(result, binding, ctx, "json_schema",
                                               total_calls, warnings)
                 except DomainError as exc:
@@ -172,12 +234,31 @@ def complete(
                 hint = validation.schema_hint(binding)
                 body = {
                     **base_body,
+                    "max_tokens": token_budget,
                     "messages": base_body["messages"] + [{"role": "user", "content": hint}],
                     "response_format": {"type": "json_object"},
                 }
                 try:
                     result = transport.chat_once(provider, body)
                     caps.observe(provider.model, json_object=True)
+                    if _is_truncated(result, body.get("max_tokens")):
+                        # 与 json_schema 路径同一条纪律：截断就放大预算重试（ADR-0063）
+                        last_error = DomainError(
+                            ErrorCode.DEPENDENCY_UNAVAILABLE,
+                            "模型输出被 max_tokens 截断，已放大预算重试",
+                            retryable=True,
+                        )
+                        escalated = _escalated_budget(token_budget)
+                        warnings.append(Warning(
+                            code="output_truncated",
+                            message=(
+                                f"模型输出触顶 max_tokens={token_budget} 被截断，"
+                                f"已放大到 {escalated} 重试"
+                            ),
+                            stage="ai",
+                        ))
+                        token_budget = escalated
+                        continue
                     return _finish_structured(result, binding, ctx, "json_object",
                                               total_calls, warnings)
                 except DomainError as exc:

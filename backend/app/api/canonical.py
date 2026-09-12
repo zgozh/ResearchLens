@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.contracts.artifacts import ByteRange
-from app.contracts.common import Scope, Warning, new_ctx
+from app.contracts.common import Budget, Scope, Warning, new_ctx
 from app.contracts.evidence import ReviewRequest, VerifiedStatement
 from app.contracts.jobs import JobEvent
 from app.contracts.qa import QARequest
@@ -42,6 +42,11 @@ from app.schemas.canonical import Capability, ExhibitBundle, MediaIndexItem, Pap
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/api", tags=["canonical"])
+
+#: 流式问答的整体截止时间（毫秒）。没有它时，供应商慢/卡住会让 SSE 无限挂着
+#: （用户实测"一直在转"）。到点后 AI 层抛 DEADLINE_EXCEEDED，问答服务降级为
+#: 抽取式作答或明确拒答 —— 总之**必须给出交代**（ADR-0063）。
+QA_STREAM_DEADLINE_MS = 120_000
 
 
 # ================================================================== helpers
@@ -394,7 +399,18 @@ async def qa_stream(paper_id: int, body: QARequest, revision_id: Optional[str] =
     scope, _rev = _resolve_scope(paper_id, revision_id)
     # 必须注入 revision 固定的模型快照：``new_ctx(scope)`` 的 snapshot 默认 None，
     # 会让 QA 直接判 ``llm_unavailable`` 并 abstained —— 前端只看到空气泡。
-    ctx = new_ctx(scope, snapshot=papers_mod.snapshot_for_revision(scope))
+    # **必须给 deadline**（ADR-0063）：此前没有截止时间，供应商慢/卡住时 SSE 会一直挂着
+    # （用户看到"一直在转"）；有 deadline 后 ``ai.complete`` 会抛 DEADLINE_EXCEEDED，
+    # 由问答服务降级为抽取式作答或明确拒答，而不是无限等待。
+    ctx = new_ctx(
+        scope,
+        snapshot=papers_mod.snapshot_for_revision(scope),
+        deadline_ms=QA_STREAM_DEADLINE_MS,
+        budget=Budget(
+            max_calls=24, max_input_tokens=200_000, max_output_tokens=40_000,
+            max_wall_ms=QA_STREAM_DEADLINE_MS, max_repair_rounds=2,
+        ),
+    )
     return StreamingResponse(
         qa_mod.stream(scope, body, ctx),
         media_type="text/event-stream",
