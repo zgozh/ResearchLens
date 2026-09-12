@@ -381,3 +381,49 @@
   - 会不会把"不可答问题"也答了？兜底答案**只引用检索命中的原文**且逐句过 gate，`note` 会标注为抽取式作答；相比"永远拒答"，这是设计里既有的降级路径（`llm_failed` 分支早就这么做），只是漏了"0 句通过"这个入口。`unanswerable_refusal_rate` 指标可能因此下降，属于已知取舍。
   - 不改成"模型改写也放过"：那才是真正的放宽 gate，会引入幻觉；宁可降级为原文引用。
 - **回归测试**：`test_qa_citation_recovery.py` 增至 9 条（新增"兜底必须剥掉章节前缀并把引用落在真实块上""草稿全被拒时必须走兜底并留告警"）。
+
+## D-39 模型对照实测：`qwen3.6-plus` 可用但**抽取路径不可换**；另发现 schema 能力未被复用
+
+**动机**：用户反馈"qwen3.6-plus 调用成功了"，而我上一轮的记录是"qwen3.6-plus 316s 失败"。实测后确认**用户是对的**：那次"失败"是**600s 作业墙钟预算把它掐断**，不是模型本身不可用。以下是可复现的对照数据。
+
+### 实测（容器内，项目自己的 `ai.complete()` 路径 + 真实提示词/schema）
+
+**① 语义判定路径**（`evidence.semantic.judge`，真实 `SEMANTIC_JUDGE_PROMPT` + 真实 `_Verdict`）
+
+| 输入 | qwen-plus | qwen3.6-plus |
+|---|---|---|
+| 应判 supports | `supports` conf=1.0，**2.5s** | `supports` conf=1.0，**20.7s** |
+| 应判 contradicts | **`insufficient` conf=0.3（判错方向）** | `contradicts` conf=0.95，**27.1s** |
+| 应判 insufficient | `insufficient` conf=0.2，1.9s | `insufficient` conf=1.0，**28.1s** |
+
+→ 判定路径上 **qwen3.6-plus 判别力更好**（3/3 正确、置信度分离度高），qwen-plus 把 contradicts 判成 insufficient 且三类置信度都低（1.0/0.3/0.2）。**这反证了我上一轮"维持 qwen-plus"的结论——那次只测了引文可定位率与时延，没测判别力。** 样本仅 3 例，不足以定论，但方向明确。
+
+**② 抽取路径**（真实 `CLAIM_EXTRACTION_PROMPT` + `_ClaimExtraction` + 真实 6175 字符/33 块语料）
+
+| 指标 | qwen-plus | qwen3.6-plus |
+|---|---|---|
+| 时延 | **22.4s** | **494.0s（8 分 14 秒，22×）** |
+| 输出模式 | `json_schema`，**1 次尝试** | `json_object`，**4 次尝试** |
+| claim / quote 数 | 6 / 10 | 7 / 12 |
+| quote **逐字命中原文** | **80%（8/10）** | 75%（9/12） |
+| 输出 tokens | 988 | **6218**（远超 `max_output_tokens=4096`） |
+
+→ 抽取路径上 qwen3.6-plus **不可用**：单次 494s 就吃掉 `INGEST_BUDGET_WALL_MS=600000` 的 **82%**，后面还有 N 次逐句判定，必然爆 deadline——这正是"316s 失败"的真身。且质量**没有提升**（命中率反而略低），输出 token 还多 6 倍。
+→ **结论：不能整体切换。** 若要利用它的判别力，只能**分模型分工**（抽取/结构留 qwen-plus，判定换 qwen3.6-plus），代价是每篇论文的判定环节从秒级变成 20–28s×陈述数，且必须先调大作业墙钟预算。
+
+### 顺带发现（真缺陷）：观测到的 schema 能力**从未被复用**
+
+`ai/service.py:125` 只判断 `if binding.json_schema is not None:`，**从不读 `caps.capabilities_for(model).json_schema`**。于是 `caps.observe(model, json_schema=False)`（:145）记下的"这家供应商不接受 json_schema"**永远是死数据**：
+
+- 每次结构化调用都要**重新撞一遍** json_schema（最多 `MAX_ATTEMPTS=3` 次），再回退 json_object；
+- qwen3.6-plus 实测 `attempts=4`，且第二次调用**没有变快**（19.7/28.5/17.4s，与第一次同量级）——直接证明能力未被复用；
+- `caps._OBSERVED` 只在进程内存里，重启即失，也**未持久化**。
+
+修掉它（命中 `json_schema=False` 就直接走 json_object）可省下每次结构化调用约 3 次无效尝试：按实测比例，qwen3.6-plus 抽取可从 494s 降到约 125s，判定从 28s 降到约 7s。**对 qwen-plus 无影响**（它一次就接受 schema）。
+
+### 运维事实（重要，容易踩）
+
+1. **切换入口**：`POST /api/models {"model": "…"}` → 写 `data/runtime.json`（`runtime.get_active_model()` **优先于** `.env` 的 `LLM_MODEL`），对**新**入库作业生效；`.env` 只是兜底默认值。
+2. **存量论文的问答不会跟着变**：`/qa/stream` 用 `papers_mod.snapshot_for_revision(scope)`，即 **revision pin 的 `model_snapshot_id`**（实测 paper 1 pin 的是 `fd4c8b11…` = qwen-plus）。换了运行时模型后，老论文仍然用旧模型回答；要变必须重 pin（新 revision 或显式改 `revision.model_snapshot_id`）。
+3. 切换会产生新的 snapshot id → QA 缓存键变化 → 旧答案自动失效（这是好事，不会拿旧模型的答案冒充新模型）。
+4. `VISION_MODEL=qwen-vl-max` **全项目零调用**（`services/ai.py: vision()` 无调用者），图表信息完全来自 MinerU，没有视觉模型补强。
