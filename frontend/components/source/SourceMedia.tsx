@@ -41,17 +41,23 @@ export function SourceMedia({
   const isPageFallback =
     policy.default_mode === 'original' && !originalAsset && !!pagePreviewAsset;
 
-  const effectiveMode: MediaViewMode =
-    mode === 'extracted' && hasExtractedRepresentation(media)
-      ? 'extracted'
-      : policy.default_mode;
-  // 公式的 caption 就是公式本体：上面已按它渲染，下面不要再当题注重复显示一遍（D-80）
-  const captionIsFormula =
-    effectiveMode === 'extracted' && !!latexFromCaption(media.caption);
-
+  const extractedAvailable = hasExtractedRepresentation(media);
   const displayAsset = originalAsset ?? (isPageFallback ? pagePreviewAsset : undefined);
-  const badgeMode: MediaViewMode =
-    effectiveMode === 'original' && isPageFallback ? 'original' : effectiveMode;
+  // M4/D-80：**视图选择与定性分开**。
+  // 后端 policy 负责"这是什么"（并给出如实的标签：未验证裁剪 = 解析器提取图），
+  // 前端只负责"拿什么渲染"：**有图就给图**，没图才用提取表示。
+  // 若按 mode 直接分派，"未验证裁剪"被判 extracted 后图片会凭空消失、只剩表格视图。
+  const view: 'extracted' | 'asset' | 'none' =
+    mode === 'extracted' && extractedAvailable
+      ? 'extracted'
+      : displayAsset
+        ? 'asset'
+        : extractedAvailable
+          ? 'extracted'
+          : 'none';
+  // 公式的 caption 就是公式本体：上面已按它渲染，下面不要再当题注重复显示一遍（D-80）
+  const captionIsFormula = view === 'extracted' && !!latexFromCaption(media.caption);
+  const badgeMode: MediaViewMode = view === 'extracted' ? 'extracted' : policy.default_mode;
   const label = isPageFallback ? '整页预览' : policy.label;
 
   const navigateToFirstAnchor = () => {
@@ -91,13 +97,13 @@ export function SourceMedia({
       </figcaption>
 
       <div className="p-3">
-        {effectiveMode === 'extracted' ? (
+        {view === 'extracted' ? (
           media.kind === 'equation' ? (
             <ExtractedFormula media={media} onShowOriginal={onOpen} />
           ) : (
             <ExtractedTable media={media} onShowOriginal={onOpen} />
           )
-        ) : displayAsset ? (
+        ) : view === 'asset' && displayAsset ? (
           // M4：原件图方向有反的 → 查看器提供旋转/缩放/复位（仅视图层，不改资产）；
           // 点图仍然打开大图（工具栏按钮在图片之外，不会误触发打开）
           <MediaViewer tone="light" label={isPageFallback ? '整页预览 · 可旋转' : media.caption || undefined}>

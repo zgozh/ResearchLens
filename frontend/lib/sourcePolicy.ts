@@ -41,6 +41,9 @@ export const VERIFICATION_LABELS: Record<Verification, string> = {
 /** HTML/KaTeX 提取视图的明确标签——不得标"原版"。 */
 export const EXTRACTED_LABEL = '再排版 / 提取';
 
+/** 未验证绑定的裁剪（MinerU 裁剪未与 PDF 区域对齐）——**不得**标"原件"（M4 收敛）。 */
+export const UNVERIFIED_CROP_LABEL = '解析器提取图（来源未验证）';
+
 function warn(code: string, message: string): Warning {
   return { code, message, stage: 'media' };
 }
@@ -130,13 +133,15 @@ export function resolveMediaPolicy(media: Media, assets: Asset[]): MediaViewPoli
     const fallbackPages = (media.anchor_ids || [])
       .filter((id): id is string => typeof id === 'string');
     if (originalIds.length > 0) {
-      // mineru_crop 未验证：可按"解析器提取图"查看，但不能标精确原件
+      // mineru_crop 未验证：可按"解析器提取图"查看，但不能标精确原件（M4 收敛）——
+      // 口径与后端 `visual/policy.build_policy` 对齐：**未验证绑定 → extracted**，
+      // 标签如实写"来源未验证"。资产仍然返回，由 SourceMedia 决定"有图就显示图"。
       warnings.push(warn('unverified_crop', '裁剪资产未能验证与源 PDF 区域对齐，按提取图展示。'));
       return {
-        default_mode: 'original',
+        default_mode: 'extracted',
         original_asset_ids: originalIds,
         fallback_page_ids: fallbackPages as Id[],
-        label: '整页预览', // 未验证裁剪以整页兜底，明确"整页"
+        label: UNVERIFIED_CROP_LABEL,
         warnings,
       };
     }

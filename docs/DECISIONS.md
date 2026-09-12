@@ -1455,3 +1455,28 @@ In this work, we presented the Transformer, the first sequence … ↔ 同句所
 - **测试**：`npm run test:policy`（`frontend/tests/sourcePolicy.spec.ts`，6 条）：
   caption 公式被识别、公式不再判不可用、普通题注仍如实判不可用（不许无中生有）、
   表格提取不受影响、真实 source 上的 synthetic 仍拒绝展示、有原件资产仍优先原件。
+
+### D-80 收尾：前后端策略**收敛为 0 分叉**（M4）
+
+- **实测发现的分叉（上一轮的探针）**：同一批 14 条 media 上，前端 `resolveMediaPolicy`
+  与后端 `visual/policy.build_policy` **10/14 条判定不一致**：
+  公式（前端 `extracted` / 后端 `unavailable`）、图片（前端 `original` / 后端 `extracted`）。
+- **两个根因**：
+  1. 后端 `_has_extracted()` 不认 caption 里的公式（前端已认）→ 公式被判"原件不可用"；
+  2. 对**未验证绑定的 MinerU 裁剪**（实测 `repr=mineru_crop, verif=unverified`），
+     后端判 `extracted`（标签"解析器提取图（来源未验证）"），前端判 `original`
+     （标签"整页预览"）——**前端在把"位置推断"当成原件展示**，违反本项目"展示层不得
+     把位置推断当原件/题注匹配"的纪律。
+- **修法**：
+  - 后端：`_MATH_IN_CAPTION` + `_caption_has_formula()`，`_has_extracted()` 认 caption 公式；
+  - 前端：未验证裁剪一律 `default_mode: 'extracted'` + `UNVERIFIED_CROP_LABEL`
+    （"解析器提取图（来源未验证）"），**但 `original_asset_ids` 照旧返回**；
+  - `SourceMedia` 把**"视图选择"与"定性"分开**：后端 policy 定性（给如实标签），
+    前端只决定拿什么渲染 —— **有图就给图，没图才用提取表示**。
+    若不分开，"未验证裁剪"被判 `extracted` 后图片会凭空消失、只剩表格视图。
+- **实测（真实数据 + 真实资产，`.scratch/verify_media_policy.cjs`）**：
+  分叉行 **10 → 0**；14/14 前后端一致。
+- **测试**：后端 `test_visual_policy_caption.py`（5 条：caption 公式算提取表示、
+  行内 `$…$` 也算、普通题注不算、空 caption 仍不可用、`extracted.latex` 有值行为不变）；
+  前端 policy 测试加到 7 条（新增"未验证裁剪 → extracted + 如实标签 + 资产仍返回"）。
+  后端全量 **732 passed / 0 failed**；前端 `npm run test:lib` 45 条全绿。

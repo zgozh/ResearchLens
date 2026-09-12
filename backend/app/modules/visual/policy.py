@@ -12,6 +12,7 @@ MinerU 裁剪 → 对应整页预览 → 明示不可用。
 """
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from app.contracts.artifacts import Media, MediaProvenance, MediaViewPolicy
@@ -119,11 +120,22 @@ def build_policy(media: Media, *, fallback_page_ids: Optional[List[str]] = None)
     )
 
 
+#: caption 里**确实像公式**时的识别（与前端 `lib/sourcePolicy.ts: latexFromCaption` 同规则）。
+#: 为什么需要（D-80 实测）：MinerU 的公式 media 有时 `extracted.latex` 为空，公式本体只在
+#: caption 里（`$$…\tag{1}$$`）—— 旧判据直接给"原件不可用"，于是用户同时看到
+#: "不可用的标签"和未转义的 LaTeX 源码。判据从严：普通题注一律不算。
+_MATH_IN_CAPTION = re.compile(r"\$\$[\s\S]+\$\$|\$[^$\n]+\$|\\[A-Za-z]{2,}")
+
+
+def _caption_has_formula(media: Media) -> bool:
+    return bool(_MATH_IN_CAPTION.search(media.caption or ""))
+
+
 def _has_extracted(media: Media) -> bool:
     ex = media.extracted
-    if ex is None:
-        return False
-    return bool(ex.table_html or ex.latex or ex.table_cells or ex.equation_label)
+    if ex is not None and (ex.table_html or ex.latex or ex.table_cells or ex.equation_label):
+        return True
+    return _caption_has_formula(media)
 
 
 def label_for_mode(mode: str) -> str:

@@ -119,6 +119,21 @@ check('6. 有原件资产时仍优先原件（回归）', () => {
   assert.deepStrictEqual(policy.original_asset_ids, ['a1']);
 });
 
+check('7. 未验证绑定的裁剪 → extracted + 如实标签（与后端口径对齐，M4 收敛）', () => {
+  const policy = resolveMediaPolicy(
+    media({
+      kind: 'figure',
+      caption: 'Figure 1: overview.',
+      original_asset_ids: ['a1'],
+      provenance: { source_document_id: 'sd1', representation: 'mineru_crop', verification: 'unverified' },
+    }),
+    [{ id: 'a1' } as never],
+  );
+  assert.strictEqual(policy.default_mode, 'extracted', JSON.stringify(policy));
+  assert.ok(policy.label.includes('未验证'), policy.label);
+  assert.deepStrictEqual(policy.original_asset_ids, ['a1'], '资产仍要返回，否则图会凭空消失');
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {
   for (const f of failures) console.log(`  - ${f}`);
