@@ -890,6 +890,48 @@
 - 回归测试 `test_qa_legacy_projection.py`（4 条：带证据不崩、mode 透传、**两处投影一致**、
   旧入口 ctx 带模型快照）与 `test_qa_general_mode.py` 新增 2 条（真实契约类型 + note 解释 + `_completion_text` 回归锁）。
 
+## D-61 遗留登记（**已查证、未修**，等决策）
+
+以下是"顺带复查其他遗留问题"这一项扫出来的东西。**当场查证过，但没有擅自改** ——
+它们的共同点是"改了会动到多个端点的既有语义"，需要你拍板。
+
+### 1. 无可读 revision 的论文，状态码语义不对且各端点不一致
+
+- **事实（实测）**：demo 论文 4–6 没有 canonical revision（没有源 PDF，见第 2 条）。
+  同一个条件，三个端点三种回应：
+  - ``GET /api/papers/4/statements`` → **422** ``{"code":"INVALID_INPUT","message":"scope 非法"}``；
+  - ``GET /api/papers/4/graph`` → **200**（空图 0 节点 0 边）；
+  - ``GET /api/papers/4/pages`` → **404**。
+- **为什么不对**：客户端**分不清**"这篇确实没有结构化产物"和"请求本身写错了"；
+  422 的意思是"请求非法"，而这里请求没毛病（paper 存在、参数合法），是**资源状态**问题。
+- **建议（未做）**：把"无可读 revision"统一成 **404**（或 409），并在响应体里给出
+  ``reason="no_readable_revision"``；改之前要确认前端对 demo 论文的取数路径不依赖
+  "200 + 空"（图谱/讲解的 demo 展示目前混用 legacy 表）。
+- 取证脚本：`.scratch/smoke_endpoints.py`（全端点冒烟，当前 **0 个 5xx**）。
+
+### 2. demo 论文 4–6 的 canonical 产物是空的（**没有原料**，不是 bug）
+
+- **事实（实测）**：papers 1–3（真实论文）canonical 完整：
+  statements 7/11/8、graph 23-28 节点 / 13-19 边、分镜 2/3/4、页 10/16/25；
+  papers 4–6（demo）：statements 0、graph 0、分镜 0、**页 0**，只有 legacy 表里的
+  claims 10/8/8 与 steps 5/5/5。
+- **原因**：它们是 `seed/demo_papers.py` 用**硬编码 IR** 落进 legacy 表的
+  （`source_mode="demo"`），`data/sources` **一个源文件都没有**（`ls | wc -l` = 0）
+  —— 没有原文块就没有页/锚点，也就抽不出 canonical 断言与图谱。
+- **要补的话是另一件事（未做）**：要么提供这 3 篇的源 PDF 走正常 ingest，
+  要么写一个 **demo IR → canonical 投影**（把 IR 里的节点/边/文本落成 blocks/pages/
+  statements/graph）。后者是"种子数据"，**必须在界面上标明来源是演示脚本而不是抽取结果**，
+  否则会与真实证据混在一起——这也是我没有直接动手的原因。
+
+### 3. 仍需**你**决策的两件事
+
+- **金标集是否人工确认**：`support_precision` 现在是 **AI 裁判 proxy**（0.857/0.182/0.625），
+  人工真值口径的 `overall_score` 仍为 null。要出人工真值分，需要看过
+  ``GET /api/papers/{id}/golden-set`` 后调 ``confirm``；我实测过草案内容与抽取断言
+  内容不重合，直接 confirm 会得到一个**误导性的低分**，所以建议"人工编写关键断言"或逐条复核。
+- **方法步骤附近确实没有图表的场合**：是否列出"本章节图表"作参考（**明确标注非该断言专属**）？
+  我倾向不列 —— D-48 撤掉"全篇第一张图"就是因为会被读成"这就是它的证据"。
+
 ## D-47 附（措辞修正）
 
 原文写"Compose 的 `.env` 是按当前工作目录查找的"，实测更精确的说法是：**Compose 先看当前工作目录的 `.env`、再看项目目录（compose 文件所在目录）的 `.env`，前者优先**。证据：`backend/.env` 存在时（以 `backend/` 为 CWD）端口/CORS 被它覆盖成 8001/3001；把它改名后，同样的工作目录又能正确读到根 `.env`（8002/4002、`DEMO_MODE=false`）。
