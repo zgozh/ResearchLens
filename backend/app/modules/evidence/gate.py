@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -119,6 +120,30 @@ def _has_contradiction_marker(text: str) -> bool:
         "无法复现", "不能复现", "并不支持该结论",
     )
     return any(m in lowered for m in markers)
+
+
+#: 不是"研究陈述"的文本形态：参考文献条目、许可/版权声明、arXiv 页脚等（D-79）。
+#: 为什么需要：D-78 的引用重定位修好之后，这些句子因为**逐字就在论文里**而通过定位与
+#: 校验，被判成 verified —— 实测 paper 7 重跑后有 5 条参考文献条目变成"已验证事实"，
+#: 进图谱/讲解就是"乱"。判据用**确定性文本形态**，不依赖模型听话。
+_NON_CLAIM_RE = re.compile(
+    r"^\s*\[\d+\]\s|"                      # [15] Author, Title…
+    r"^\s*\[\d+\]\s*$|"
+    r"^\s*arXiv:\d{4}\.\d{4,5}|"          # arXiv 页脚
+    r"provided proper attribution|"
+    r"hereby grants?\b|"
+    r"permission to (?:reproduce|make|use)|"
+    r"all rights reserved",
+    re.I,
+)
+
+
+def _is_non_claim_statement(text: str) -> bool:
+    """这句话是不是"根本不是研究发现"（参考文献/许可声明/页脚）。"""
+    body = (text or "").strip()
+    if not body:
+        return False
+    return bool(_NON_CLAIM_RE.search(body))
 
 
 # --------------------------------------------------------------- 候选构造
@@ -278,6 +303,11 @@ def semantic_verdict(
     # 陈述本身声明为推断：不进入事实层，语义标 inference 由 decision 处理
     if draft.kind == "transition":
         return "insufficient", None, "衔接语不承载实质主张"
+
+    # D-79：参考文献条目 / 许可声明 / 页脚**不是研究发现**。
+    # 它们逐字在论文里（定位、引用校验都会通过），但进图谱就是噪声。
+    if _is_non_claim_statement(statement):
+        return "insufficient", None, "该句不是研究发现（参考文献/许可声明/页脚），不进入事实层"
 
     # 模型判定优先（若编排器提供了受控判定）
     if gate.semantic_model_verdict in ("supports", "contradicts", "insufficient"):

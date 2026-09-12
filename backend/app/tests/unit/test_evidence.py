@@ -1039,3 +1039,40 @@ class TestQuoteRelocation:
         draft = _draft(world, f"（AI 摘要）{quote}。", citations=[_cite(world, "blk2", quote)])
         report = evidence.validate(draft, new_ctx(world["scope"]))
         assert report.decision != "verified", f"生成块不得当证据：{report.reasons}"
+
+
+# =============================================================== 非研究发现过滤（D-79）
+
+
+class TestNonClaimStatementFilter:
+    """D-78 的副作用必须堵住：参考文献条目/许可声明**逐字在论文里**，
+    重定位后会被判 verified —— 实测 paper 7 重跑后 5 条参考文献条目变成"已验证事实"。
+    它们不是研究发现，进图谱/讲解就是"乱"。判据是**确定性**的文本形态，不看模型脸色。
+    """
+
+    def test_reference_entry_is_not_a_verified_claim(self, world):
+        from app.modules import evidence
+
+        text = "[15] Rafal Jozefowicz, Oriol Vinyals, Mike Schuster, Noam Shazeer."
+        draft = _draft(world, text, citations=[_cite(world, "blk1", world["p1_text"][:20])])
+        report = evidence.validate(draft, new_ctx(world["scope"]))
+        assert report.decision != "verified", report.reasons
+        assert report.semantic_status == "insufficient"
+        assert any("参考文献" in r.message for r in report.reasons), [r.message for r in report.reasons]
+
+    def test_license_boilerplate_is_not_a_verified_claim(self, world):
+        from app.modules import evidence
+
+        text = "Provided proper attribution is provided, Google hereby grants permission to reproduce."
+        draft = _draft(world, text, citations=[_cite(world, "blk1", world["p1_text"][:20])])
+        report = evidence.validate(draft, new_ctx(world["scope"]))
+        assert report.decision != "verified", report.reasons
+
+    def test_normal_research_sentence_is_unaffected(self, world):
+        """回归锁：普通研究发现句不得被这条过滤误伤。"""
+        from app.modules.evidence import gate as gate_mod
+
+        assert gate_mod._is_non_claim_statement("本文方法在 ImageNet 上达到 91.2% 的准确率。") is False
+        assert gate_mod._is_non_claim_statement("The Transformer achieves 28.4 BLEU.") is False
+        assert gate_mod._is_non_claim_statement("[15] Rafal Jozefowicz, Oriol Vinyals.") is True
+        assert gate_mod._is_non_claim_statement("arXiv:1706.03762v5 [cs.CL] 6 Dec 2017") is True

@@ -31,6 +31,11 @@ class MetricValue(ContractModel):
     sample_size: int = Field(default=0, ge=0)
     method: str = ""
     status: Literal["measured", "proxy", "not_evaluated"] = "not_evaluated"
+    #: `status=not_evaluated` 时的**机器可读原因码**（小写蛇形，如
+    #: `usage_missing_in_answer_rows` / `source_pdf_has_no_coordinate_rects`）。
+    #: 为什么需要（REFACTOR_PLAN §5.3）：只有 `method` 那一句中文时，界面与离线分析
+    #: 都只能笼统说"未评测"，说不清"为什么测不了"。
+    reason: Optional[str] = None
 
 
 class MetricEntry(ContractModel):
@@ -160,12 +165,37 @@ METRIC_NAMES: List[str] = [
 ]
 
 
+#: 现有调用点里 `method`（人读文案）→ `reason`（机器码）的映射。
+#: 为什么要这张表而不是逐个改 21 个调用点：先把**已有的**语义固化成稳定码，
+#: 新增调用点请直接传 `reason=`（显式优先）。未知文案一律回落 `unspecified`，
+#: 保证"任何未评测都带原因码"这条不变量不会被新代码破坏。
+_REASON_BY_METHOD = {
+    "无 GoldenClaim 真值": "no_golden_truth",
+    "无预测样本": "no_prediction_samples",
+    "需要 GoldenClaim 真值": "no_golden_truth",
+    "无引文跨度": "no_quote_spans",
+    "无导航校验样本": "no_navigation_checks",
+    "无区域 IoU 样本": "source_pdf_has_no_coordinate_rects",
+    "无 usage 记录": "usage_missing_in_answer_rows",
+    "无媒体样本": "no_media_samples",
+    "无降级事件": "no_degradation_events",
+    "尚无评测报告": "no_evaluation_report",
+    "报告未包含该指标": "metric_absent_in_report",
+    "指标条目不可解析": "metric_entry_unparsable",
+    "本次输入未提供该指标数据": "metric_input_missing",
+}
+
+UNSPECIFIED_REASON = "unspecified"
+
+
 def not_evaluated(name: str, *, method: str = "", sample_size: int = 0,
-                  unit: str = "ratio") -> MetricEntry:
+                  unit: str = "ratio", reason: str = "") -> MetricEntry:
+    code = (reason or "").strip() or _REASON_BY_METHOD.get(method, UNSPECIFIED_REASON)
     return MetricEntry(
         name=name,
         value=MetricValue(value=None, unit=unit, method=method,
-                          status="not_evaluated", sample_size=sample_size),
+                          status="not_evaluated", sample_size=sample_size,
+                          reason=code),
     )
 
 

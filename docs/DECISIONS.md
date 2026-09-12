@@ -1397,4 +1397,36 @@ In this work, we presented the Transformer, the first sequence … ↔ 同句所
 `origin=generated` 的块绝不能被当证据。另更新一条旧用例
 （`test_same_page_unrelated_content_not_supported`）：它原先把"引用挂了别的块"当成
 必须失败的场景，与 D-78 的新语义冲突，已改用**全篇都不存在**的引用来守原意图，
-并补一条"挂错块应当被重定位"的正向用例。全量 **716 passed / 0 failed**。
+并补一条"挂错块应当被重定位"的正向用例。
+
+### D-78 收尾实测（重跑 verify，不是推演）
+
+`.scratch/reverify_paper.py` 把 18 条非 supports 陈述**真的重跑**语义 gate 并落库（paper 7）：
+
+| 阶段 | verified | 其他 |
+|---|---|---|
+| 重跑前 | 53 | 17 rejected(insufficient) / 2 rejected(supports) / 1 contested |
+| D-78 重定位后 | **70** | 2 rejected / 1 contested |
+| **18 条里 17 条翻转为 supports** | | |
+
+**但翻转名单暴露了新问题**：里面混着 `[15] Rafal Jozefowicz…`（×3）、
+`[20] Diederik Kingma and Jimmy Ba.`、`Provided proper attribution…`（Google 许可声明）。
+这些句子**逐字就在论文里**（所以定位、引用校验都会通过），但它们**不是研究发现** ——
+放进图谱/讲解就是"乱"。→ D-79。
+
+## D-79 「非研究发现」过滤：参考文献/许可声明不许当已验证事实
+
+- **触发**：D-78 重定位后，paper 7 有 **5–6 条参考文献/许可声明被判定为 verified**。
+- **修法**（确定性文本形态，不看模型脸色）：`gate._is_non_claim_statement()` 识别
+  `[N] 作者…`、`arXiv:xxxx.xxxxx`、`provided proper attribution`、`hereby grants`、
+  `permission to reproduce|make|use`、`all rights reserved`；命中即在 `semantic_verdict`
+  里直接返回 `insufficient`，理由写明「该句不是研究发现（参考文献/许可声明/页脚），不进入事实层」，
+  由 `decide()` 落到非发布状态。
+- **实测（同一条流水线，`.scratch/reverify_paper.py` + 正则筛选）**：那 6 条重跑后全部变成
+  `insufficient / unverified`，**不再进事实层**。
+- **最终净效果（paper 7）**：verified **53 → 64**（**12 条真实研究发现被救回**：
+  此前因"引用挂错块 → 证据为空"被误杀），同时 **6 条噪声被挡在门外** ——
+  两头都没有拿阈值换数字。
+- **测试**：`test_evidence.py::TestNonClaimStatementFilter`（3 条）：参考文献条目不得 verified
+  且理由含"参考文献"、许可声明不得 verified、普通研究句不被误伤（含 `arXiv:` 页脚判正例）。
+  全量 **727 passed / 0 failed**。
