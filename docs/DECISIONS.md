@@ -257,3 +257,102 @@
 
 
 
+
+## D-29 章节 → 正文页定位：块级锚点回填 + 章节锚点派生 + 读路径自愈
+
+- **决策**：① 解析期为每个块回填 `Block.anchor_id`（指向其所在页的页锚点）；② 分节期由本节块的锚点**派生** `SectionRecord.anchor_ids`；③ `claims/repository.get_structure` 对 `anchor_ids` 为空的历史数据**只读现算补齐**；④ 前端把 `onOpenSection` 真正接到锚点导航。
+- **背景（Postgres 实测，这是"点了章节没跳到正文页"的根因）**：`blocks.anchor_id` **823/823 全为 NULL**；`section_records.anchor_ids` **21/21 全为 `[]`** → `manifest.section_index[].anchor_ids` 与 `exhibits.structure.sections[].anchor_ids` 都是空的。而 `jumpToPaper()` 依赖 `api.getAnchor(paper_id, anchor_id, revision_id)`，没有锚点就只能退化成"打开论文视图"，`page.tsx` 更是把 section 参数整个丢掉（`() => changeView('paper')`）。链路断点其实在最上游：`parse/service.py` 为每页构造了页锚点（`segments[0].block_ids` 列出该页全部块），却**从不回填反向指针**。
+- **取舍**：
+  - 用"页锚点"而不是"新建章节锚点"：`anchors` 里已有每页一个覆盖全区块的页锚点（实测 paper 1 第 0 页：1 个 23 块的页锚点 + 4 个单块 `anc-*` 证据锚点），语义正好是"整页"，复用它无需新增数据模型。
+  - 同页多锚点时**取 `block_ids` 最多者**：单块证据锚点物理页相同，但页锚点更稳定、语义更准。
+  - 读路径**只读补齐、绝不写库**：为了让显示层不必重跑昂贵的 LLM 抽取（3 篇论文的完整抽取是分钟级），补齐发生在投影阶段；显式写入的 `anchor_ids` 一律保留。
+  - 块没有锚点时**留空、不伪造**（单测锁定）：宁可前端诚实报"无法定位"，也不给假锚点。
+- **结论**：实测 3 篇论文 `manifest.section_index` 与 `exhibits.structure.sections` 的锚点覆盖 **7/7、5/5、9/9**，且每个锚点都能 `GET /anchors/{id}` 解析出 `pdf_page_index`。回归测试 `test_section_anchor_navigation.py`（8 条）。
+
+## D-30 首页元信息派生：authors / tags / year / domain
+
+- **决策**：新增 `papers.legacy` 的 `authors_from_page_text()` / `keywords_from_page_text()` / `year_from_page_text()` / `domain_from_page_text()`，由首页正文保守派生；覆盖策略抽成纯函数 `merge_front_matter()`：`authors`/`tags` **仅在 legacy 为空时**补，`year`/`domain` 派生到就覆盖。
+- **背景（实测）**：3 篇真实论文 `authors=[]`、`tags=[]`、`year=2026`（**入库年份**，不是发表年）、`domain='general'`（等于没判）。这些信息首页正文里本来就有：中文期刊首页第 2 行是作者行（`黄炜 $^{1}$ ，赵险峰 $^{2}$`），摘要下方是"关键词"行，页脚是卷期年份。前端"论文地图"的署名行、标签行、领域行因此长期是空的或恒显示 "general"。
+- **取舍**：
+  - 作者行判定用**全行否决**：按 `,，、;` 切分后必须**每个**片段都像姓名（≤24 字符、只含汉字/字母/连字符、不含数字与括号），任何一段像单位/页眉就否决整行。**宁可返回空，也不要把"厦门大学"当作者**——错误元信息比缺失元信息更糟（单测含 4 条否定用例）。
+  - 年份取首页**出现次数最多**的年份（页脚/版权重复出现），次数相同取更晚者；不取全篇 max（会把引用年份当发表年）。
+  - 领域用关键词表，且**具体领域排在笼统领域之前**：Solidity 那篇摘要里有"智能合约**安全**问题"，若 `security` 在前就会把区块链论文判成安全论文（首版实测被单测抓出）。同理不收录裸"安全"。
+  - 派生不到的键**不出现**，由调用方保留原值。
+- **结论**：实测 paper 1 = `['黄炜','赵险峰'] / ['隐写','载体选择','Haar 小波','范数'] / 2018 / security`，paper 2 = 4 作者 / 5 标签 / 2020 / software-engineering，paper 3 = 6 作者 / 4 标签 / 2022 / blockchain。回归测试 `test_front_matter_derivation.py`（17 条）。
+
+## D-31 旧 HTTP 端点的 canonical 桥接必须成对补齐（claims 详情）
+
+- **决策**：`claims/legacy.py` 新增 `get_claim(db, paper_id, claim_id)`，并把 `modules/claims/__init__.py` 的旧 HTTP 分派指向它（此前直接转发只查旧 `claims` 表的实现）。
+- **背景**：`GET /papers/1/claims` 能列出 5 条 canonical 断言，`GET /papers/1/claims/{claim_id}` 对**同一批 id 全部 404**——列表走了 canonical 桥接、详情没有。`schemas/adapters.to_legacy_claim()` 其实早就写好了，只是没人调用。用户可见后果：研究图谱"点击断言节点 → 该断言的证据"永远空白。
+- **取舍**：详情**必须带出 evidence 记录**（不是只回 statement），否则图谱详情面板依旧是空的；证据取不到时**降级为空列表而不是 500**（兼容层不得把异常泄漏成 500，与 §5.11 一致）。
+- **结论**：回归测试 `test_claim_detail_bridge.py`（3 条）覆盖"详情可取到""带出 2 条证据正文""未知 id 返回 None 而非抛错"。
+
+## D-32 QA 必须注入 revision 固定的模型快照
+
+- **决策**：新增 `papers.snapshot_for_revision(scope)`（revision pin 的快照优先，缺失回退运行时快照），`/papers/{id}/qa/stream` 改为 `new_ctx(scope, snapshot=...)`。
+- **背景（SSE 实测，这是"证据问答不能聊天"的唯一后端主因）**：`new_ctx()` 的 `snapshot` 默认 `None`，而 revision 明明 pin 了 `model_snapshot_id`。于是 `retrieval/vector.py` 报 `embedding_unavailable`、`qa/service.py` 因 `not snapshot_id` 直接判 `llm_unavailable` → `mode=abstained`，SSE 只发 `meta/status/status/final`（**没有 citation/sentence**）、`answer.text.text=""`，前端落到"既无 sentences 又无 text"分支 → 空气泡 + "无证据支持"。
+- **取舍（踩坑，已用单测锁定）**：返回值必须是 **`ModelSnapshotLike`**（或 dict），**不能是 `contracts.ai.ModelSnapshot` 实例**——`CallContext.model_snapshot` 声明的就是 Like 类型，传完整 `ModelSnapshot` 会被 pydantic 以 `model_type` 拒绝、端点直接 500。pipeline 之所以没踩到，是因为它走 `ctx.model_copy(update=...)`，而 `model_copy` **不做校验**。
+- **结论**：端到端契约测试断言 `qa/service._snapshot_id(ctx)` 等于 revision pin 的 id；回归测试 `test_qa_model_snapshot.py`（4 条）。
+
+## D-33 前端字段错位批修：把"看起来坏了"逐条落到契约
+
+一次只读审计（两个子代理并行）逐字段比对"前端读取 vs API 实际"，发现多数视图的"没有内容/内容乱"是**字段名或语义错位**，而不是数据缺失。本轮按收益修：
+
+| 视图 | 缺陷 | 修法 |
+| --- | --- | --- |
+| MapView | 表格内联渲染 `t.content[0]`，而 **16/16 张表 `content=[]`**（内容在 `table_html`）→ 表格只剩标题与空框 | 改用 `TableRender`（优先 `table_html`，自带消毒） |
+| MapView | `map_summary` 缺键时六张卡片全渲染成 "—"（paper 2 缺 5/6） | 只渲染**后端真的产出**的卡片；全空给显式文案 |
+| MapView | `kind` 直接当标签，实际 kind 含 `problem/body/limitation` 未覆盖 → 界面出现英文 kind | 补 `KIND_LABEL`/`TONE` 映射 |
+| MapView/PaperView | `map_summary`/`summary`/`abstract` 未过 KaTeX，`$8\times8$` 原样显示 | 统一走 `MathText` |
+| PaperView | canonical 分支把 `body` 写死 `''`、`page` 写死 `0` → **实测 6353/4022/6647 字的真实正文与页码徽标被整块丢弃** | 按 `heading` 与旧 `detail.sections` 合并补回 `body`/页码/要点 |
+| PaperView | `hasCanonicalMedia` 时**不渲染** figures/tables → 真图真表被 40 条 `equation` 媒体顶掉 | 取消互斥：真图表常驻，canonical 媒体另设独立区块 |
+| MethodView | `importance === 'high'` 而实测 **24/24 图全是 `'medium'`** → "论文原图"永不显示 | 优先 `high`，否则取首图 |
+| MethodView | 0 步论文整页近乎空白；`phase=null` 渲染空 Badge；`label` 是 164 字整句 | 加零步空态文案；`phase` 有值才渲染；列表/状态行截断 |
+| GraphView | 只认 6 类 kind，实际含 `limitation/method` → 全部落第 1 列且共用灰色（"节点不全、连线不齐"） | 按图中**真实出现的 kind 动态**生成列位/配色/中文名，任何新 kind 都有位有色 |
+| GraphView | 详情面板读 `props.text`（后端从不产出该键）→ 恒显示 "—" | 断言节点展示陈述正文，其余展示可用属性事实 |
+| EvalView | 整体读**已废弃的 legacy 指标名** → 全部 undefined 显示 0.0% | 改读 canonical 指标（优先 `/exhibits` 的持久化 report） |
+| EvalView | `Number(undefined ?? 0) === 0` 让 `unsupported === 0` 为真 → **把"没有数据"渲染成"已通过 Evidence Gate，所有断言均有证据"**（纯属虚构的绿色通过） | 只有真的算出 0 才说通过；null 一律标注"未评测"，并列出 `not_evaluated` |
+| PresenterView | `steps` 是后端内部 ID `s:<rev>:0:5510:step:0`，被当标签直接渲染 | 解析为 `method_steps` 的标签；解析不出来就**丢弃**，绝不渲染裸 ID |
+| PresenterView | `evidence_refs`（实为 `stmt-*` 断言 id）被当"原文定位"渲染成 `论文原文定位：stmt-01f2…` | 用 `statements` 的 `id → text` 回填陈述正文 |
+| ClaimView | 只按固定 `TYPE_ORDER` 分组，**不在表里的断言类型被静默丢弃** | 已知类型排前，其余类型一律补在后面 |
+| ClaimView | 断言正文裸渲染 LaTeX | 走 `MathText`；正文为空给显式占位 |
+
+- **结论**：前端 `tsc --noEmit` 零错误；后端全量 **392 passed**。
+
+## D-34 事故记录：后端端口/CORS 与容器落后于工作区
+
+- **事故 1（我造成，已修）**：运行中的 `researchlens-backend-1` 映射到 **8001** 且 `CORS_ORIGINS` 只有 `http://localhost:3001`，而前端 bundle 里烘焙的是 `http://localhost:8002`、`.env` 也写 8002/4002。**前后端不同源 + CORS 不放行 → 前端所有 API 请求全部失败**（"页面什么都没有"的最大单因）。`docker-compose config` 解析正确，说明容器是拿旧环境创建的陈旧实例；`docker-compose up -d --force-recreate backend worker` 后恢复 `8002->8000` + `CORS=http://localhost:4002`。
+  - **教训**：改 `.env` 端口后必须 `force-recreate`（仅 `restart` 不会重读环境）；排查"前端全空"的第一步应是**核对运行态端口与 CORS**，而不是先读业务代码。
+- **事故 2**：审计时代码已改但镜像未重建（frontend 镜像 13:20 构建，`PaperView.tsx` 13:36 才改）→ 审计到的"运行态"落后于工作区。**教训**：任何"运行态结论"都必须先确认镜像构建时间晚于最后一次源码修改。
+- **事故 3（误判，需记住）**：PowerShell 5.1 的 `Get-Content` 默认按 **ANSI(GBK)** 解码，读 UTF-8 中文会显示成 `鍩轰簬` 这类"乱码"。我一度据此判断"库里的正文是乱码"，用 Python 逐字段核对后 `MOJIBAKE_RE` 命中数 **0**，实际数据是干净的。**教训**：判断编码问题必须用 Python 或 `-Encoding utf8`，控制台输出不能作为证据。
+
+## D-35 证据问答全链路：快照类型 + 引文恢复 + gate 落库 + 检索索引
+
+`/papers/{id}/qa/stream` 此前**恒返回空气泡**（SSE 只有 `meta/status/status/final`，`answer=""`、`mode=abstained`）。逐层剥开一共**四个**独立缺陷，全部修完才通。按发现顺序记录，因为它们互为掩盖：
+
+1. **`CallContext.model_snapshot` 被声明为 `ModelSnapshotLike`**
+   → pydantic 把完整快照**降级**成 Like 视图，而下游 `CompletionRequest.model_snapshot` / 重排请求声明的是完整 `ModelSnapshot` → `ValidationError` → `qa/service._llm_draft` 抛异常 → 降级"抽取式"。
+   **修**：字段类型改为 `Optional[Any]`，`new_ctx` 新增 `_normalize_snapshot()` 把 dict/Like/完整快照统一成 `ModelSnapshot`。
+   **为什么一直没暴露**：pipeline 走 `ctx.model_copy(update=...)`，而 `model_copy` **不做校验**；只有 `new_ctx` 这条路会踩到。
+
+2. **`chunks` / `chunk_vectors` 全库 0 行**（papers 1–3 经 seed/reextract 路径入库，跳过了 pipeline 的 `stage_index`）→ 检索 0 命中。
+   **修**：对 3 篇论文跑 `retrieval.index()`（幂等）：chunks/vectors = 66 / 111 / 159。
+
+3. **模型给了答案但不给引用**：提示里片段以 `[chunk_id] 正文` 展示，而输出 schema 字段叫 `block_ids`，模型因此返回 `block_ids=[]`/`quote=""` → gate 判 `claim_without_citation` → `sentences=0` → 拒答。
+   **修（两处）**：① 提示明确"`block_ids` 原样复制方括号里的标识、`quote` 照抄原文连续片段"；② 新增**确定性引文恢复** `_recover_citation()`——拿引文（或整句）到命中块的**真实原文**里做空白无关匹配，命中才恢复 `(block_id, 原文切片)`。**恢复不等于放宽 gate**：改写过的句子找不到原文就照旧拒绝（单测含 2 条否定用例）。恢复的引文必须是原文切片，否则 gate 会判 `quote_not_in_block`。
+
+4. **`register_statement` 只注册身份、不产生证据**，而 QA 拿完就去看 `display_class` → 每句都停在 `unverified` → 句子全丢。
+   同时 `qa/service._register_statement` 把 `ctx` 传成 `None`，而 `claims.register_statement` 要写 `ctx.request_id` → `AttributeError` 被兜底吞成 `gate_unavailable`（同一个可见症状）。
+   **修**：新增公共入口 `claims.verify_registered_statement(draft, report, visibility, ctx)`——把 `verify_and_store` 内部那套"保存证据 + `display_class_for` + upsert claim"抽出来，供"先注册后校验"的调用方复用；QA 改为 **validate → register → verify** 三步，并把 `ctx` 透传下去；审计 actor 用 `getattr(ctx, "request_id", "") or "system"` 兜底。
+
+- **修复后实测**：`POST /papers/1/qa/stream` 事件流 = `meta, status, status, citation×3, sentence×3, final`，`final.answer.text.text` = 「这篇论文提出的方法是基于 Haar 小波域指标自适应选择载体的 JPEG 隐写方法，通过计算图像在 Haar 小波域高频成分分解图像的高阶范数，优选难以被检测的…」。
+- **回归测试**：`test_qa_model_snapshot.py`（5 条，含"ctx 里必须是完整 ModelSnapshot 且能直接喂给 CompletionRequest"）、`test_qa_citation_recovery.py`（7 条，含"改写句不得被恢复成引用""命中之外的块不得成为引用来源"）。
+- **仍存的相关缺口（未做）**：`POST /papers/{id}/index` 这类"重建检索索引"的公开入口尚缺，目前只能跑脚本；补齐后 re-index 才能由 API/作业触发，而不是运维手动介入。
+
+## D-36 事故补记：`to_legacy_evidence` 读错字段（详情端点 500）
+
+- **现象**：修好 `claims` 详情桥接后 `GET /papers/1/claims/{id}` 由 404 变成 **500**。
+- **根因**：`schemas/adapters.to_legacy_evidence` 读 `record.source_region[0].block_id`，而 `AnchorSegment` 的字段是 **`block_ids`（列表）**：
+  `AttributeError: 'AnchorSegment' object has no attribute 'block_id'`。该路径此前因"详情恒 404"从未被执行，所以长期潜伏——**修好一个 bug 才会暴露下一个**。
+- **修**：抽出 `_legacy_region_label(segment)`，对 `block_id` / `block_ids[0]` / `page_label` 三种历史形态都容忍，取不到返回空串。单测加了"证据带真实 `source_region`（`block_ids` 是列表）时详情不得 500"。
+- **教训**：桥接/投影层的代码如果长期不可达，就等于没有测试覆盖；恢复可达性后必须立刻补真实形状的用例。

@@ -44,11 +44,18 @@ const NAV: { view: ViewMode; label: string; icon: any }[] = [
   { view: 'paper', label: '论文阅读', icon: BookOpen },
 ];
 
-/** 从 canonical ClaimRecord 生成旧 ClaimSummary（视图分组/长度仍用旧形状）。 */
-function claimSummaryOf(c: ClaimRecord): ClaimSummary {
+/** 从 canonical ClaimRecord 生成旧 ClaimSummary（视图分组/长度仍用旧形状）。
+ *
+ * D29 修复：``rationale`` 对 canonical 断言**恒为空串**，此前回退到 ``claim_id``
+ * 于是证据链列表把 ``haar_superior_to_linear_metrics`` 这类内部 ID 当正文显示。
+ * 断言正文在 ``statements`` 表里，由调用方用 ``statement_id → text`` 映射回填
+ * （见 ``statementsById``）；这里只保留"确实拿不到"时的诚实占位。
+ */
+function claimSummaryOf(c: ClaimRecord, statementsById?: Map<string, string>): ClaimSummary {
+  const fromStatement = c.statement_id ? statementsById?.get(c.statement_id) : undefined;
   return {
     claim_id: c.claim_id,
-    statement: c.rationale || c.claim_id,
+    statement: (fromStatement || '').trim() || c.rationale || '',
     type: c.type,
     confidence: c.confidence ?? 0,
     status: c.status === 'verified' ? 'SUPPORTED' : 'UNSUPPORTED',
@@ -168,6 +175,30 @@ export default function Workspace() {
     [slug, resolvedPaperId, router],
   );
 
+  /** D29：论文地图点「阅读该章节正文」→ 用本节**页锚点**定位到原件正文页。
+   *
+   * 此前这里把 section 参数整个丢掉（`() => changeView('paper')`），
+   * 于是用户点了章节只是"切到论文视图"，并没有跳到该章节对应的正文页。
+   * 锚点取自 canonical `structure.sections[].anchor_ids`（由本节块的页锚点派生）；
+   * 没有锚点时如实报告"无法定位"，不假装已跳转。
+   */
+  const openSectionInPaper = useCallback(
+    (section: { heading: string; page_start?: number; page?: number }) => {
+      const canon = (exhibits?.structure?.sections ?? []) as Array<{
+        heading?: string; anchor_ids?: string[];
+      }>;
+      const hit = canon.find((c) => c.heading === section.heading);
+      const anchorId = hit?.anchor_ids?.[0];
+      if (anchorId) {
+        jumpToPaper(anchorId);
+        return;
+      }
+      setView('paper');
+      setLocateNotice({ status: 'unavailable' });
+    },
+    [exhibits, jumpToPaper],
+  );
+
   const loadLegacy = useCallback(async () => {
     if (!resolvedPaperId) return;
     setLoading(true);
@@ -193,10 +224,21 @@ export default function Workspace() {
 
   // canonical 就绪后：用 exhibits.structure.sections 覆盖旧 sections，旧字段降级保留
   const canonicalClaims: ClaimRecord[] = exhibits?.claims ?? [];
+  // 断言正文只在 statements 表里（claim.rationale 对 canonical 恒为空），
+  // 这里建 statement_id → text 映射供断言列表回填，否则列表显示的是一串 claim_id。
+  const statementsById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of exhibits?.statements ?? []) {
+      if (s?.id && (s.text || '').trim()) map.set(s.id, s.text);
+    }
+    return map;
+  }, [exhibits]);
   const claims: ClaimSummary[] = useMemo(() => {
-    if (canonicalClaims.length > 0) return canonicalClaims.map(claimSummaryOf);
+    if (canonicalClaims.length > 0) {
+      return canonicalClaims.map((c) => claimSummaryOf(c, statementsById));
+    }
     return [];
-  }, [canonicalClaims]);
+  }, [canonicalClaims, statementsById]);
 
   // 实时模式：canonical 无断言且存在 job → 轮询旧 claims（降级）
   useEffect(() => {
@@ -385,7 +427,7 @@ export default function Workspace() {
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.25 }}
               >
-                {view === 'map' && <MapView detail={detail} accent={accent} onOpenSection={() => changeView('paper')} />}
+                {view === 'map' && <MapView detail={detail} accent={accent} onOpenSection={openSectionInPaper} />}
                 {view === 'method' && <MethodView detail={detail} accent={accent} />}
                 {view === 'claim' && (
                   <ClaimView
@@ -396,9 +438,9 @@ export default function Workspace() {
                   />
                 )}
                 {view === 'graph' && <GraphView graph={graph} accent={accent} paperId={resolvedPaperId} onClaimSelected={(cid, evIdx) => { selectClaim(cid, evIdx); changeView('claim'); }} />}
-                {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} detail={detail} claims={claims} />}
+                {view === 'presenter' && <PresenterView presentation={presentation} accent={accent} detail={detail} claims={claims} statements={exhibits?.statements} />}
                 {view === 'qa' && <QAView scope={scope} accent={accent} detail={detail} onNavigate={(t) => { jumpToPaper(t.anchor_id); }} messages={qaMessages} onMessagesChange={setQaMessages} />}
-                {view === 'eval' && <EvalView evalData={evalData} accent={accent} />}
+                {view === 'eval' && <EvalView evalData={evalData} accent={accent} report={exhibits?.evaluation ?? null} claims={claims} />}
                 {view === 'paper' && (
                   <PaperView
                     detail={detail}

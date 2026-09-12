@@ -19,20 +19,31 @@ import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
-const KIND_X: Record<string, number> = { problem: 0, method: 1, experiment: 2, claim: 3, evidence: 4, media: 5 };
-const KIND_COLOR: Record<string, string> = {
-  problem: '#F43F5E', method: '#6366F1', experiment: '#22D3EE', claim: '#34D399', evidence: '#F59E0B', media: '#A78BFA',
+// D29 修复：此前只写死 problem/method/experiment/claim/evidence/media 六类，
+// 而后端实际会给 `limitation`/`result`/`intro` 等 kind（claim 节点按断言类型命名），
+// 未命中的 kind 会全部落进第 1 列且共用灰色 —— 看起来就是"节点不全、连线不齐"。
+// 现在**按图中真实出现的 kind 动态生成列位/配色/中文名**，任何新 kind 都有位置。
+const BASE_COLOR: Record<string, string> = {
+  problem: '#F43F5E', method: '#6366F1', experiment: '#22D3EE', claim: '#34D399',
+  evidence: '#F59E0B', media: '#A78BFA', limitation: '#FB923C', result: '#34D399',
+  intro: '#A78BFA', body: '#94A3B8', conclusion: '#64748B', context: '#38BDF8',
+};
+const PALETTE = ['#6366F1', '#22D3EE', '#34D399', '#F59E0B', '#A78BFA', '#F43F5E', '#FB923C', '#38BDF8'];
+const KIND_LABEL_CN: Record<string, string> = {
+  problem: '问题', method: '方法', experiment: '实验', claim: '断言', evidence: '证据',
+  media: '图表', limitation: '局限', result: '结果', intro: '背景', body: '正文',
+  conclusion: '结论', context: '上下文',
 };
 
 function KindIcon({ kind }: { kind: string }) {
-  const map: Record<string, any> = { problem: Target, method: GitBranch, experiment: FlaskConical, claim: Circle, evidence: FileSearch, media: ImageIcon };
+  const map: Record<string, any> = { problem: Target, method: GitBranch, experiment: FlaskConical, claim: Circle, evidence: FileSearch, media: ImageIcon, limitation: Target };
   const I = map[kind] || Circle;
   return <I className="h-3.5 w-3.5" />;
 }
 
 function LensNode({ data }: NodeProps) {
   const kind = (data?.kind ?? 'problem') as string;
-  const color = KIND_COLOR[kind] || '#94A3B8';
+  const color = (data?.color as string) || BASE_COLOR[kind] || '#94A3B8';
   const props = (data?.props ?? {}) as Record<string, any>;
   const label = (data?.label ?? '') as string;
   const claimId = data?.claim_id as string | undefined;
@@ -47,6 +58,7 @@ function LensNode({ data }: NodeProps) {
         <span className="text-[12px] font-semibold uppercase tracking-wide" style={{ color }}>{label}</span>
       </div>
       {props.text && <p className="mt-2 text-[11px] leading-snug text-slate-300">{props.text as string}</p>}
+      {!props.text && label && <p className="mt-2 line-clamp-2 text-[11px] leading-snug text-slate-400">{label}</p>}
       {claimId && (
         <div className="mt-2 inline-flex rounded-md bg-white/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-slate-400">{claimId}</div>
       )}
@@ -56,7 +68,6 @@ function LensNode({ data }: NodeProps) {
 }
 
 const nodeTypes = { lens: LensNode };
-const NODE_KIND_LABEL: Record<string, string> = { problem: '问题', method: '方法', experiment: '实验', claim: '断言', evidence: '证据', media: '图表' };
 
 export function GraphView({ graph, accent, onClaimSelected, paperId }: {
   graph: GraphOut; accent: string; paperId?: number;
@@ -67,20 +78,38 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
   const [loadingClaim, setLoadingClaim] = useState(false);
   const [expandEv, setExpandEv] = useState(false);
 
+  // 按图中真实出现的 kind 生成列位/配色/中文名（新 kind 自动有位有颜色）
+  const kindMeta = useMemo(() => {
+    const order: string[] = [];
+    for (const n of graph.nodes) if (n.kind && !order.includes(n.kind)) order.push(n.kind);
+    const x: Record<string, number> = {};
+    const color: Record<string, string> = {};
+    const label: Record<string, string> = {};
+    order.forEach((k, i) => {
+      x[k] = i;
+      color[k] = BASE_COLOR[k] ?? PALETTE[i % PALETTE.length];
+      label[k] = KIND_LABEL_CN[k] ?? k;
+    });
+    return { order, x, color, label };
+  }, [graph.nodes]);
+
   const nodes = useMemo<Node[]>(() => {
     const perKind: Record<string, number> = {};
     return graph.nodes.map((n) => {
       const kind = n.kind;
-      const col = KIND_X[kind] ?? 1;
+      const col = kindMeta.x[kind] ?? 0;
       const row = perKind[kind] ?? 0;
       perKind[kind] = row + 1;
       return {
         id: n.id, type: 'lens',
         position: { x: col * 250, y: row * 90 },
-        data: { label: n.label, kind: n.kind, props: n.props, claim_id: n.props?.claim_id },
+        data: {
+          label: n.label, kind, props: n.props, claim_id: n.props?.claim_id,
+          color: kindMeta.color[kind],
+        },
       };
     });
-  }, [graph.nodes]);
+  }, [graph.nodes, kindMeta]);
 
   const edges = useMemo<Edge[]>(() => {
     return graph.edges.map((e) => ({
@@ -116,10 +145,12 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
           <p className="mt-1 text-sm text-slate-400">问题 → 方法 → 实验 → 断言 → 证据 → 图表。点击节点查看详情。</p>
         </div>
         <div className="hidden items-center gap-3 font-mono text-[10px] text-slate-500 sm:flex">
-          {['problem', 'method', 'experiment', 'claim', 'evidence', 'media'].map((k) => (
+          {kindMeta.order.length === 0 ? (
+            <span>暂无节点</span>
+          ) : kindMeta.order.map((k) => (
             <span key={k} className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full" style={{ background: KIND_COLOR[k] }} />
-              {k}
+              <span className="h-2 w-2 rounded-full" style={{ background: kindMeta.color[k] }} />
+              {kindMeta.label[k]}
             </span>
           ))}
         </div>
@@ -138,16 +169,43 @@ export function GraphView({ graph, accent, onClaimSelected, paperId }: {
       {selected ? (
         <div className="mt-4 rounded-2xl border border-[var(--line)] bg-white/[0.02] p-4">
           <div className="flex items-center gap-2">
-            <span className="grid h-6 w-6 place-items-center rounded-md" style={{ background: `${KIND_COLOR[selected.kind] || accent}22`, color: KIND_COLOR[selected.kind] || accent }}>
+            <span className="grid h-6 w-6 place-items-center rounded-md" style={{ background: `${kindMeta.color[selected.kind] || accent}22`, color: kindMeta.color[selected.kind] || accent }}>
               <KindIcon kind={selected.kind} />
             </span>
             <span className="text-sm font-semibold text-white">{selected.label}</span>
-            <Badge tone="slate">{NODE_KIND_LABEL[selected.kind] || selected.kind}</Badge>
+            <Badge tone="slate">{kindMeta.label[selected.kind] || selected.kind}</Badge>
             <button onClick={() => setSelected(null)} className="ml-auto grid h-6 w-6 place-items-center rounded-md text-slate-500 hover:text-white">
               <X className="h-4 w-4" />
             </button>
           </div>
-          <p className="mt-2 text-sm leading-relaxed text-slate-300">{selected.props?.text || '—'}</p>
+          {/* D29 修复：此前读 props.text（后端从不产出该键）→ 恒显示 "—"。
+              改为按节点类型给出真实内容：断言节点展示陈述正文，其余展示可用属性。 */}
+          {selected.kind === 'claim' && claimDetail?.statement ? (
+            <p className="mt-2 text-sm leading-relaxed text-slate-300">{claimDetail.statement}</p>
+          ) : selected.kind === 'claim' && loadingClaim ? (
+            <p className="mt-2 text-sm text-slate-500">正在加载断言内容…</p>
+          ) : (
+            (() => {
+              const facts = Object.entries(selected.props || {}).filter(([k, v]) => {
+                if (k === 'claim_id') return false;
+                if (v === null || v === undefined || v === '') return false;
+                if (Array.isArray(v)) return v.length > 0;
+                return true;
+              });
+              if (facts.length === 0) {
+                return <p className="mt-2 text-sm text-slate-500">该节点没有附加属性。</p>;
+              }
+              return (
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-slate-400">
+                  {facts.map(([k, v]) => (
+                    <span key={k}>
+                      {k} · {Array.isArray(v) ? `${v.length} 项` : String(v)}
+                    </span>
+                  ))}
+                </div>
+              );
+            })()
+          )}
           {selected.kind === 'claim' && selected.props?.claim_id && (
             <div className="mt-3 space-y-3">
               {/* 图谱内直接弹出该断言的证据 */}

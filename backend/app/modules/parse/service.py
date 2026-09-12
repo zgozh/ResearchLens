@@ -166,18 +166,26 @@ def parse(source: SourceDocument, ctx: Optional[CallContext] = None) -> ParseRes
 
     source_id = _source_id_for_scope(scope)
     anchors: List[Anchor] = []
+    anchor_id_by_page: Dict[str, str] = {}
     for page in pages:
         page_blocks = [b.id for b in blocks if b.page_id == page.id]
-        anchors.append(
-            normalize.build_page_anchor(
-                scope,
-                anchor_id=_new_id(),
-                source_document_id=source_id or "",
-                pages=pages,
-                page_id=page.id,
-                block_ids=page_blocks,
-            )
+        anchor = normalize.build_page_anchor(
+            scope,
+            anchor_id=_new_id(),
+            source_document_id=source_id or "",
+            pages=pages,
+            page_id=page.id,
+            block_ids=page_blocks,
         )
+        anchors.append(anchor)
+        anchor_id_by_page[page.id] = anchor.id
+
+    # 反向指针：块 → 所在页的页锚点（ADR-0029）。
+    # 页锚点此前已经知道自己的 block_ids，但块不知道自己的 anchor_id，
+    # 导致 blocks.anchor_id 全为 NULL、section_records.anchor_ids 无从派生，
+    # 「章节 / 正文定位」在第一步就断链。这里把双向关系补齐。
+    for block in blocks:
+        block.anchor_id = anchor_id_by_page.get(block.page_id)
 
     labels = normalize.build_label_mappings_with_blocks(
         scope, raw, pages=pages, blocks=blocks, id_factory=lambda kind, key: _new_id()

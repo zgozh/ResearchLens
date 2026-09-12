@@ -53,3 +53,10 @@ dom_*.html
 # Build
 dist/
 build/
+
+# 临时验收脚本与探针输出（本地，非源码）
+.scratch/
+
+# SQLite WAL/SHM（本地运行态）
+*.db-shm
+*.db-wal

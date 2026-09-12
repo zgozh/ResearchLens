@@ -390,8 +390,11 @@ def evidence_export(paper_id: int, revision_id: Optional[str] = None):
 @router.post("/papers/{paper_id}/qa/stream")
 async def qa_stream(paper_id: int, body: QARequest, revision_id: Optional[str] = None):
     scope, _rev = _resolve_scope(paper_id, revision_id)
+    # 必须注入 revision 固定的模型快照：``new_ctx(scope)`` 的 snapshot 默认 None，
+    # 会让 QA 直接判 ``llm_unavailable`` 并 abstained —— 前端只看到空气泡。
+    ctx = new_ctx(scope, snapshot=papers_mod.snapshot_for_revision(scope))
     return StreamingResponse(
-        qa_mod.stream(scope, body, new_ctx(scope)),
+        qa_mod.stream(scope, body, ctx),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

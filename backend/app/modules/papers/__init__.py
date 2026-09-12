@@ -17,6 +17,7 @@ from .service import (  # noqa: F401
     publish,
     put_asset,
     set_readable,
+    snapshot_for_revision,
     store_source,
 )
 
@@ -36,4 +37,5 @@ __all__ = [
     "publish",
     "set_readable",
     "asset_url",
+    "snapshot_for_revision",
 ]

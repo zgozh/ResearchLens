@@ -565,10 +565,58 @@ def register_statement(
         )
         repo.upsert_claim(db, record)
         repo.audit(
-            db, kind="statement_registered", scope=draft.scope, actor=ctx.request_id or "system",
+            # 审计 actor 用 ``getattr`` 兜底：``ctx`` 声明为非可选，但调用方一旦传 None
+            # 就会 AttributeError，把整条"注册陈述"链路打成 gate_unavailable
+            # （真实事故：QA 因此永远拿不到句子 → 拒答）。宁可用 "system"，不要炸。
+            db, kind="statement_registered", scope=draft.scope,
+            actor=getattr(ctx, "request_id", "") or "system",
             payload={"claim_id": claim_id, "statement_id": draft.id, "visibility": visibility},
         )
         return record
+
+
+def verify_registered_statement(
+    draft: StatementDraft, report: Any, visibility: str, ctx: CallContext
+) -> Optional[VerifiedStatement]:
+    """把 gate 报告落库到**已注册**的陈述上：证据 + ``display_class`` + claim 状态。
+
+    为什么必须有这个入口（真实缺陷）：``register_statement`` 契约上**只建立
+    unverified 身份、不产生任何 evidence**。QA 的 ``answer_only`` 事实句此前只调了
+    ``register_statement`` 就去看 ``display_class`` —— 于是每一句都停在
+    ``unverified`` → 句子全被丢弃 → 整题判"无可用证据"并**拒答**（用户看到空气泡）。
+    ``verify_and_store`` 内部早就有这套动作，这里把它抽成可单独调用的公共入口，
+    供"先注册、后校验"的调用方（QA / 复核）复用，避免再各写一遍而漏步骤。
+    """
+    from app.modules import evidence as evidence_mod
+
+    if report is None:
+        return None
+    saved = evidence_mod.save_report(report, ctx)
+    evidence_ids = [ev.id for ev in (saved.evidence or [])]
+
+    with session_scope() as db:
+        repo.update_statement_validation(
+            db, draft.id,
+            validation=saved.model_dump(mode="json"),
+            evidence_ids=evidence_ids,
+            display_class=display_class_for(draft, saved),
+        )
+        claim = ClaimRecord(
+            scope=draft.scope,
+            id=_claim_row_id(db, draft.scope, draft.claim_id),
+            claim_id=draft.claim_id,
+            statement_id=draft.id,
+            type=_claim_type_for(draft),
+            status=_status_for(saved),
+            rationale="",
+            evidence_ids=evidence_ids,
+            confidence=saved.confidence,
+            visibility=visibility,
+        )
+        repo.upsert_claim(db, claim)
+
+    stored = get_statements(draft.scope, [draft.id])
+    return stored[0] if stored else None
 
 
 # =============================================================== verify_and_store
@@ -896,6 +944,25 @@ def heading_body(text: str) -> Optional[str]:
     return body
 
 
+def _dedup_anchors(anchor_ids: Iterable[Optional[str]]) -> List[str]:
+    """按出现顺序去重锚点 id，丢掉空值。
+
+    章节的锚点由**本节块的页锚点**派生（ADR-0029）：章节自己不产生锚点，
+    只汇总它覆盖的块的锚点。块没有锚点时留空——绝不伪造。
+    """
+    out: List[str] = []
+    seen: Set[str] = set()
+    for anchor_id in anchor_ids:
+        if not anchor_id:
+            continue
+        text = str(anchor_id)
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
 def _sections_from_headings(
     scope: Scope, block_rows, statement_rows, verified_claims, warnings: List[Warning]
 ) -> List[SectionRecord]:
@@ -928,7 +995,8 @@ def _sections_from_headings(
         block_ids = [row.id for row in covered]
         sections.append(SectionRecord(
             scope=scope, id=f"sec-{start}-{scope.revision_id[:8]}", heading=head,
-            kind=infer_section_kind(head), source_block_ids=block_ids, anchor_ids=[],
+            kind=infer_section_kind(head), source_block_ids=block_ids,
+            anchor_ids=_dedup_anchors(getattr(row, "anchor_id", None) for row in covered),
             summary=_summary_for_blocks(block_ids, statement_rows, verified_claims),
         ))
     return sections
@@ -982,7 +1050,8 @@ def _sections_from_blocks(
         heading = (row.text or "").strip().split("\n", 1)[0][:80]
         section = SectionRecord(
             scope=scope, id=f"sec-{row.id}", heading=heading or f"第 {ordinal + 1} 节",
-            kind="body", source_block_ids=[row.id], anchor_ids=[],
+            kind="body", source_block_ids=[row.id],
+            anchor_ids=_dedup_anchors([getattr(row, "anchor_id", None)]),
         )
         # 归入本节：引用块命中该节 block 的已验证 statement
         matched: List[Tuple[str, str]] = []
@@ -1090,6 +1159,7 @@ def _structure_with_llm(
         return None
     known = {c.claim_id for c in verified_claims}
     known_blocks = {r.id for r in block_rows}
+    anchor_by_block = {r.id: getattr(r, "anchor_id", None) for r in block_rows}
 
     sections: List[SectionRecord] = []
     for idx, sec in enumerate(getattr(raw, "sections", []) or []):
@@ -1111,11 +1181,13 @@ def _structure_with_llm(
                 message=f"章节 {sec.heading} 的概览无可追溯依据，已丢弃该段文字",
                 stage="claims",
             ))
+        accepted_blocks = [b for b in (sec.source_block_ids or []) if b in known_blocks]
         sections.append(SectionRecord(
             scope=scope, id=f"sec-{idx}-{scope.revision_id[:8]}", heading=sec.heading or "",
             kind=sec.kind or "body",
-            source_block_ids=[b for b in (sec.source_block_ids or []) if b in known_blocks],
-            anchor_ids=[], summary=artifact,
+            source_block_ids=accepted_blocks,
+            anchor_ids=_dedup_anchors(anchor_by_block.get(b) for b in accepted_blocks),
+            summary=artifact,
         ))
 
     map_items: List[MapItem] = []

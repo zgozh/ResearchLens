@@ -256,6 +256,27 @@ def _as_dict(raw: Any) -> Dict[str, Any]:
 # ================================================================== 断言 / 证据
 
 
+def _legacy_region_label(segment: Any) -> str:
+    """``AnchorSegment`` → 旧 ``EvidenceOut.region`` 字符串。
+
+    真实缺陷（2026-09-12 实测 ``GET /papers/1/claims/{id}`` **500**）：
+    这里原本读 ``segment.block_id``，而 ``AnchorSegment`` 的字段是
+    ``block_ids``（**列表**）—— ``AttributeError: 'AnchorSegment' object has no
+    attribute 'block_id'``。该代码路径此前从未被执行（claims 详情对 canonical
+    断言恒 404），所以一直没暴露。这里对两种历史形态都容忍，取不到就返回空串。
+    """
+    if segment is None:
+        return ""
+    single = getattr(segment, "block_id", None)
+    if single:
+        return str(single)
+    block_ids = getattr(segment, "block_ids", None) or []
+    if block_ids:
+        return str(block_ids[0])
+    page_label = getattr(segment, "page_label", None)
+    return str(page_label) if page_label else ""
+
+
 def to_legacy_evidence(record: EvidenceRecord) -> EvidenceOut:
     """旧 ``EvidenceOut``：``id`` 继续数字，新 ID 放 ``evidence_id``。"""
     legacy_id = record.legacy_id
@@ -265,7 +286,7 @@ def to_legacy_evidence(record: EvidenceRecord) -> EvidenceOut:
     return EvidenceOut(
         id=numeric_id,
         page=int(record.source_page or 1),
-        region=(record.source_region[0].block_id if record.source_region else ""),
+        region=_legacy_region_label(record.source_region[0] if record.source_region else None),
         region_type="text",
         text=record.source_text or "",
         quote="".join(sp.source_text or "" for sp in (record.quote_spans or [])),

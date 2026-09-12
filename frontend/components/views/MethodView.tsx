@@ -14,6 +14,13 @@ const PHASE_LABEL: Record<string, string> = {
   input: '输入', encoder: '编码', module: '核心模块', decoder: '解码', output: '输出',
 };
 
+/** 步骤 label 实测是一整句断言（最长 164 字），流水线/状态行必须截断。 */
+function shortLabel(label: string | undefined, max = 26): string {
+  if (!label) return '';
+  const head = label.split(/[。；;!?！？\n]/)[0] || label;
+  return head.length > max ? `${head.slice(0, max)}…` : head;
+}
+
 export function MethodView({ detail, accent }: { detail: PaperDetail; accent: string }) {
   const steps: MethodStep[] = detail.method_steps || [];
   const [active, setActive] = useState(0);
@@ -35,7 +42,9 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
   }, [playing, active, total]);
 
   const play = () => { setActive(0); setPlaying(true); };
-  const hero = detail.figures?.find((f) => f.importance === 'high');
+  // D29 修复：importance 实测 24/24 全是 'medium'，此前写死 `=== 'high'`
+  // 导致"论文原图"永不渲染。改为"优先 high，否则取第一张"。
+  const hero = detail.figures?.find((f) => f.importance === 'high') ?? detail.figures?.[0];
 
   return (
     <div className="space-y-6">
@@ -54,6 +63,12 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
         </div>
 
         {/* 动画流水线 */}
+        {total === 0 ? (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-200">
+            本篇论文尚未抽取到方法步骤（需要已通过证据校验的 METHOD 类断言）。
+            下方仍展示论文原图与关联图表。
+          </div>
+        ) : (
         <div className="flex items-stretch gap-2">
           {steps.map((s, i) => {
             const revealed = i < active;
@@ -78,7 +93,7 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
                           <div className="grid h-7 w-7 place-items-center rounded-lg font-mono text-[11px] font-bold"
                             style={{ background: s.color || accent, color: '#0B1220' }}>{i + 1}</div>
                           <div>
-                            <div className="text-sm font-semibold text-white">{s.label}</div>
+                            <div className="text-sm font-semibold text-white">{shortLabel(s.label)}</div>
                             {s.detail && <div className="mt-1 text-[11px] leading-snug text-slate-400">{s.detail}</div>}
                           </div>
                         </div>
@@ -95,11 +110,12 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
             );
           })}
         </div>
+        )}
 
         {active > 0 && (
           <div className="mt-4 flex items-center gap-2 font-mono text-[11px] text-slate-500">
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: steps[active - 1]?.color || accent }} />
-            步骤 {active}/{total} · {steps[active - 1]?.label}
+            步骤 {active}/{total} · {shortLabel(steps[active - 1]?.label, 44)}
           </div>
         )}
       </GlassCard>
@@ -111,8 +127,10 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
             <GlassCard className="p-6">
               <div className="flex items-center gap-2">
                 <Badge tone="accent">步骤 {String((explored ?? 0) + 1).padStart(2, '0')}</Badge>
-                <Badge tone="slate">{PHASE_LABEL[steps[explored!].phase || ''] || steps[explored!].phase}</Badge>
-                <h3 className="text-lg font-semibold text-white">{steps[explored!].label}</h3>
+                {steps[explored!].phase && (
+                  <Badge tone="slate">{PHASE_LABEL[steps[explored!].phase || ''] || steps[explored!].phase}</Badge>
+                )}
+                <h3 className="text-lg font-semibold text-white">{shortLabel(steps[explored!].label, 60)}</h3>
               </div>
               <p className="mt-2 flex items-start gap-2 text-[14px] leading-relaxed text-slate-300">
                 <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />

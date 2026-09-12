@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -29,7 +29,7 @@ from app.contracts.evidence import (
     StructureArtifact,
     VerifiedStatement,
 )
-from app.models.artifacts import BlockORM, PageORM
+from app.models.artifacts import AnchorORM, BlockORM, PageORM
 from app.models.evidence import (
     BindingORM,
     ClaimRecordORM,
@@ -425,9 +425,77 @@ def get_structure(db: Session, scope: Scope) -> StructureArtifact:
         map_artifact = MapArtifact(
             scope=scope, id=f"map-{scope.revision_id}", items=items,
         )
+    fill_missing_section_anchors(db, scope, sections)
     return StructureArtifact(
         scope=scope, sections=sections, map=map_artifact, method_steps=steps,
     )
+
+
+def _page_anchor_ids(db: Session, scope: Scope) -> Dict[str, str]:
+    """``page_id`` → 页锚点 id（同页多锚点时取 ``block_ids`` 最多者）。
+
+    ``parse`` 为每页建**一个**覆盖该页全部块的页锚点；证据定位会另建只含单块的
+    ``anc-*`` 锚点。二者物理页相同，但页锚点更稳定、语义是"整页"，
+    所以章节定位优先选它。
+    """
+    rows = db.execute(
+        select(AnchorORM).where(AnchorORM.revision_id == scope.revision_id)
+    ).scalars().all()
+    best: Dict[str, Tuple[int, str]] = {}
+    for row in rows:
+        segments = row.segments or []
+        if not segments or not isinstance(segments[0], dict):
+            continue
+        page_id = segments[0].get("page_id")
+        if not page_id:
+            continue
+        count = len(segments[0].get("block_ids") or [])
+        current = best.get(page_id)
+        if current is None or count > current[0]:
+            best[page_id] = (count, row.id)
+    return {page_id: anchor_id for page_id, (_count, anchor_id) in best.items()}
+
+
+def fill_missing_section_anchors(
+    db: Session, scope: Scope, sections: Sequence[SectionRecord]
+) -> None:
+    """为 ``anchor_ids`` 为空的章节**只读补齐**页锚点（ADR-0029）。
+
+    历史数据里 ``section_records.anchor_ids`` 全为空（``blocks.anchor_id`` 也是 NULL），
+    而"章节 → 正文页"必须要有锚点。为了避免为了修显示层而重跑昂贵的 LLM 抽取，
+    这里按「块 → 所在页 → 页锚点」**现算**补齐。
+
+    **绝不写库**：这是投影层的补全，只改返回值；显式的 ``anchor_ids`` 一律保留。
+    """
+    pending = [s for s in sections if not s.anchor_ids and s.source_block_ids]
+    if not pending:
+        return
+    block_ids = {bid for s in pending for bid in s.source_block_ids}
+    if not block_ids:
+        return
+
+    rows = db.execute(
+        select(BlockORM.id, BlockORM.anchor_id, BlockORM.page_id).where(
+            BlockORM.id.in_(sorted(block_ids))
+        )
+    ).all()
+    anchor_of_block = {r[0]: r[1] for r in rows if r[1]}
+    page_of_block = {r[0]: r[2] for r in rows}
+    page_anchor: Dict[str, str] = {}
+    if any(bid not in anchor_of_block and page_of_block.get(bid) for bid in page_of_block):
+        page_anchor = _page_anchor_ids(db, scope)
+
+    for section in pending:
+        resolved: List[str] = []
+        seen = set()
+        for block_id in section.source_block_ids:
+            anchor_id = anchor_of_block.get(block_id) or page_anchor.get(
+                page_of_block.get(block_id) or ""
+            )
+            if anchor_id and anchor_id not in seen:
+                seen.add(anchor_id)
+                resolved.append(anchor_id)
+        section.anchor_ids = resolved
 
 
 # --------------------------------------------------------------- 投影

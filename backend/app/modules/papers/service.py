@@ -104,6 +104,57 @@ def _revision_dto(row) -> Revision:
     )
 
 
+def snapshot_for_revision(scope: Scope) -> Optional[Any]:
+    """该 revision **固定的**模型快照（缺失则回退当前运行时快照）。
+
+    为什么必须有它（真实缺陷）：``/papers/{id}/qa`` 与 ``/qa/stream`` 此前用
+    ``new_ctx(scope)``，而 ``new_ctx`` 的 ``snapshot`` 默认 ``None`` —— 于是 QA
+    永远走不到模型：``qa/service.py`` 因 ``not snapshot_id`` 直接判
+    ``llm_unavailable``、``mode=abstained``，前端只拿到空气泡 + "无证据支持"。
+    而 revision 明明已经 pin 了 ``model_snapshot_id``。
+
+    返回完整的 ``contracts.ai.ModelSnapshot``：``CallContext.model_snapshot`` 必须是
+    它（``new_ctx`` 会归一化），而 ``CompletionRequest`` / 重排请求也要求这个类型。
+    此前这里返回 ``ModelSnapshotLike``，导致下游请求校验失败 →
+    ``qa/service._llm_draft`` 抛异常 → 降级抽取 → 为空 → **问答恒拒答**（空气泡）。
+    """
+    from app.contracts.ai import ModelSnapshot
+    from app.models.source import ModelSnapshotORM, RevisionORM
+
+    if scope.paper_id <= 0 or not scope.revision_id:
+        return _runtime_snapshot()
+    with session_scope() as db:
+        row = db.get(RevisionORM, scope.revision_id)
+        if row is None or not row.model_snapshot_id:
+            return _runtime_snapshot()
+        snap = db.get(ModelSnapshotORM, row.model_snapshot_id)
+        if snap is None:
+            # 历史数据：revision 指向的快照行缺失。退回运行时快照，
+            # 好过让问答直接降级成拒答。
+            return _runtime_snapshot()
+        return ModelSnapshot(
+            id=snap.id,
+            provider=snap.provider if snap.provider == "dashscope" else "dashscope",
+            base_url=snap.base_url or "",
+            chat_model=snap.chat_model or "",
+            embedding_model=snap.embedding_model,
+            embedding_dimension=snap.embedding_dimension,
+            capability_version=snap.capability_version or "rl.capabilities/1",
+            temperature=float(snap.temperature or 0.2),
+            created_at=snap.created_at,
+        )
+
+
+def _runtime_snapshot() -> Optional[Any]:
+    """当前进程的运行时模型快照；取不到返回 ``None``（调用方据此降级，不伪造）。"""
+    try:
+        from app.modules.ai import capabilities as capabilities_mod
+
+        return capabilities_mod.get_snapshot()
+    except Exception:  # noqa: BLE001 - 快照缺失不得把请求变成 500
+        return None
+
+
 def _asset_dto(row) -> Asset:
     return Asset(
         id=row.id,

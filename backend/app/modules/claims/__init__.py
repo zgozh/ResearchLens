@@ -15,20 +15,25 @@ from .service import (  # noqa: F401
     reextract,
     register_statement,
     verify_and_store,
+    verify_registered_statement,
 )
 
 
 def get_claim(*args, **kwargs):
     """兼容分派：``get_claim(scope, claim_id)`` 走 canonical；
     ``get_claim(db, paper_id, claim_id)`` 走旧 HTTP 投影（``ClaimOut``）。
+
+    旧 HTTP 形态**必须**走 ``legacy.get_claim``（canonical 优先 + 旧表兜底）：
+    此前它直接转发只查旧 ``claims`` 表的实现，导致真实论文的
+    ``GET /papers/{id}/claims/{claim_id}`` 恒 404（列表却有内容）。
     """
     from app.contracts.common import Scope
 
     if args and isinstance(args[0], Scope):
         return _get_claim_canonical(*args, **kwargs)
-    from app.services.claims import get_claim as _legacy
+    from .legacy import get_claim as _bridge
 
-    return _legacy(*args, **kwargs)
+    return _bridge(*args, **kwargs)
 
 
 #: 旧 HTTP 兼容投影（canonical 优先 + 旧表兜底）。定义在 ``legacy.py``，
@@ -46,6 +51,7 @@ __all__ = [
     "get_statements",
     "get_verified_statements",
     "register_statement",
+    "verify_registered_statement",
     "build_artifact_text",
     "extract_claims",
     "get_claims",

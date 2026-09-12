@@ -8,22 +8,28 @@ import type { PaperDetail, SectionOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { FigureImage } from '@/components/FigureImage';
+import { TableRender } from '@/components/TableRender';
 import { cn } from '@/lib/cn';
 import { MathText } from '@/components/MathText';
 
 const KIND_LABEL: Record<string, string> = {
-  intro: '引言', method: '方法', experiment: '实验', result: '结果',
-  discussion: '讨论与局限', conclusion: '结论', references: '参考文献',
+  intro: '引言', problem: '问题与背景', method: '方法', experiment: '实验',
+  result: '结果', limitation: '局限', discussion: '讨论与局限',
+  conclusion: '结论', references: '参考文献', body: '正文',
 };
 const TONE: Record<string, 'accent'|'cyan'|'emerald'|'amber'|'rose'|'violet'|'slate'> = {
-  intro: 'violet', method: 'accent', experiment: 'cyan', result: 'emerald',
-  discussion: 'rose', conclusion: 'slate',
+  intro: 'violet', problem: 'rose', method: 'accent', experiment: 'cyan',
+  result: 'emerald', limitation: 'amber', discussion: 'rose',
+  conclusion: 'slate', body: 'slate',
 };
 
 export function MapView({ detail, accent, onOpenSection }: {
   detail: PaperDetail; accent: string; onOpenSection?: (s: SectionOut) => void;
 }) {
   const map = detail.map_summary || {};
+  // D29：只渲染**后端真的产出了内容**的卡片。
+  // 旧行为是六张卡片全渲染、缺的显示 "—"，实测 paper 2 有 5/6 是 "—"、
+  // paper 3 有 4/6 是 "—"，整页看起来就是"乱的内容都不齐"。
   const boxes = [
     { key: 'problem', label: '问题', c: '#F43F5E' },
     { key: 'method', label: '方法', c: '#6366F1' },
@@ -31,7 +37,7 @@ export function MapView({ detail, accent, onOpenSection }: {
     { key: 'experiment', label: '实验', c: '#38BDF8' },
     { key: 'result', label: '结果', c: '#34D399' },
     { key: 'limitation', label: '局限', c: '#F59E0B' },
-  ];
+  ].filter((b) => (map[b.key] || '').trim().length > 0);
   const [openSec, setOpenSec] = useState<number | undefined>(0);
   const [media, setMedia] = useState<MediaItem | null>(null);
 
@@ -40,12 +46,12 @@ export function MapView({ detail, accent, onOpenSection }: {
       {/* 摘要 + 元信息 */}
       <GlassCard className="p-6">
         <Kicker>摘要 · ABSTRACT</Kicker>
-        <p className="mt-3 text-[15px] leading-relaxed text-slate-300">{detail.abstract}</p>
+        <MathText text={detail.abstract} className="mt-3 block text-[15px] leading-relaxed text-slate-300" />
         <div className="mt-4 flex flex-wrap gap-2">
           {(detail.tags || []).map((t) => <Badge key={t} tone="slate">{t}</Badge>)}
         </div>
         <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-[var(--line)] pt-4 font-mono text-[11px] text-slate-500">
-          <span>作者 · {detail.authors.join(', ')}</span>
+          {(detail.authors?.length ?? 0) > 0 && <span>作者 · {detail.authors.join(', ')}</span>}
           <span>年份 · {detail.year}</span>
           <span>领域 · {detail.domain}</span>
           <span>图表 · {detail.figures?.length ?? 0} 图 / {detail.tables?.length ?? 0} 表 · 章节 {detail.sections?.length} 个</span>
@@ -61,6 +67,11 @@ export function MapView({ detail, accent, onOpenSection }: {
       {/* 六维卡片 */}
       <div>
         <Kicker className="mb-3">论文地图 · PAPER MAP</Kicker>
+        {boxes.length === 0 ? (
+          <GlassCard className="p-5 text-sm text-slate-500">
+            本篇论文尚未生成可追溯的论文地图（需要已通过证据校验的断言）。
+          </GlassCard>
+        ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {boxes.map((b, i) => (
             <motion.div key={b.key} initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
@@ -69,11 +80,12 @@ export function MapView({ detail, accent, onOpenSection }: {
                   <span className="h-2 w-2 rounded-full" style={{ background: b.c }} />
                   <span className="font-mono text-[11px] uppercase tracking-[0.2em]" style={{ color: b.c }}>{b.label}</span>
                 </div>
-                <p className="mt-3 text-sm leading-relaxed text-slate-300">{map[b.key] || '—'}</p>
+                <MathText text={map[b.key]} className="mt-3 text-sm leading-relaxed text-slate-300" />
               </GlassCard>
             </motion.div>
           ))}
         </div>
+        )}
       </div>
 
       {/* 章节结构树 */}
@@ -89,7 +101,7 @@ export function MapView({ detail, accent, onOpenSection }: {
                   <span className="grid h-7 w-7 place-items-center rounded-lg bg-white/[0.04] font-mono text-[11px] text-slate-400">{s.page_end && s.page_end !== s.page_start ? `${s.page_start}–${s.page_end}` : s.page}</span>
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-slate-100">{s.heading}</div>
-                    <div className="mt-0.5 line-clamp-1 text-[12px] text-slate-500">{s.summary}</div>
+                    <MathText text={s.summary} className="mt-0.5 line-clamp-2 text-[12px] text-slate-500" />
                   </div>
                   <Badge tone={TONE[s.kind] || 'slate'}>{KIND_LABEL[s.kind] || s.kind}</Badge>
                   <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', open && 'rotate-180')} />
@@ -162,20 +174,7 @@ export function MapView({ detail, accent, onOpenSection }: {
                 </div>
                 <p className="mb-2 text-[11px] text-slate-500">{t.caption}</p>
                 <div className="overflow-hidden rounded-md border border-[var(--line)]">
-                  <table className="w-full text-left text-[11px]">
-                    <thead>
-                      <tr className="bg-white/[0.04]">
-                        {(t.content[0] || []).map((h, i) => <th key={i} className="px-2 py-1.5 font-medium text-slate-300">{h}</th>)}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {t.content.slice(1, 4).map((row, ri) => (
-                        <tr key={ri} className="border-t border-[var(--line)]">
-                          {row.map((cell, ci) => <td key={ci} className="px-2 py-1.5 text-slate-400">{cell}</td>)}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <TableRender table={t} className="text-[11px]" />
                 </div>
                 {t.key_finding && <p className="mt-2 line-clamp-2 text-[11px] text-emerald-200/80">{t.key_finding}</p>}
               </GlassCard>

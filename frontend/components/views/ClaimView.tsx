@@ -7,6 +7,7 @@ import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { FigureImage } from '@/components/FigureImage';
 import { TableRender } from '@/components/TableRender';
+import { MathText } from '@/components/MathText';
 import { cn } from '@/lib/cn';
 import { useState } from 'react';
 
@@ -22,8 +23,15 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
   detail: PaperDetail; claims: ClaimSummary[]; selectedClaimId?: string; onSelect: (id: string) => void;
 }) {
   const [media, setMedia] = useState<MediaItem | null>(null);
-  const grouped = TYPE_ORDER.map((t) => ({ type: t, list: claims.filter((c) => c.type === t) }))
-    .filter((g) => g.list.length > 0);
+  // D29 修复：此前只按 TYPE_ORDER 分组，**不在表里的断言类型会被静默丢弃**
+  // （列表里就"少了断言"）。现在已知类型按固定顺序排前，其余类型一律补在后面。
+  const grouped = (() => {
+    const known = TYPE_ORDER.map((t) => ({ type: t, list: claims.filter((c) => c.type === t) }));
+    const extras = Array.from(
+      new Set(claims.map((c) => c.type).filter((t) => !!t && !TYPE_ORDER.includes(t))),
+    ).map((t) => ({ type: t, list: claims.filter((c) => c.type === t) }));
+    return [...known, ...extras].filter((g) => g.list.length > 0);
+  })();
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
@@ -54,9 +62,13 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
                           </div>
                           <span className="font-mono text-[11px] text-slate-500">置信 {c.confidence.toFixed(2)}</span>
                         </div>
-                        <p className="mt-2.5 text-sm leading-relaxed text-slate-100">{c.statement}</p>
+                        <MathText text={c.statement} className="mt-2.5 block text-sm leading-relaxed text-slate-100" />
+                        {!c.statement && (
+                          <p className="mt-2.5 text-sm text-slate-500">该断言暂无可显示的陈述正文。</p>
+                        )}
                         <div className="mt-2.5 flex items-center gap-3 text-[11px] text-slate-500">
                           <span className="inline-flex items-center gap-1"><FileText className="h-3 w-3" /> {c.evidence_count} 条证据</span>
+                          {c.evidence_count > 0 && <span className="text-slate-600">点击查看证据链 →</span>}
                         </div>
                       </button>
                     </motion.div>

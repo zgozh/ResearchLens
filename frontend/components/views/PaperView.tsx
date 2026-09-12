@@ -35,9 +35,13 @@ interface SectionVM {
   heading: string;
   kind: string;
   page: number;
+  page_start?: number;
+  page_end?: number;
   summary: string;
   body: string;
   key_points: string[];
+  /** 页锚点（canonical section 自带）；用于"在原件中打开本节"。 */
+  anchor_ids: string[];
 }
 
 export function PaperView({
@@ -86,25 +90,42 @@ export function PaperView({
   }, [locatedPage]);
 
   // canonical sections 优先，旧 detail.sections 降级
+  //
+  // D29 修复：canonical section **没有 body / 页码**（它只有 heading/kind/summary/
+  // key_points/source_block_ids/anchor_ids），此前这里把 body 写死 ''、page 写死 0，
+  // 于是"结构化导读"每一节都只剩一句 summary，正文（实测 6353/4022/6647 字）
+  // 与页码徽标被整块丢弃 —— 用户看到的就是"结构化导读的内容不齐"。
+  // 现在按 heading 与旧 detail.sections 合并，缺什么补什么。
   const sections: SectionVM[] = useMemo(() => {
+    const legacyByHeading = new Map(detail.sections.map((s) => [s.heading, s]));
     const canon = exhibits?.structure?.sections ?? [];
     if (canon.length > 0) {
-      return canon.map((s) => ({
-        heading: s.heading,
-        kind: s.kind,
-        page: 0,
-        summary: s.summary?.text ?? '',
-        body: '',
-        key_points: (s.key_points ?? []).map((k) => k.text),
-      }));
+      return canon.map((s) => {
+        const legacy = legacyByHeading.get(s.heading);
+        const canonPoints = (s.key_points ?? []).map((k) => k.text).filter(Boolean);
+        return {
+          heading: s.heading,
+          kind: s.kind || legacy?.kind || 'body',
+          page: legacy?.page ?? 0,
+          page_start: legacy?.page_start ?? legacy?.page,
+          page_end: legacy?.page_end ?? legacy?.page,
+          summary: s.summary?.text || legacy?.summary || '',
+          body: legacy?.body ?? '',
+          key_points: canonPoints.length > 0 ? canonPoints : (legacy?.key_points ?? []),
+          anchor_ids: (s as { anchor_ids?: string[] }).anchor_ids ?? [],
+        };
+      });
     }
     return detail.sections.map((s) => ({
       heading: s.heading,
       kind: s.kind,
       page: s.page,
+      page_start: s.page_start ?? s.page,
+      page_end: s.page_end ?? s.page,
       summary: s.summary,
       body: s.body,
       key_points: s.key_points ?? [],
+      anchor_ids: [],
     }));
   }, [exhibits, detail.sections]);
 
@@ -265,45 +286,62 @@ export function PaperView({
             <div className="mb-2 flex items-center gap-2">
               <FileText className="h-4 w-4 text-slate-500" />
               <h2 className="text-lg font-semibold text-white">{sec.heading}</h2>
-              {sec.page > 0 && (
-                <span className="ml-auto rounded-md bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-slate-500">p.{sec.page}</span>
-              )}
+              {sec.page_start ? (
+                <span className="ml-auto rounded-md bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-slate-500">
+                  {sec.page_end && sec.page_end !== sec.page_start
+                    ? `p.${sec.page_start}–${sec.page_end}`
+                    : `p.${sec.page_start}`}
+                </span>
+              ) : null}
             </div>
-            {sec.body ? (
-              <p className="text-[14px] leading-relaxed text-slate-400">{sec.body}</p>
-            ) : (
-              <p className="text-[14px] leading-relaxed text-slate-400">{sec.summary}</p>
-            )}
+            <MathText text={sec.body || sec.summary} className="block text-[14px] leading-relaxed text-slate-400" />
             {sec.key_points.length > 0 && (
               <ul className="mt-3 space-y-1.5">
                 {sec.key_points.map((kp, j) => (
                   <li key={j} className="flex items-start gap-2 text-[12px] text-slate-500">
-                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400" />{kp}
+                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400" />
+                    <MathText text={kp} />
                   </li>
                 ))}
               </ul>
+            )}
+            {sec.anchor_ids.length > 0 && scope && (
+              <button
+                onClick={() => onNavigate({
+                  paper_id: scope.paper_id,
+                  revision_id: scope.revision_id,
+                  anchor_id: sec.anchor_ids[0],
+                  segment_index: 0,
+                })}
+                className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-medium text-indigo-300 hover:text-indigo-200"
+              >
+                <BookOpen className="h-3.5 w-3.5" /> 在原件中打开本节
+              </button>
             )}
           </GlassCard>
         ))}
 
         {/* D06：canonical 媒体走 SourceMedia（浅色原件层包在深色容器里） */}
         {mode === 'structured' && hasCanonicalMedia && (
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-            {loadedMedia.map((m) => (
-              <div key={m.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-2">
-                <SourceMedia
-                  media={m}
-                  assets={assets}
-                  onOpen={openMedia}
-                  onNavigate={onNavigate}
-                />
-              </div>
-            ))}
+          <div>
+            <Kicker className="mb-3">原件媒体 · SOURCE MEDIA</Kicker>
+            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+              {loadedMedia.map((m) => (
+                <div key={m.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-2">
+                  <SourceMedia
+                    media={m}
+                    assets={assets}
+                    onOpen={openMedia}
+                    onNavigate={onNavigate}
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
-        {/* 结构化导读：图（旧字段降级，仅在无 canonical 媒体时展示） */}
-        {mode === 'structured' && !hasCanonicalMedia && (
+        {/* 结构化导读：图（D29 修复：canonical 媒体不再顶掉真图真表） */}
+        {mode === 'structured' && detail.figures.length > 0 && (
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             {detail.figures.map((f) => (
             <GlassCard key={`fig-${f.fig_no}`} onClick={() => setMedia({ type: 'figure', figure: f, media: null } as unknown as MediaItem)}
@@ -323,8 +361,8 @@ export function PaperView({
           </div>
         )}
 
-        {/* 结构化导读：表（旧字段降级） */}
-        {mode === 'structured' && !hasCanonicalMedia && (
+        {/* 结构化导读：表（D29 修复：与 canonical 媒体并存） */}
+        {mode === 'structured' && detail.tables.length > 0 && (
         <div className="space-y-6">
           {detail.tables.map((t) => (
             <GlassCard key={`tbl-${t.table_no}`} onClick={() => setMedia({ type: 'table', table: t })}

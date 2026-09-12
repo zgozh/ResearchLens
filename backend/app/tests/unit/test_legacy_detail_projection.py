@@ -207,6 +207,60 @@ class TestTextMarkupCleanup:
         assert clean_text_markup(None) == ""
 
 
+class TestMethodStepExtras:
+    """方法步骤的 ``text`` / ``figure_ref``（前端"方法动画"靠这两个字段）。
+
+    实测 ``method_steps[0] = {label: 整条断言句, detail:"", phase:null, figure_ref:null}``：
+    - 前端 ``MethodView`` 在 ``st.text`` 存在时走 ``RichText``（把"图 N/表 N"渲染成可点引用），
+      否则退化；``text`` 为空 → "方法动画"里没有可点的图表引用；
+    - ``figure_ref`` 为空 → "查看关联图"永远不出现。
+    canonical ``MethodStepRecord`` 本来就有 ``label`` 与 ``media_ids``。
+    """
+
+    def _step(self, label="本文用 Haar 小波域指标选择载体", media_ids=(), detail=""):
+        return SimpleNamespace(
+            id="st-1", label=SimpleNamespace(text=label, spans=[]),
+            detail=SimpleNamespace(text=detail, spans=[]), phase=None,
+            claim_ids=["c1"], media_ids=list(media_ids),
+        )
+
+    def test_text_carries_the_step_statement(self):
+        from app.modules.papers.legacy import method_step_extras
+
+        out = method_step_extras(self._step(), {})
+
+        assert out["text"].startswith("本文用 Haar")
+
+    def test_figure_ref_resolved_from_media_legacy_no(self):
+        from app.modules.papers.legacy import method_step_extras
+
+        out = method_step_extras(self._step(media_ids=["m1", "m2"]), {"m1": 7, "m2": 9})
+
+        assert out["figure_ref"] == 7, "应取第一个能解析出 legacy_no 的媒体"
+
+    def test_media_without_legacy_no_is_skipped(self):
+        from app.modules.papers.legacy import method_step_extras
+
+        out = method_step_extras(self._step(media_ids=["m1", "m2"]), {"m1": None, "m2": 4})
+
+        assert out["figure_ref"] == 4
+
+    def test_no_media_leaves_figure_ref_absent(self):
+        """没有可解析媒体时**不给** figure_ref 键（前端据此不显示"查看关联图"）。"""
+        from app.modules.papers.legacy import method_step_extras
+
+        out = method_step_extras(self._step(media_ids=[]), {})
+
+        assert "figure_ref" not in out
+
+    def test_empty_label_leaves_text_absent(self):
+        from app.modules.papers.legacy import method_step_extras
+
+        out = method_step_extras(self._step(label=""), {})
+
+        assert "text" not in out
+
+
 class TestFigureImageUrl:
     def test_figure_carries_asset_url_when_media_has_asset(self):
         """``figures[]`` 必须给出可访问的图片 URL —— 前端不再只认内联 b64。"""

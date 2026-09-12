@@ -112,6 +112,175 @@ def clean_text_markup(text: Any) -> str:
     return re.sub(r"[ \t]{2,}", " ", out).strip()
 
 
+# --------------------------------------------------------------- 首页元信息派生
+# 真实论文实测：``papers.authors/tags/year/domain`` 对 3 篇真实论文分别是
+# ``[] / [] / 2026(入库年份) / 'general'`` —— 全是空壳。而这些信息**首页正文里本来就有**
+# （中文期刊首页第 2 行是作者行，摘要下方是"关键词"行，页脚是年份与卷期）。
+# 这里只做**保守派生**：认不出来就不给键，调用方保留原值。
+
+#: 命中即否决整行（页眉/摘要/关键词/通讯作者/编号）
+_FRONT_LINE_REJECT_RE = re.compile(
+    r"摘要|摘\s*要|Abstract|关键词|Key\s*words?|通讯作者|Vol\.|No\.|ISSN|DOI|http|@|"
+    r"软件学报|Journal|University|College|Institute|Laboratory",
+    re.I,
+)
+#: 作者名后的上标标记：``$^{1}$`` / ``$^{1,2}$`` / ``${}^{a}$``
+_AUTHOR_SUPERSCRIPT_RE = re.compile(r"\$?\s*[\^_]\s*\{[^{}]*\}\s*\$?|\$[^$]{0,24}\$")
+_AUTHOR_SPLIT_RE = re.compile(r"[,，、;；]")
+#: 姓名：≤24 字符，只允许汉字/字母/常见连字符，且以汉字或字母开头
+_AUTHOR_NAME_RE = re.compile(r"^[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z.\-' ]{0,23}$")
+#: 单位行标志：括号或数字
+_AFFILIATION_RE = re.compile(r"[()（）\[\]{}]|\d")
+
+_KEYWORDS_RE = re.compile(
+    r"^[ \t]*(?:关\s*键\s*词|Key\s*words?)\s*[:：]?[ \t]*(.+)$", re.I | re.M
+)
+_KEYWORD_SPLIT_RE = re.compile(r"[;；,，、]")
+_YEAR_RE = re.compile(r"\b(19[89]\d|20[0-4]\d)\b")
+
+#: 领域关键词表（按优先级，先命中先返回）。
+#: 注意：**具体领域必须排在笼统领域之前**——Solidity 那篇的摘要里有"智能合约安全问题"，
+#: 若 "security" 排在前面就会把区块链论文判成安全论文。同理不收录裸 "安全"，
+#: 它太泛（几乎每篇系统论文都会出现"安全性"）。
+_DOMAIN_KEYWORDS: tuple = (
+    ("blockchain", ("智能合约", "solidity", "区块链", "blockchain", "以太坊", "合约")),
+    ("security", (
+        "隐写", "隐写分析", "steganalysis", "steganograph", "watermark", "水印",
+        "漏洞", "加密", "密码", "隐私", "入侵检测", "恶意代码", "信息安全", "网络安全",
+    )),
+    ("software-engineering", (
+        "软件工程", "缺陷预测", "软件度量", "代码", "重构", "软件测试", "需求",
+        "应用市场", "用户接受", "开发", "app market", "defect prediction",
+    )),
+    ("machine-learning", (
+        "神经网络", "深度学习", "机器学习", "模型", "预测", "分类", "表征学习",
+        "neural", "learning", "prediction",
+    )),
+    ("systems", ("分布式", "操作系统", "编译", "运行时", "存储", "网络", "数据库", "调度")),
+)
+
+
+def authors_from_page_text(text: str, *, title: str = "", max_lines: int = 4) -> List[str]:
+    """从首页正文抽取作者行；**认不出来就返回空列表**。
+
+    首页第一个非空行是题名（跳过），作者行紧随其后。判定"整行都是姓名"的
+    充要条件：按 ``, ，、;`` 切分后**每个**片段都像姓名（≤24 字符、只含汉字/字母/
+    连字符、不含数字与括号）。任何一段像单位/页眉，整行否决——
+    把"厦门大学"当作者比返回空列表更糟。
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines()]
+    title_line = (title or "").strip()
+    seen_first_content = False
+    checked = 0
+    for line in lines:
+        if not line:
+            continue
+        if not seen_first_content:
+            seen_first_content = True  # 首页第一个非空行 = 题名（或英文题名），跳过
+            continue
+        if line == title_line:
+            continue
+        checked += 1
+        if checked > max_lines:
+            break
+        if _FRONT_LINE_REJECT_RE.search(line):
+            continue
+        stripped = _AUTHOR_SUPERSCRIPT_RE.sub(" ", line).strip()
+        if not stripped or _AFFILIATION_RE.search(stripped):
+            continue
+        tokens = [t.strip() for t in _AUTHOR_SPLIT_RE.split(stripped) if t.strip()]
+        if not tokens:
+            continue
+        if all(_AUTHOR_NAME_RE.match(t) for t in tokens):
+            return tokens
+    return []
+
+
+def keywords_from_page_text(text: str, *, limit: int = 8) -> List[str]:
+    """从首页"关键词 / Key words"行抽取标签；没有该行就返回空列表。"""
+    match = _KEYWORDS_RE.search(text or "")
+    if not match:
+        return []
+    raw = match.group(1).strip()
+    # 关键词行后面常紧跟"中图法分类号"等同段内容，按首个强分隔符截断
+    raw = re.split(r"中图法|中图分类|CLC|DOI|收稿", raw)[0]
+    out: List[str] = []
+    for token in _KEYWORD_SPLIT_RE.split(raw):
+        tag = token.strip().strip(".。")
+        if not tag or len(tag) > 40:
+            continue
+        if tag not in out:
+            out.append(tag)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def year_from_page_text(text: str) -> Optional[int]:
+    """首页出现次数最多的年份（页脚卷期/版权会重复出现）；没有则 ``None``。"""
+    years = _YEAR_RE.findall(text or "")
+    if not years:
+        return None
+    counts: Dict[str, int] = {}
+    for year in years:
+        counts[year] = counts.get(year, 0) + 1
+    # 次数相同取更晚的年份（引用年份通常早于发表年）
+    best = sorted(counts.items(), key=lambda kv: (-kv[1], -int(kv[0])))[0][0]
+    return int(best)
+
+
+def domain_from_page_text(text: str) -> str:
+    """按关键词表判定领域；判不出来返回 ``'general'``（不猜）。"""
+    haystack = (text or "").lower()
+    for domain, needles in _DOMAIN_KEYWORDS:
+        if any(n.lower() in haystack for n in needles):
+            return domain
+    return "general"
+
+
+def front_matter_from_page_text(text: str, *, title: str = "") -> Dict[str, Any]:
+    """首页 → ``{authors?, tags?, year?, domain?}``。
+
+    **派生不到的键一律不出现**，调用方据此决定是否覆盖 legacy 默认值
+    （例如 ``domain`` 只有真的判出来才覆盖 ``'general'``）。
+    """
+    bundle: Dict[str, Any] = {}
+    authors = authors_from_page_text(text, title=title)
+    if authors:
+        bundle["authors"] = authors
+    tags = keywords_from_page_text(text)
+    if tags:
+        bundle["tags"] = tags
+    year = year_from_page_text(text)
+    if year:
+        bundle["year"] = year
+    domain = domain_from_page_text(f"{title}\n{text}")
+    if domain and domain != "general":
+        bundle["domain"] = domain
+    return bundle
+
+
+def merge_front_matter(existing: Dict[str, Any], front: Dict[str, Any]) -> Dict[str, Any]:
+    """首页派生值 → 允许覆盖 legacy 字段的子集。
+
+    覆盖策略（保守优先，宁可少改）：
+    - ``authors`` / ``tags``：只在 legacy **为空**时补（已有的真实值更可信）；
+    - ``year``：派生到就覆盖——legacy 的 ``year`` 是**入库年份**（实测 3 篇真实论文
+      全是 2026），不是发表年份，留着比没有更误导；
+    - ``domain``：派生到就覆盖——legacy 恒为 ``'general'``（等于没判）。
+    """
+    updates: Dict[str, Any] = {}
+    if front.get("authors") and not (existing.get("authors") or []):
+        updates["authors"] = front["authors"]
+    if front.get("tags") and not (existing.get("tags") or []):
+        updates["tags"] = front["tags"]
+    if front.get("year"):
+        updates["year"] = front["year"]
+    if front.get("domain"):
+        updates["domain"] = front["domain"]
+    return updates
+
+
 def section_body_and_pages(section: Any, blocks: Any, page_no_by_id: Dict[str, int]):
     """章节 → ``(正文, 起始页, 结束页)``。
 
@@ -135,6 +304,28 @@ def section_body_and_pages(section: Any, blocks: Any, page_no_by_id: Dict[str, i
             pages.append(page_no)
     body = "\n".join(texts)
     return body, (min(pages) if pages else 0), (max(pages) if pages else 0)
+
+
+def method_step_extras(step: Any, media_legacy_no: Dict[str, Any]) -> Dict[str, Any]:
+    """方法步骤 → 旧 DTO 的 ``text`` / ``figure_ref``（前端"方法动画"需要的两个字段）。
+
+    - ``text``：canonical ``label`` 就是该步骤的**原文陈述**。前端 ``MethodView`` 在
+      ``st.text`` 存在时走 ``RichText``（把"图 N/表 N"渲染成**可点击引用**），
+      为空则退化 —— 实测真实论文 ``text`` 恒为空，所以"方法动画"里点不到图表。
+    - ``figure_ref``：从 ``step.media_ids`` 解析出第一个可用的 ``legacy_no``
+      （前端用它 ``find(fig_no === figure_ref)`` 显示"查看关联图"）。
+    - **没有来源就不给键**（前端据此不显示对应 UI），不编造编号。
+    """
+    out: Dict[str, Any] = {}
+    label = _text(getattr(step, "label", None)).strip()
+    if label:
+        out["text"] = label
+    for media_id in (getattr(step, "media_ids", None) or []):
+        legacy_no = (media_legacy_no or {}).get(media_id)
+        if isinstance(legacy_no, int):
+            out["figure_ref"] = legacy_no
+            break
+    return out
 
 
 def figure_image_url(media: Any) -> str:
@@ -269,12 +460,28 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
         derived_abstract = abstract_from_page_text(page_dicts[0].get("text") or "")
         if derived_abstract:
             derived["abstract"] = derived_abstract
+    # 署名/关键词/年份/领域：legacy ``papers`` 列对真实论文恒为空壳
+    # （``[]`` / ``[]`` / 入库年份 / ``'general'``），从首页正文保守派生。
+    front = front_matter_from_page_text(
+        page_dicts[0].get("text") if page_dicts else "",
+        title=getattr(detail, "title", "") or "",
+    )
+    derived.update(merge_front_matter(
+        {
+            "authors": getattr(detail, "authors", None),
+            "tags": getattr(detail, "tags", None),
+            "year": getattr(detail, "year", None),
+            "domain": getattr(detail, "domain", None),
+        },
+        front,
+    ))
     if derived:
         detail = detail.model_copy(update=derived)
 
     # method_steps：真实论文的旧 ``papers.method_steps`` 列为空（canonical 把
     # 步骤写进 section_records/method_steps 产物），故用 canonical 结构覆盖。
     if steps:
+        media_legacy_no = {m.id: m.legacy_no for m in media_items}
         detail = detail.model_copy(update={
             "method_steps": [
                 _legacy_step(
@@ -283,6 +490,8 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
                         "label": _text(st.label),
                         "detail": _text(st.detail),
                         "phase": st.phase,
+                        # text/figure_ref：前端"方法动画"的 RichText 与"查看关联图"
+                        **method_step_extras(st, media_legacy_no),
                     },
                     i,
                 )

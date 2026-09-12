@@ -191,7 +191,16 @@ class CallContext(ContractModel):
     scope: Optional[Scope] = None
     deadline_at: datetime
     cancel_token: Any = Field(default_factory=NeverCancelled)
-    model_snapshot: Optional["ModelSnapshotLike"] = None
+    #: 必须是 ``contracts.ai.ModelSnapshot`` 的**实例**（``new_ctx`` 负责归一化）。
+    #:
+    #: 这里**不能**声明成 ``ModelSnapshotLike``：那样 pydantic 会把传入的完整快照
+    #: 强制降级成 Like 视图，而下游 ``CompletionRequest.model_snapshot`` /
+    #: 重排请求声明的是完整 ``ModelSnapshot`` → 校验失败 →
+    #: ``qa/service._llm_draft`` 抛异常 → 降级成"抽取式" → 抽取也为空 → **拒答**。
+    #: 真实后果（实测）：``/papers/{id}/qa/stream`` 恒返回空气泡 + ``rerank_failed``。
+    #: 之所以此前没被发现，是因为 pipeline 走 ``ctx.model_copy(update=...)``
+    #: 而 ``model_copy`` **不做校验**，只有 ``new_ctx`` 这条路会踩到。
+    model_snapshot: Optional[Any] = None
     budget: Budget = Field(
         default_factory=lambda: Budget(
             max_calls=8, max_input_tokens=60000, max_output_tokens=8000, max_wall_ms=120000
@@ -215,6 +224,35 @@ class ModelSnapshotLike(BaseModel):
     provider: str = "dashscope"
 
 
+def _normalize_snapshot(value: Any) -> Optional[Any]:
+    """把 ``ModelSnapshotLike`` / dict / ``ModelSnapshot`` 统一成完整 ``ModelSnapshot``。
+
+    为什么要归一化（真实缺陷）：``CallContext.model_snapshot`` 曾被声明为
+    ``ModelSnapshotLike``，于是 pydantic 把完整快照**降级**成 Like 视图；而下游
+    ``CompletionRequest`` / 重排请求要求完整 ``ModelSnapshot`` → ValidationError →
+    QA 生成失败并降级成"抽取式"，抽取再为空就**拒答**（用户看到空气泡）。
+    ``ModelSnapshotLike`` 只该是"避免循环导入"的读取视图，不该跨进请求契约。
+    """
+    if value is None:
+        return None
+    from .ai import ModelSnapshot  # 延迟导入：ai 依赖 common，模块级导入会成环
+
+    if isinstance(value, ModelSnapshot):
+        return value
+    if isinstance(value, dict):
+        try:
+            return ModelSnapshot.model_validate(value)
+        except Exception:  # noqa: BLE001 - 脏快照不得阻断请求，交给下游降级
+            return None
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return ModelSnapshot.model_validate(value.model_dump())
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
 def new_ctx(
     scope: Optional[Scope] = None,
     *,
@@ -236,7 +274,7 @@ def new_ctx(
             utc_now().timestamp() + deadline_ms / 1000.0, tz=timezone.utc
         ),
         cancel_token=cancel_token if cancel_token is not None else NeverCancelled(),
-        model_snapshot=snapshot,
+        model_snapshot=_normalize_snapshot(snapshot),
         budget=budget
         or Budget(max_calls=8, max_input_tokens=60000, max_output_tokens=8000,
                   max_wall_ms=deadline_ms),
