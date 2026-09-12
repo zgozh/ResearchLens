@@ -164,6 +164,35 @@ class TestProxyVisible:
         assert out["metrics"]["proxy"] == []
         assert out["metrics"]["anchor_page_accuracy"] == 1.0
 
+    def test_unevaluated_overall_score_is_none_not_zero(self):
+        """**未评估的综合评分必须是 null**：旧实现为迁就 NOT NULL 列填 0.0，
+        实测 curl 顶层返回 ``"overall_score": 0.0``，会被读成"评了 0 分"（ADR-0055）。"""
+        from app.modules.evaluation import legacy
+
+        report = EvaluationReport(
+            scope=_SCOPE, id="e4",
+            metrics=[_entry("support_precision", None, "not_evaluated")],
+        )
+        out = legacy.to_legacy_evaluation(report)
+        assert out["overall_score"] is None, "不得用 0 冒充未评估"
+        assert out["metrics"]["overall_score_available"] is False
+        assert out["metrics"]["overall_score_canonical"] is None
+
+    def test_adapters_projection_also_returns_none(self):
+        """两处投影（modules/legacy 与 schemas/adapters）口径必须一致。"""
+        from app.schemas import adapters
+
+        report = EvaluationReport(
+            scope=_SCOPE, id="e5",
+            metrics=[_entry("support_precision", None, "not_evaluated"),
+                     _entry("unsupported_fact_escape_rate", 0.0, "proxy")],
+        )
+        out = adapters.to_legacy_evaluation(report)
+        assert out.overall_score is None
+        assert out.metrics["overall_score_available"] is False
+        assert out.metrics["unsupported_fact_escape_rate"] == 0.0
+        assert out.metrics["proxy"] == ["unsupported_fact_escape_rate"]
+
 
 # --------------------------------- 2. recovery_success_rate 按答案粒度
 

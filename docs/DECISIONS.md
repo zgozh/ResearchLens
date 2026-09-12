@@ -688,6 +688,32 @@
   其中 `TestHybridRankingRegression` 用纯融合层**确定性地复现**了 live 的排序失败
   （单通道目标块排第 6 → 注入章节通道后回到 top-5），不依赖 embedding。
 
+## D-55 `overall_score`：未评估时是**真 null**，不是 0.0（列放宽可空 + 迁移 0008）
+
+- **发现的经过**：D-52/D-54 修完后 curl `/api/papers/1/evaluation`，顶层仍是
+  `"overall_score": 0.0`，而 `metrics.overall_score_available=false`。
+- **根因**：规格要求"核心指标不可测时 `overall_score` 必须是 null，不得用 0 冒充"，
+  canonical 报告也确实是 `None`；但 legacy 投影**为了迁就 `evaluations.overall_score`
+  的 NOT NULL 列**，在**两处**都把它填成 0.0（`modules/evaluation/legacy.py` 与
+  `schemas/adapters.py`），只靠 `available` 标志提示。
+- **为什么必须改**：前端恰好有 flag 保护，但**契约本身在教人误读**——任何只读
+  `overall_score` 的消费者（包括人肉 curl 验收）都会看到"0 分"。这正是"以假数字冒充"，
+  和 D-50 是同一类纪律问题：**不能靠"调用方记得看另一个字段"来保证不误导**。
+- **修法**：
+  1. 迁移 `0008_evaluation_score_nullable.py`：`evaluations.overall_score` 放宽为可空
+     （幂等、纯 expand、不需回填；downgrade 会把 NULL 回填 0.0 并说明**有损**）；
+  2. ORM 改 `Mapped[float | None]`；`EvaluationOut.overall_score: Optional[float]`；
+     前端 `types.ts` 同步 `number | null`；
+  3. 两处投影都返回 `None`，并顺带把 `schemas/adapters.py` 的 **proxy 口径**与
+     `modules/evaluation/legacy.py` 对齐（此前 adapters 里 proxy 同样被丢成 null）；
+  4. "论文不存在/revision 不可用"的占位行也从 0.0 改成 `None` + `available=False`。
+- **实测**：`curl /api/papers/{1,2,3}/evaluation` → `overall_score = None`、
+  `available = False`、`canonical = None`；`alembic current` = `0008 (head)`。
+- 回归测试：`test_eval_metric_reporting.py` 新增两条（modules 投影 / adapters 投影
+  都必须是 None，且 proxy 值不得被丢）。
+- **仍然保留的判断**：`overall_score_available` 标志继续存在（旧消费者需要），
+  但它现在是**冗余**的安全网，而不是唯一的真相来源。
+
 ## D-47 附（措辞修正）
 
 原文写"Compose 的 `.env` 是按当前工作目录查找的"，实测更精确的说法是：**Compose 先看当前工作目录的 `.env`、再看项目目录（compose 文件所在目录）的 `.env`，前者优先**。证据：`backend/.env` 存在时（以 `backend/` 为 CWD）端口/CORS 被它覆盖成 8001/3001；把它改名后，同样的工作目录又能正确读到根 `.env`（8002/4002、`DEMO_MODE=false`）。

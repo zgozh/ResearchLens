@@ -224,7 +224,9 @@ class AskResponse(LegacyModel):
 
 # --- Evaluation (Spec §21) ---
 class EvaluationOut(LegacyModel):
-    overall_score: float
+    #: 未评估时是 **null**，不是 0（ADR-0055 / 迁移 0008）；可用性另见
+    #: ``metrics["overall_score_available"]``。
+    overall_score: Optional[float] = None
     metrics: Dict[str, Any] = Field(default_factory=dict)
 
 

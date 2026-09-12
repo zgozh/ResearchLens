@@ -180,7 +180,8 @@ export interface AskResponse {
 }
 
 export interface EvaluationOut {
-  overall_score: number;
+  // 未评估时是 null，不是 0（ADR-0055）；可用性见 metrics.overall_score_available
+  overall_score: number | null;
   metrics: Record<string, any>;
 }
 

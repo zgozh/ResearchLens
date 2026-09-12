@@ -4,10 +4,11 @@
 前端的 ``EvaluationOut.metrics`` 读 dict。本模块把 canonical
 ``EvaluationReport`` 投影回该 ORM 形状：
 
-- ``metrics`` 仍是 dict：新增 ``overall_score_available`` 与
-  ``not_evaluated`` 列表，让「未评估」**不冒充 0**；
-- 旧 ``overall_score`` 字段（float 非空）在未评估时投影 **0 并显式标注**，
-  因为旧契约不接受 null；canonical 值在 ``overall_score_canonical``。
+- ``metrics`` 仍是 dict：给出 ``overall_score_available``、``not_evaluated`` 与
+  ``proxy`` 名单，让「未评估」**不冒充 0**、让 proxy **标着标明地呈现**；
+- ``overall_score`` 未评估时是 **null**（迁移 0008 把列放宽为可空之前只能填 0.0，
+  实测 curl 顶层返回 ``"overall_score": 0.0`` 会被读成"评了 0 分"）；
+  canonical 值另在 ``overall_score_canonical``。
 """
 from __future__ import annotations
 
@@ -31,8 +32,9 @@ def compute_evaluation(db: Session, paper_id: int) -> Any:
         if ev is None:
             ev = models.Evaluation(
                 paper_id=paper_id,
-                metrics={"not_evaluated": ["*"], "note": "论文不存在或尚无可用 revision"},
-                overall_score=0.0,
+                metrics={"not_evaluated": ["*"], "note": "论文不存在或尚无可用 revision",
+                         "overall_score_available": False, "proxy": []},
+                overall_score=None,   # 没算过就是 null，不是 0（ADR-0055）
             )
             db.add(ev)
             db.commit()
@@ -84,8 +86,10 @@ def to_legacy_evaluation(report: EvaluationReport) -> Dict[str, Any]:
     metrics["version"] = report.version
     metrics["warnings"] = [{"code": w.code, "message": w.message} for w in report.warnings]
 
-    # 旧契约 overall_score 非 null 的 float：未评估时投影 0 并已显式标注
-    legacy_overall = float(canonical) if canonical is not None else 0.0
+    # 旧契约原先把"未评估"投影成 0.0（列是 NOT NULL），实测 curl 顶层就是
+    # ``"overall_score": 0.0`` → 容易被读成"评了 0 分"。列已放宽为可空（迁移 0008），
+    # 这里如实给 None；``overall_score_available`` 仍保留，供只认旧字段的消费者判断。
+    legacy_overall = float(canonical) if canonical is not None else None
     metrics["overall_score_canonical"] = canonical
     return {"metrics": metrics, "overall_score": legacy_overall}
 

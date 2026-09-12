@@ -215,7 +215,10 @@ class Evaluation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     paper_id: Mapped[int] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"))
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
-    overall_score: Mapped[float] = mapped_column(Float, default=0.0)
+    #: 综合评分：**未评估时是 NULL，不是 0**（规格要求"不以 0 冒充"）。
+    #: 旧列是 NOT NULL，投影层只能填 0.0 + 一个 available 标志 —— 实测 curl 出来
+    #: 顶层就是 ``"overall_score": 0.0``，容易被读成"评了 0 分"（ADR-0055 / 迁移 0008）。
+    overall_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     computed_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 

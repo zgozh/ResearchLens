@@ -492,25 +492,35 @@ def to_legacy_answer(answer: AnswerRecord) -> AskResponse:
 
 
 def to_legacy_evaluation(report: EvaluationReport) -> EvaluationOut:
-    """``EvaluationReport → EvaluationOut``：未评估**不冒充 0**（保留 null 标记）。"""
+    """``EvaluationReport → EvaluationOut``：未评估**不冒充 0**（保留 null 标记）。
+
+    ``proxy`` 指标**有值就如实给**（规格允许报告 proxy，只要求标明），
+    与 ``modules/evaluation/legacy.py`` 保持同一口径——两处投影都填 0/null 才是真缺陷。
+    """
     metrics: Dict[str, Any] = {}
     not_evaluated_names: List[str] = []
+    proxy_names: List[str] = []
     for entry in report.metrics:
         value = entry.value
-        if value.status == "measured" and value.value is not None:
-            metrics[entry.name] = value.value
-        else:
+        if value.value is None or value.status == "not_evaluated":
             metrics[entry.name] = None
             not_evaluated_names.append(entry.name)
+        elif value.status == "proxy":
+            metrics[entry.name] = value.value
+            proxy_names.append(entry.name)
+        else:
+            metrics[entry.name] = value.value
     canonical = report.overall_score
     metrics["overall_score_available"] = canonical is not None
     metrics["not_evaluated"] = not_evaluated_names
+    metrics["proxy"] = proxy_names
     metrics["golden_id"] = report.golden_id
     metrics["version"] = report.version
     metrics["warnings"] = [{"code": w.code, "message": w.message} for w in report.warnings]
     metrics["overall_score_canonical"] = canonical
     return EvaluationOut(
-        overall_score=float(canonical) if canonical is not None else 0.0,
+        # 未评估时给 **None**，不给 0.0（列已放宽可空，迁移 0008 / ADR-0055）
+        overall_score=float(canonical) if canonical is not None else None,
         metrics=metrics,
     )
 
