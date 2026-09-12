@@ -43,6 +43,21 @@ const BASE =
   process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8002';
 
 /**
+ * 后端返回的受控资源地址是**相对路径**（如 `/api/assets/{id}`），
+ * 而前端与后端通常是**不同源**（4002 vs 8002）且 `next.config.mjs` 没有 rewrite，
+ * 直接把它当 `src` 会打到前端服务器上 → 404 → 图全空。
+ * 所有 `<img src>`/`<a href>` 用到后端资源时都必须过这个函数。
+ */
+export function absoluteApiUrl(url: string | null | undefined): string {
+  const raw = (url || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw) || raw.startsWith('data:') || raw.startsWith('blob:')) {
+    return raw;
+  }
+  return `${BASE}${raw.startsWith('/') ? '' : '/'}${raw}`;
+}
+
+/**
  * canonical 端点已在后端实现（§5.12）并端到端验证通过，因此**默认走真实接口**。
  * 仅在需要离线开发 / 后端不可用时，显式设 NEXT_PUBLIC_USE_FIXTURES=1 才切到静态 fixtures。
  *

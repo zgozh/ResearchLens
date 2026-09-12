@@ -232,6 +232,18 @@
 - **已做**：`reextract` 在 deadline 过期时显式追加 `reextract_deadline_exceeded` 警告（回归测试 2 条），避免再次被误读为内容质量问题；并用作业级 deadline（900s）重测，paper 3 提到 15 条 claim / 9 条已验证 / 6 个场景。
 - **未做（建议）**：`verify_and_store` 也应聚合报告"语义判定不可用"的条数；否则该陷阱在任何调用路径上都会伪装成"内容质量差"。
 
+## D-27 路线 A：把 canonical 产物补进旧 DTO（图 / 论文地图 / 摘要）
+- **决策**：走**路线 A**（先补旧投影 + 前端最小适配），暂不把前端改成读 canonical（路线 B 后续再做）。本轮落地三件：① `FigureOut` 新增 `image_url`，由 `papers.legacy.figure_image_url()` 从 `media.original_asset_ids[0]` 解析；② `map_summary` 由 canonical `structure.map.items` + 章节兜底投影（`map_summary_from_structure()`）；③ `abstract` 由首页正文按中英标记切出（`abstract_from_page_text()`）。前端新增 `lib/api.absoluteApiUrl()`，`FigureImage`/`SourceMedia` 渲染前把**相对**资源路径补成绝对 URL。
+- **背景（实测 `/api/papers/1`）**：`map_summary = {}`、`abstract` 长度 0、`authors`/`tags` 为空、`figures[0] = {glyph_svg:"", image_b64:"", media_id:"5fd8…"}`。根因是这些字段取自 **legacy `papers` 表列**（真实论文全空），而 canonical 侧的结构/首页正文/图资产**没有被投影**。前端 `FigureImage` 只认内联 `image_b64`/`glyph_svg` → 真实论文"有摘要没图"；`MapView` 六个六维卡片读 `map_summary[key]` → 全渲染成 "—"。
+- **取舍**：
+  - 让后端直接返回**绝对** URL（否决）：`asset_url()` 刻意只给受控相对路径（不暴露磁盘、不绑定部署域名），公开域名属于前端配置。
+  - 靠 Next.js rewrite 代理 `/api`（否决）：`next.config.mjs` 无 rewrite，加它会改变部署拓扑；前端集中拼一次更小。
+  - `dataset`/`experiment` 两键 canonical map 里没有（canonical 只有 problem/method/result/limitation）→ 用**章节 kind/标题**兜底；仍无来源就**不给键**（前端显示 "—"），不编造。
+  - 摘要标记**必须带冒号**：初版用 `摘\s*要`（无冒号）把正文普通词"没有**摘要**标记"误判成摘要头，单测抓到后已修。
+- **结论**：实测 `/api/papers/1`：**9/9 图有 `image_url`**，绝对地址取图 **200 `image/jpeg` 4975B**；`map_summary` 得到 method/result/limitation/experiment 四键真实内容；`abstract` 329 字、正确切在"关键词"前。前端重建通过，`/`、`/paper/1`、`/paper/3` 均 200，bundle 已含新逻辑。回归测试 `test_legacy_detail_projection.py`（8 条）；全量 **346 passed**。
+- **路线 A 剩余（未做）**：`sections[].body` 仍是 `summary` 的复制、`page` 恒为 1（未用 `source_block_ids`/anchors → "点章节跳不到正文页"）；`method_steps[].detail` 为空、`figure_ref` 为 null（源头在 structure builder 未填 detail）；`pages[].text` 仍是带 `$…$`/`\*` 的原始 MinerU 文本（"乱码"）；`authors`/`tags`/`year`/`domain` 未从首页派生；图谱 evidence 边（claim→evidence `supports` 绑定）未生成。
+
+
 
 
 

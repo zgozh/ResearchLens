@@ -39,6 +39,10 @@ export interface FigureOut {
   image_b64: string;
   importance: string;
   description: string;
+  /** 真实图资产 URL（canonical，/api/assets/{id}）；FigureImage 优先用它。 */
+  image_url?: string;
+  image_mime?: string;
+  media_id?: string;
 }
 
 export interface TableOut {

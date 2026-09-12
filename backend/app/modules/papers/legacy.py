@@ -18,12 +18,94 @@ legacy ORM**（``p.figures`` / ``p.tables`` / ``p.sections`` / ``p.pages`` /
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.contracts.common import Scope
+
+
+# =============================================================== 路线 A：canonical → 旧 DTO
+#
+# 为什么需要这些函数（ADR-0027）：``/api/papers/{id}`` 仍返回旧 ``PaperDetail``，
+# 其中 map_summary/abstract/authors 取自 **legacy ``papers`` 表列**，而真实论文
+# 这些列是空的（实测 map_summary={}、abstract 长度 0、authors=[]）→ 地图页六维卡片
+# 全渲染成 "—"、摘要与作者行全空；figures 也只给空 ``image_b64``/``glyph_svg``
+# （图其实在 canonical 的 asset 里）→ "有摘要没图"。
+# 这里把 canonical 产物补进旧 DTO；**没有来源就不给键**，绝不编造。
+
+#: 摘要起止标记（中英双语论文都要支持）。
+#: 起始标记**必须带冒号**：否则正文里的普通词（"没有任何摘要标记"）会被误判成摘要头。
+_ABSTRACT_START_RE = re.compile(r"(?:摘\s*要|abstract)\s*[:：]", re.I)
+_ABSTRACT_END_RE = re.compile(
+    r"(?:关\s*键\s*词|key\s*words?|中图法分类号|中图分类号|CCS\s*Concepts)\s*[:：]?", re.I
+)
+
+
+def map_summary_from_structure(structure: Any, sections: Any) -> Dict[str, str]:
+    """canonical 结构 → 旧 ``map_summary``（MapView 的六维卡片）。
+
+    - ``problem/method/result/limitation`` 取自 ``structure.map.items``（已验证内容）；
+    - ``experiment``/``dataset`` 在 canonical map 里没有对应 kind，用**章节**兜底
+      （kind=experiment 的章节摘要 / 标题含"数据"的章节摘要）；
+    - 没有来源的键**不出现**——前端自然显示 "—"，而不是被占位文本充数。
+    """
+    out: Dict[str, str] = {}
+    items = list(getattr(getattr(structure, "map", None), "items", None) or [])
+    for item in items:
+        kind = (getattr(item, "kind", "") or "").strip()
+        text = _text(getattr(item, "text", None)).strip()
+        if kind and text and kind not in out:
+            out[kind] = text
+
+    secs = list(sections or [])
+    if "experiment" not in out:
+        for s in secs:
+            if (getattr(s, "kind", "") or "").lower() == "experiment":
+                text = _text(getattr(s, "summary", None)).strip()
+                if text:
+                    out["experiment"] = text
+                    break
+    if "dataset" not in out:
+        for s in secs:
+            heading = (getattr(s, "heading", "") or "")
+            if "数据" in heading or "dataset" in heading.lower():
+                text = _text(getattr(s, "summary", None)).strip()
+                if text:
+                    out["dataset"] = text
+                    break
+    return out
+
+
+def abstract_from_page_text(text: str, *, limit: int = 1200) -> str:
+    """从首页正文切出摘要；**没有可识别标记就返回空串**（宁缺勿造，不把整页当摘要）。"""
+    raw = text or ""
+    start = _ABSTRACT_START_RE.search(raw)
+    if not start:
+        return ""
+    tail = raw[start.end():]
+    end = _ABSTRACT_END_RE.search(tail)
+    body = (tail[: end.start()] if end else tail).strip()
+    return re.sub(r"\s+", " ", body)[:limit]
+
+
+def figure_image_url(media: Any) -> str:
+    """媒体 → 可访问的图片 URL（第一个真实图资产）；**无资产则空串**。
+
+    绝不回退到 ``raw_asset_id``：那是 ``parser_raw`` 的 JSON，前端会把它当图渲染
+    （D-24 已把真图落成 ``kind="crop"`` 的 asset，这里只认它）。
+    """
+    asset_ids = [a for a in (getattr(media, "original_asset_ids", None) or []) if a]
+    if not asset_ids:
+        return ""
+    try:
+        from app.modules.papers import service as papers_service
+
+        return papers_service.asset_url(asset_ids[0])
+    except Exception:  # noqa: BLE001 - URL 拼装失败不得让详情 500
+        return ""
 
 
 def get_detail(db: Session, paper_id: int) -> Optional[Any]:
@@ -72,6 +154,9 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
                 "glyph_svg": "",
                 "image_b64": "",
                 "image_mime": "image/png",
+                # 真实图资产的可访问 URL（D-24 落库的 crop asset）。
+                # 前端 FigureImage 优先用它；此前只给空 b64/svg → "有摘要没图"。
+                "image_url": figure_image_url(m),
                 "importance": "medium",
                 "description": "",
                 # 前端用 media_id 打开真实原件（M03 的 policy 决定展示什么）
@@ -113,6 +198,19 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
         paper, metadata, revision,
         sections=section_dicts, figures=figures, tables=tables, pages=page_dicts,
     )
+
+    # 路线 A（ADR-0027）：legacy ``papers`` 表里这几列对真实论文是空的，
+    # 用 canonical 产物补上——否则地图页六维卡片全是 "—"、摘要/作者行全空。
+    derived: Dict[str, Any] = {}
+    derived_map = map_summary_from_structure(structure, sections)
+    if derived_map:
+        derived["map_summary"] = derived_map
+    if not (detail.abstract or "").strip() and page_dicts:
+        derived_abstract = abstract_from_page_text(page_dicts[0].get("text") or "")
+        if derived_abstract:
+            derived["abstract"] = derived_abstract
+    if derived:
+        detail = detail.model_copy(update=derived)
 
     # method_steps：真实论文的旧 ``papers.method_steps`` 列为空（canonical 把
     # 步骤写进 section_records/method_steps 产物），故用 canonical 结构覆盖。

@@ -315,7 +315,7 @@ export function PaperView({
                 </span>
               </div>
               <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-[#0F172A] p-1">
-                <FigureImage image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
+                <FigureImage image_url={f.image_url} image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
               </div>
               <p className="mt-2 text-[11px] text-slate-500">{f.caption}</p>
             </GlassCard>

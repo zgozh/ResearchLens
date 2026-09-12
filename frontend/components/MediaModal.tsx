@@ -37,7 +37,7 @@ export function MediaModal({ item, onClose, accent }: { item: MediaItem | null; 
             {item.type === 'figure' ? (
               <>
                 <div className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[#0F172A] p-3">
-                  <FigureImage image_b64={item.figure.image_b64} glyph_svg={item.figure.glyph_svg} caption={item.figure.caption} className="mx-auto max-w-3xl" />
+                  <FigureImage image_url={item.figure.image_url} image_b64={item.figure.image_b64} glyph_svg={item.figure.glyph_svg} caption={item.figure.caption} className="mx-auto max-w-3xl" />
                 </div>
                 <p className="mt-4 text-[13px] leading-relaxed text-slate-300">{item.figure.caption}</p>
                 {item.figure.description && (

@@ -12,6 +12,7 @@ import { SourceBadge } from './SourceBadge';
 import { ExtractedTable } from './ExtractedTable';
 import { ExtractedFormula } from './ExtractedFormula';
 import { cn } from '@/lib/cn';
+import { absoluteApiUrl } from '@/lib/api';
 
 type ImgState = 'loading' | 'ready' | 'failed';
 
@@ -103,7 +104,7 @@ export function SourceMedia({
               </span>
             ) : (
               <img
-                src={displayAsset.url}
+                src={absoluteApiUrl(displayAsset.url)}
                 alt={media.caption || media.original_label || 'media'}
                 className="h-auto w-full object-contain"
                 loading="lazy"

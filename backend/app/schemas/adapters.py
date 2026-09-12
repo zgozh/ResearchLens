@@ -208,6 +208,7 @@ def _figure_out(raw: Any, warnings: List[str]) -> FigureOut:
         importance=str(d.get("importance") or "medium"),
         description=str(d.get("description") or ""),
         media_id=d.get("media_id"),
+        image_url=str(d.get("image_url") or ""),
     )
 
 

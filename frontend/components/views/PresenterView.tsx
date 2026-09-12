@@ -185,7 +185,7 @@ export function PresenterView({ presentation, accent, detail, claims }: {
                       <span className="ml-auto font-mono text-[10px] text-slate-500">p.{f.page}</span>
                     </div>
                     <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[#0F172A] p-2">
-                      <FigureImage image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
+                      <FigureImage image_url={f.image_url} image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
                     </div>
                     <p className="mt-2 text-[13px] text-slate-300">{f.caption}</p>
                     {f.description && <p className="mt-1 text-[12px] text-slate-500">{f.description}</p>}

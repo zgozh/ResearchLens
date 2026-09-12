@@ -88,6 +88,10 @@ class FigureOut(LegacyModel):
     # --- canonical 扩展 ---
     image_mime: str = "image/png"
     media_id: Optional[str] = None
+    #: 真实图资产的可访问 URL（``/api/assets/{id}``）。旧字段 ``image_b64``/
+    #: ``glyph_svg`` 是内联渲染时代的产物，canonical 侧不再内联字节；
+    #: 前端 ``FigureImage`` 优先用本字段（ADR-0027）。
+    image_url: str = ""
 
 
 class TableOut(LegacyModel):
