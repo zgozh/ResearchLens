@@ -212,18 +212,17 @@ def _compute_entries(
     entries["source_asset_coverage"] = M.source_asset_coverage(list(input.media or []))
 
     # ---- 时延 / token
+    # ``timing_metrics`` 不再收 navigation_checks：那是**页面跳转**的时延，
+    # 此前被当成"首个经验证答案句耗时"，口径不对（详情见 metrics.timing_metrics）。
     for entry in M.timing_metrics(
-        list(input.answers or []), checks, ingest_ms=_ingest_ms(input.scope)
+        list(input.answers or []), ingest_ms=_ingest_ms(input.scope)
     ):
         entries[entry.name] = entry
     for entry in M.token_metrics(list(input.answers or [])):
         entries[entry.name] = entry
 
-    # ---- 恢复率
-    all_warnings: List[Warning] = []
-    for answer in (input.answers or []):
-        all_warnings.extend(list(getattr(answer, "warnings", []) or []))
-    entries["recovery_success_rate"] = M.recovery_success_rate(all_warnings)
+    # ---- 恢复率：按**答案粒度**统计"降级后仍交付"（旧实现只传 warnings，判不了交付）
+    entries["recovery_success_rate"] = M.recovery_success_rate(list(input.answers or []))
 
     # ---- 严格按 METRIC_NAMES 顺序输出，缺失项显式 not_evaluated
     out: List[MetricEntry] = []

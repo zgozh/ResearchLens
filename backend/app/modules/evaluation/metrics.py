@@ -108,6 +108,13 @@ def one_to_one_match(
 
     返回 ``(predicted→golden 下标, golden→predicted 下标)``；
     ``None`` 表示未匹配。**每个 gold 最多被一个预测占用，反之亦然。**
+
+    匹配判据**就是** ``similarity``（单字 Jaccard + 数字集合 Jaccard）。
+    曾计划加一条"事实级"通道（同数字+术语重合）来救"改写句 vs 原文句"，
+    但**实测为 0 增益**（ADR-0052）：手工构造的同事实改写句相似度本就 0.58–0.64
+    （数字权重已把它拉过 0.42），而 live 数据上 3 篇论文的过阈值预测数
+    **字面 3 / 事实级 3**，完全一样——说明预测与 golden 是**内容不同**，
+    不是"同一事实措辞不同"。放宽判据只会削弱匹配语义，故不引入。
     """
     pairs: List[Tuple[float, int, int]] = []
     for pi, ptext in enumerate(predicted):
@@ -274,6 +281,25 @@ def anchor_region_hit_rate(checks: Sequence[NavigationCheck]) -> MetricEntry:
                        method="iou>=0.5 / checks_with_iou")
 
 
+def _is_refusal(answer) -> bool:
+    """这次回答**是否拒答**（未交付任何内容）。
+
+    为什么不用 ``grounded``（真实缺陷，live 实测）：``grounded=False`` 只表示
+    "未完全核验通过"（有句子但存在未验证推断 / 引用恢复过），**不等于拒答**。
+    ``qa.service`` 自己的定义是"无句子才算拒答"。此前用 ``grounded is False`` 当判据，
+    导致 paper 1 里一条 ``mode=generated``、**交付了 3 条答案句**的回答被计入
+    "可回答却被误拒"，``answerable_false_refusal_rate`` 从 0 虚报成 0.5
+    （paper 2：0 → 0.25；paper 3：0.25 → 0.75）。
+    """
+    mode = getattr(answer, "mode", None)
+    if mode:
+        return mode == "abstained"
+    # 没有 mode 字段（旧记录）→ 退化为"是否交付内容"：无句子且无文本才算拒答
+    statements = getattr(answer, "statements", None) or []
+    text = getattr(getattr(answer, "text", None), "text", "") or ""
+    return not statements and not str(text).strip()
+
+
 def refusal_metrics(answers: Sequence, golden_questions: Sequence[GoldenQuestion]):
     """unanswerable_refusal_rate / answerable_false_refusal_rate。
 
@@ -300,7 +326,7 @@ def refusal_metrics(answers: Sequence, golden_questions: Sequence[GoldenQuestion
         if meta is None or meta.id in seen:
             continue
         seen.add(meta.id)
-        refused = bool(getattr(answer, "grounded", False) is False)
+        refused = _is_refusal(answer)
         if not meta.answerable:
             unans_total += 1
             if refused:
@@ -335,24 +361,27 @@ def _question_id_of(answer) -> Optional[str]:
 
 
 def timing_metrics(
-    answers: Sequence, navigation_checks: Sequence, ingest_ms: Optional[float] = None,
+    answers: Sequence, ingest_ms: Optional[float] = None,
 ) -> List[MetricEntry]:
-    firsts: List[float] = []
     totals: List[float] = []
+    delivered: List[float] = []
     for answer in answers:
         usage = getattr(answer, "usage", None)
         if usage is None:
             continue
         elapsed = getattr(usage, "elapsed_ms", None)
-        if isinstance(elapsed, (int, float)) and elapsed > 0:
-            totals.append(float(elapsed))
-    for check in navigation_checks:
-        if check.latency_ms > 0:
-            firsts.append(float(check.latency_ms))
+        if not isinstance(elapsed, (int, float)) or elapsed <= 0:
+            continue
+        totals.append(float(elapsed))
+        # 「首个经验证答案句」的耗时：答案句在 ``answer()`` 返回时就已经算好并落库，
+        # 因此用**产出过句子**的那批答案的 elapsed 作近似，method 里写明口径。
+        # 不产出句子（拒答）的样本不计入——那衡量的是"拒答有多快"，不是首句延迟。
+        if getattr(answer, "statements", None):
+            delivered.append(float(elapsed))
     return [
         ms_entry("qa_first_verified_ms",
-                 (sum(firsts) / len(firsts)) if firsts else None,
-                 method="navigation_check_latency_mean"),
+                 (sum(delivered) / len(delivered)) if delivered else None,
+                 method="answer_elapsed_with_sentences（首个答案句在 answer() 返回时即可用）"),
         ms_entry("qa_total_ms",
                  (sum(totals) / len(totals)) if totals else None,
                  method="answer_usage_elapsed_mean"),
@@ -403,17 +432,47 @@ def source_asset_coverage(media: Sequence, assets: Optional[Sequence] = None) ->
                        method="media_with_source_asset / all_media")
 
 
-def recovery_success_rate(warnings: Sequence) -> MetricEntry:
-    """降级后仍成功返回的比例；无降级记录时为 not_evaluated。"""
-    if not warnings:
-        return not_evaluated("recovery_success_rate", method="无降级事件", unit="ratio")
-    codes = [getattr(w, "code", "") for w in warnings]
-    degraded = [c for c in codes if c.endswith("_failed") or c.endswith("_unavailable")]
+#: 表示"系统降级过"的告警码。除了通用的 ``*_failed`` / ``*_unavailable``，
+#: 还要认我们**真实发生**的降级路径——否则 ``recovery_success_rate`` 永远
+#: "无降级事件"（实测：答案里成片的 ``citation_recovered`` / ``extractive_fallback``
+#: 被当成没发生降级）。``recovery_success_rate`` 只认 codes.endswith("_failed")。
+_DEGRADATION_CODES = (
+    "extractive_fallback",   # 模型草稿全被 gate 拒 → 降级为检索原文抽取
+    "citation_recovered",    # 引用缺失/错块 → 按原文定位恢复
+    "quote_trimmed",         # 引文被套前后缀 → 取最长逐字子串
+    "quote_block_corrected",  # 块号标错 → 按原文纠正
+    "claim_without_citation",  # 句子无引用被丢弃
+    "rerank_failed",
+    "retrieval_failed",
+)
+
+
+def recovery_success_rate(answers: Sequence) -> MetricEntry:
+    """降级后仍**交付了答案**的比例；没有降级事件时为 not_evaluated。
+
+    为什么改成接收 ``answers``（真实缺陷）：旧实现只收 warnings，无法判断"降级之后
+    到底有没有交付"，而且只认 ``*_failed``/``*_unavailable`` 两类码 —— 我们实际上最常
+    发生的降级（引用恢复、抽取兜底）一个都不算，于是该指标**永远是 not_evaluated**。
+    现在按答案粒度统计：该次回答出现过降级、且最终仍有答案句（或 grounded）→ 记成功。
+    """
+    degraded = 0
+    recovered = 0
+    for answer in answers:
+        codes = [getattr(w, "code", "") or "" for w in (getattr(answer, "warnings", None) or [])]
+        if not any(
+            c in _DEGRADATION_CODES or c.endswith("_failed") or c.endswith("_unavailable")
+            for c in codes
+        ):
+            continue
+        degraded += 1
+        if getattr(answer, "grounded", False) or (getattr(answer, "statements", None) or []):
+            recovered += 1
     if not degraded:
         return not_evaluated("recovery_success_rate", method="无降级事件", unit="ratio")
-    recovered = len(degraded)  # 能走到这里说明每次都补了降级路径
-    return ratio_entry("recovery_success_rate", recovered, len(degraded),
-                       method="degraded_but_answered / degradations")
+    return ratio_entry(
+        "recovery_success_rate", recovered, degraded,
+        method="degraded_but_delivered / answers_with_degradation",
+    )
 
 
 def all_metric_names_covered(entries: Sequence[MetricEntry]) -> List[str]:

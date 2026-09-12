@@ -74,6 +74,11 @@ export function EvalView({
   const notEvaluated = Array.isArray(metrics.not_evaluated)
     ? (metrics.not_evaluated as unknown[]).map(String)
     : [];
+  // proxy 指标：值算出来了、但口径是"间接测量"，必须**标着 proxy 显示**而不是当未评测藏起来。
+  const proxyNames = Array.isArray(metrics.proxy)
+    ? (metrics.proxy as unknown[]).map(String)
+    : [];
+  const isProxy = (name: string) => proxyNames.includes(name);
   const scoreValue = toNumber(report?.overall_score) ?? toNumber(evalData.overall_score);
   // 「可用」必须由后端显式声明，且分数确实是数字；否则一律按未评测处理。
   const scoreAvailable = metrics.overall_score_available !== false && scoreValue !== null;
@@ -209,7 +214,13 @@ export function EvalView({
             return (
               <div key={meta.key}>
                 <Meter value={value * 100} label={meta.label} color={meta.color} />
-                {meta.hint && <p className="mt-1 text-[10px] text-slate-600">{meta.hint}</p>}
+                {isProxy(meta.key) ? (
+                  <p className="mt-1 text-[10px] text-amber-300/70">
+                    proxy：间接口径（规格允许报告但必须标明），非人工真值
+                  </p>
+                ) : (
+                  meta.hint && <p className="mt-1 text-[10px] text-slate-600">{meta.hint}</p>
+                )}
               </div>
             );
           })}

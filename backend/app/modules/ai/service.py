@@ -122,8 +122,17 @@ def complete(
         }
 
         # ---------- 路径一：严格 json_schema ----------
+        # **必须先看已观测到的能力**（ADR-0053）：若该模型此前被观测到"不接受
+        # json_schema"，就直接跳过它、走 json_object —— 否则每次结构化调用都要
+        # 重新撞一遍 schema 失败（实测 qwen3.6-plus 每次 attempts=4，
+        # 其中 3 次是白撞的失败尝试，抽取单次因此从 ~125s 变成 494s）。
+        observed = caps.capabilities_for(model_override or provider.model)
         if binding.json_schema is not None:
             for attempt in range(1, MAX_ATTEMPTS + 1):
+                if observed.json_schema is False:
+                    # 已观测过该模型不接受 json_schema：直接落到下面的 json_object
+                    # 回退，不再白撞（注意只跳过这一层循环，不能跳过回退本身）
+                    break
                 _budget_guard(ctx, total_calls)
                 total_calls += 1
                 schema_mode = "json_schema"

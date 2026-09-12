@@ -54,21 +54,32 @@ def compute_evaluation(db: Session, paper_id: int) -> Any:
 
 
 def to_legacy_evaluation(report: EvaluationReport) -> Dict[str, Any]:
-    """``EvaluationReport → EvaluationOut`` 兼容 dict（含 not_evaluated 标记）。"""
+    """``EvaluationReport → EvaluationOut`` 兼容 dict（含 not_evaluated 标记）。
+
+    **proxy 也要如实呈现**：规格允许报告 proxy（只是必须标明），而旧实现把
+    非 ``measured`` 一律丢成 null → 前端看到"未评测"，实际上值算出来了
+    （实测 ``unsupported_fact_escape_rate`` 就是这样被藏起来的）。
+    这里额外给出 ``proxy`` 名单，前端据此标"（proxy）"而不是"未评测"。
+    """
     metrics: Dict[str, Any] = {}
     not_evaluated_names = []
+    proxy_names = []
     for entry in report.metrics:
         value = entry.value
-        if value.status == "measured" and value.value is not None:
-            metrics[entry.name] = value.value
-        else:
+        if value.value is None or value.status == "not_evaluated":
             # 未评估：**不写 0**，写入 None 并登记名字
             metrics[entry.name] = None
             not_evaluated_names.append(entry.name)
+        elif value.status == "proxy":
+            metrics[entry.name] = value.value
+            proxy_names.append(entry.name)
+        else:
+            metrics[entry.name] = value.value
 
     canonical = report.overall_score
     metrics["overall_score_available"] = canonical is not None
     metrics["not_evaluated"] = not_evaluated_names
+    metrics["proxy"] = proxy_names
     metrics["golden_id"] = report.golden_id
     metrics["version"] = report.version
     metrics["warnings"] = [{"code": w.code, "message": w.message} for w in report.warnings]

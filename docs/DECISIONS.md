@@ -599,6 +599,46 @@
   这是本轮最大的一处数据改善：paper 2 从"整篇几乎不可用"变成"与另两篇同一水平"。
 - **纪律**：这属于**收紧产出质量**（要求逐字引用），不是放宽 gate；跨块纠错（D-40）与最长逐字子串恢复（D-45）仍然只认"逐字存在"，两条安全网不变。
 
+## D-52 评测口径三处修正 + "事实级匹配"经测量**否决**
+
+- **背景**：用户看到"自动评测一堆指标无数值"，问是不是没做完。逐项查证后确认**不是没做完，是三类真实缺陷**：有的值算出来了却被丢掉、有的口径根本不对、有一个我本来准备放宽的判据被实测证明无益。
+- **修正 1：proxy 指标被投影层吞掉**。规格（REFACTOR_SPEC L613）允许报告 proxy，只要求**标明**。但 `to_legacy_evaluation` 把"非 measured"一律写成 `null` 并登记进 `not_evaluated` → 前端显示"未评测"，而 `unsupported_fact_escape_rate` 等其实**有值**。现改为：`measured`/`proxy` 都写值，另出 `metrics["proxy"]` 名单；前端 EvalView 对名单内的项标注"proxy：间接口径（规格允许报告但必须标明），非人工真值"，**不再混进"未评测"**。
+- **修正 2：`recovery_success_rate` 永远是 `not_evaluated`**。旧实现 ① 只吃 warnings、② 只认 `*_failed` / `*_unavailable` 两类码。而我们**实际最常发生的降级**是 `citation_recovered`（引用恢复）、`extractive_fallback`（草稿全被 gate 拒后降级抽取）、`quote_trimmed`、`quote_block_corrected`、`claim_without_citation`、`rerank_failed`——一个都不被认。于是这个"恢复能力"指标形同虚设。
+  - 现改为**按答案粒度**：`recovery_success_rate(answers)`，显式列出 `_DEGRADATION_CODES`；该次回答出现过降级且**最终仍有答案句或 grounded** 才算恢复成功（分母 = 发生过降级的回答数，**不是告警条数**——否则一次回答报 5 条告警就把分母灌成 5）。
+- **修正 3：`qa_first_verified_ms` 拿"页面跳转时延"冒充"首个经验证答案句耗时"**。旧实现用 `navigation_checks[].latency_ms` 的均值，口径完全不对（那是锚点导航）。答案句在 `answer()` 返回时就已生成落库，故改用**产出过句子的那批答案**的 `usage.elapsed_ms` 均值，`method` 写明口径；拒答样本不计入（那衡量的是"拒答有多快"）——**全部拒答时该指标是 `not_evaluated`，不写 0**。`navigation_checks` 参数随之从 `timing_metrics` 移除（它仍服务于 `anchor_page_accuracy`）。
+- **被否决的方案（"事实级匹配"）**：`support_precision` 实测为 `null`（金标集是草案，见 D-50）。我曾怀疑是"模型改写句 vs 原文句措辞不同"导致相似度上不去，遂实现 `fact_match_score`（同数字 + 术语重合的额外通道）并测量：
+  - 手工构造的**同事实改写句**相似度本就 0.58–0.64（`similarity` 里数字权重已把它拉过 `SIM_THRESHOLD=0.42`）——即"改写"根本不是失败原因；
+  - live 数据上 3 篇论文的过阈值预测数：**`similarity` 字面 3 条 / 事实级 3 条，完全一样**。
+  - 结论：预测与 golden 是**内容不同**，不是同一事实换措辞。放宽判据只会削弱匹配语义，**已回退**（删除 `fact_match_score`、`scorer` 与 `test_fact_match.py`），并在 `one_to_one_match` 的 docstring 里留下这段实测结论，防止后人再走一遍。
+- **遗留（明确不假装完成）**：`anchor_region_hit_rate` 仍无矩形可判（不编 IoU）；`support_precision/recall` 要等金标集**人工确认**才 measured；`overall_score` 因此保持 null。
+- **修正 4：把"未完全核验通过"当成了"拒答"**。`refusal_metrics` 用
+  `refused = (answer.grounded is False)` 判拒答——但 `grounded=False` 只表示"未完全核验通过"
+  （有句子但含未验证推断、或引用恢复过），**不等于拒答**；`qa/service.py` 自己的定义是
+  "无句子才算拒答"（`if not decision.grounded and not sentences:`）。
+  - 实测后果（live 3 篇）：paper 1 里一条 `mode=generated`、**交付了 3 条答案句**（`ms=18201`）的
+    回答被算成"可回答却被误拒"，`answerable_false_refusal_rate` 从真实的 **0** 虚报成 **0.5**；
+    paper 3 从 **0.5** 虚报成 **0.75**。
+  - 改为按 `mode == "abstained"` 判（无 `mode` 的旧记录退化为"无句子且无文本"），
+    实测变为 **0.0 / 0.25 / 0.5**。
+  - **必须说明方向**：这一改使数字**变好**，所以我格外查了原始证据——逐条打印了
+    `mode / grounded / statements / elapsed_ms`（见下），确认那些被记为"误拒"的回答确实交付了内容。
+    这不是放宽阈值，是把判据从不成立的 `grounded` 换成语义正确的 `mode`。修正后 paper 3 仍有
+    **0.5 的真实误拒率**（4 道可答章节题里有 2 道被拒答），这个"难看但真实"的数字被保留下来。
+- **修正 4 顺带发现的**：那 2 道被拒答的题（paper 3 的「2 相关背景」「3 Solidity…设计」）**不是**
+  检索坏了——插桩显示 `_retrieve` 有 5 命中、无告警，但 hybrid 的向量通道把**别的章节**排到了前面，
+  章节标题块没进 top-5，模型遂判"证据不足"并返回空 claims（按设计尊重拒答）。
+  **验证实验**：只把该章节自己的 2 个块喂给 `_draft`，两道题都产出了**带证据的验证句**
+  → 根因是"问句点名了章节，检索却不保证召回该章节"。修法（章节通道）记在 D-54。
+- 回归测试 `test_eval_metric_reporting.py`（15 条：拒答判据 5 / proxy 三项 / recovery 四项 / 时延三项）。
+
+## D-53 已观测到的模型能力必须复用（否则每次结构化调用都白撞 schema）
+
+- **缺陷**：`ai/service.py` 的 `caps.observe(...)` 一直在**记录**"该模型不接受 json_schema"，但 `complete()` 决策时**不读**——每次结构化调用仍先撞 `json_schema`，失败后才回退 `json_object`。实测 `qwen3.6-plus` 单次抽取因此有 **3 次白撞**，总耗时从 ~125s 涨到 **494s**（吃掉 `INGEST_BUDGET_WALL_MS=600000` 的 82%）。
+- **决策**：进入 `json_schema` 尝试循环前先查 `caps.capabilities_for(model_override or provider.model)`；若 `json_schema is False`，**只跳过这一层循环**，继续走 `json_object` 回退。
+- **一个差点犯的错**：第一版把短路条件直接加到外层 `if binding.json_schema is not None and observed.json_schema is not False:` 上——而 `json_object` 回退循环**嵌在同一个 if 里**，于是连回退一起跳过、直接掉进"路径二纯文本"，结构化绑定再也拿不到 JSON。测试立刻抓到（第二次调用 `sent` 为空、`object_tries == 0`）。教训：**短路要贴着它真正想跳过的那一层**，别改外层守卫条件。
+- **口径说明**：`observed.json_schema is not False` 而非 `is not None`——`None` 表示"尚未观测"，必须照常尝试（首次仍要试，试过才知道）。
+- 回归测试 `test_ai_capability_reuse.py`（2 条：首次仍尝试 schema / 第二次记下 False 后 schema 0 次尝试且仍有 json_object 调用）。
+
 ## D-47 附（措辞修正）
 
 原文写"Compose 的 `.env` 是按当前工作目录查找的"，实测更精确的说法是：**Compose 先看当前工作目录的 `.env`、再看项目目录（compose 文件所在目录）的 `.env`，前者优先**。证据：`backend/.env` 存在时（以 `backend/` 为 CWD）端口/CORS 被它覆盖成 8001/3001；把它改名后，同样的工作目录又能正确读到根 `.env`（8002/4002、`DEMO_MODE=false`）。
