@@ -126,6 +126,13 @@ def answer(
         note = GENERATED_NOTE if mode == "generated" else EXTRACTIVE_NOTE
     else:
         note = decision.reason
+        if sentences and not (draft_text or "").strip():
+            # 实测（ADR-0060）：模型有时把 ``answer`` 留空、只给 claims，句子仍能通过 gate。
+            # 此时界面会同时看到"有正文"和"答案文本为空"，容易被读成自相矛盾 —— 写清楚来源。
+            note = (
+                "模型未给出整体结论（answer 为空），本回答由**通过证据校验的事实句**组成，"
+                "因此不整体标为 grounded。"
+            ) + (f"（{decision.reason}）" if decision.reason else "")
         mode = "abstained" if not sentences else mode
 
     record = AnswerRecord(
@@ -207,6 +214,25 @@ def _is_paper_related(question: str, hits: Sequence[RetrievalHit]) -> bool:
     return False
 
 
+def _completion_text(result) -> str:
+    """从 ``CompletionResult`` 里取**纯文本正文**。
+
+    真实缺陷（ADR-0060）：``CompletionResult`` **没有 ``text`` 字段** —— 走"路径二：纯文本"时
+    正文放在 ``value`` 里（``CompletionResult(value=result.text, mode="text")``）。
+    此前这里读 ``getattr(result, "text", "")``，于是**永远拿到空串**、通用回答永远返回 None，
+    线上表现为"问与论文无关的问题仍被拒答"。单测当时也照着这个错假设伪造了 ``text=`` 的对象，
+    所以两边一起错——现在单测改用**真实契约类型**构造返回值。
+    """
+    value = getattr(result, "value", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    # 极少数路径会把正文塞在 text（保持兼容），或 value 是可转字符串的对象
+    text = getattr(result, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    return ""
+
+
 def _general_answer(
     scope: Scope, question: str, ctx: Optional[CallContext], warnings: List[Warning],
 ) -> Optional[AnswerRecord]:
@@ -242,8 +268,13 @@ def _general_answer(
         ))
         return None
 
-    body = str(getattr(result, "text", "") or "").strip()
+    body = _completion_text(result)
     if not body:
+        warnings_list.append(Warning(
+            code="general_answer_empty",
+            message="通用回答返回空正文，按无证据处理",
+            stage="qa",
+        ))
         return None
     return AnswerRecord(
         scope=scope,

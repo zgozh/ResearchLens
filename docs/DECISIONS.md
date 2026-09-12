@@ -853,6 +853,43 @@
   UI 文案已改为说明"显式编号、题注匹配、或同页/相邻页三者都不满足才不绑"。
 - 回归测试 `test_method_step_proximity_refs.py`（7 条：位置兜底 4 / 来源标注 3）。
 
+## D-60 旧问答入口的三个真缺陷：500、**从不调用模型**、通用回答拿到空正文
+
+- **怎么发现的**：给 D-57 补**线上**验收（此前只跑了单测）时暴露的 —— 问论文问题 **HTTP 500**，
+  问与论文无关的问题**仍被拒答**。三条证据都来自容器内 traceback 与线上响应，不是推断。
+- **缺陷 1：带证据的回答必然 500**。`qa/legacy.py:63` 读
+  ``ev.source_region[0].block_id`` → ``AttributeError: 'AnchorSegment' object has no attribute
+  'block_id'``。**这个 bug 早前在 `schemas/adapters.py` 修过**（改叫 `_legacy_region_label`），
+  但 `qa/legacy.py` 里是**另一份手写副本**，没同步 → 旧接口只要答出内容就 500。
+  **修法**：删掉副本，`qa/legacy.to_legacy_answer` 直接委托 `schemas/adapters.to_legacy_answer`，
+  并加测试断言**两处投影逐字段相等** —— 同一份投影写两遍，迟早只修一处（这次就是）。
+- **缺陷 2：旧入口 `_legacy_ctx` 直接 `return None`** → `_draft` 看到 `snapshot_id is None`
+  就走 `llm_unavailable` **抽取降级**：旧接口**从来不调用生成模型**；同时
+  `_general_answer` 要求 `_snapshot_id(ctx)`，于是 D-57 的"通用回答"在旧接口上**永不触发**。
+  **修法**：给旧入口建带**论文模型快照**与预算的 `CallContext`（取不到就退化为旧行为，不 500）。
+- **缺陷 3：通用回答拿到空正文**。`ai/service.complete` 的"路径二：纯文本"把正文放在
+  **`value`** 里（``CompletionResult(value=result.text, mode="text")``），而
+  `CompletionResult` **根本没有 `text` 字段**；`_general_answer` 却读 ``result.text``
+  → **永远空串** → 永远返回 None → 退回拒答。
+  - **我的单测当时也照着这个错假设伪造了 ``text=`` 的对象，所以"单测通过、线上失败"**。
+    修法：抽 `_completion_text(result)` 正确读 `value`，并让单测**改用真实契约类型
+    `CompletionResult` 构造返回值**（不再手搓 SimpleNamespace），另加一条回归锁。
+- **顺带**：模型有时把 `answer` 留空、只给 claims（句子仍能过 gate），界面会同时显示
+  "有正文"与 note="答案文本为空"，容易被读成自相矛盾 → note 改为
+  "模型未给出整体结论（answer 为空），本回答由**通过证据校验的事实句**组成，因此不整体标为 grounded"。
+- **线上实测（修复后，5/5 通过）**：
+
+  | 问题 | mode | grounded | 有正文 |
+  |---|---|---|---|
+  | 什么是量子纠缠？ | **general** | false | 是 |
+  | 推荐几部科幻电影 | **general** | false | 是 |
+  | 本文提出的方法是什么？ | generated | true | 是 |
+  | 图 3 说明了什么？ | generated | true | 是 |
+  | 本文是如何使用 Kubernetes…？ | abstained | false | 否（仍正确拒答） |
+
+- 回归测试 `test_qa_legacy_projection.py`（4 条：带证据不崩、mode 透传、**两处投影一致**、
+  旧入口 ctx 带模型快照）与 `test_qa_general_mode.py` 新增 2 条（真实契约类型 + note 解释 + `_completion_text` 回归锁）。
+
 ## D-47 附（措辞修正）
 
 原文写"Compose 的 `.env` 是按当前工作目录查找的"，实测更精确的说法是：**Compose 先看当前工作目录的 `.env`、再看项目目录（compose 文件所在目录）的 `.env`，前者优先**。证据：`backend/.env` 存在时（以 `backend/` 为 CWD）端口/CORS 被它覆盖成 8001/3001；把它改名后，同样的工作目录又能正确读到根 `.env`（8002/4002、`DEMO_MODE=false`）。

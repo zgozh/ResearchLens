@@ -1,4 +1,4 @@
-﻿"""证据问答**不受限**：非论文问题走通用回答，不再"无证据即拒答"（ADR-0057）。
+"""证据问答**不受限**：非论文问题走通用回答，不再"无证据即拒答"（ADR-0057）。
 
 用户要求（原话）："证据问答功能应该不受限制问答，不应该无证据 → 拒绝编造，
 应该只是聊到论文相关的东西才查到该论文相关的东西。"
@@ -84,7 +84,12 @@ class TestPaperRelatedClassifier:
 
 class TestGeneralAnswer:
     def test_non_paper_question_is_answered_not_refused(self, real_scope, monkeypatch):
-        """与论文无关的问题 → ``mode="general"``，有正文、note 说明未用论文证据。"""
+        """与论文无关的问题 → ``mode="general"``，有正文、note 说明未用论文证据。
+
+        **用真实契约类型 ``CompletionResult``**：此前单测伪造了一个带 ``text=`` 的对象，
+        而真实类型只有 ``value`` —— 于是"单测通过、线上仍然拒答"（ADR-0060）。
+        """
+        from app.contracts.ai import CompletionResult
         from app.contracts.qa import QARequest
         from app.modules import ai as ai_module
         from app.modules.qa import service as qs
@@ -94,21 +99,29 @@ class TestGeneralAnswer:
         )
         monkeypatch.setattr(
             ai_module, "complete",
-            lambda request, ctx=None: SimpleNamespace(
-                value=None, text="量子纠缠是指两个粒子状态不可分。", model="m",
-                usage=None, mode="text", attempts=1, warnings=[],
+            lambda request, ctx=None: CompletionResult(
+                value="量子纠缠是指两个粒子状态不可分。", model="m", mode="text",
             ),
         )
         monkeypatch.setattr(qs, "_retrieve", lambda *a, **k: ([], []))
         monkeypatch.setattr(qs, "_snapshot_id", lambda ctx: "snap-1")
 
-        rec = qs.answer(
-            real_scope, QARequest(question="什么是量子纠缠？"), new_ctx(real_scope))
+        rec = qs.answer(real_scope, QARequest(question="什么是量子纠缠？"), new_ctx(real_scope))
         assert rec.mode == "general", f"应走通用回答，实际 {rec.mode}"
         assert rec.text.text.strip(), "通用回答必须有正文"
         assert rec.grounded is False, "通用回答不得标 grounded"
         assert "通用" in (rec.note or "") or "未使用论文" in (rec.note or ""), rec.note
         assert not rec.statements, "通用回答不带论文断言"
+
+    def test_completion_text_reads_value_not_text(self):
+        """回归锁：``CompletionResult`` 的纯文本正文在 ``value`` 里，不在 ``text``。"""
+        from app.contracts.ai import CompletionResult
+        from app.modules.qa import service as qs
+
+        assert qs._completion_text(CompletionResult(value="正文", mode="text")) == "正文"
+        # 空的/非法形状不得被当成正文
+        assert qs._completion_text(CompletionResult(value=None, mode="text")) == ""
+        assert qs._completion_text(CompletionResult(value={"a": 1}, mode="json_object")) == ""
 
     def test_paper_question_without_evidence_still_abstains(self, real_scope, monkeypatch):
         """**不编造**这条纪律不变：问了论文但检索不到证据 → 仍如实拒答。"""
@@ -144,4 +157,45 @@ class TestGeneralAnswer:
             [answer], [GoldenQuestion(id="g1", scope=SCOPE, question=q, answerable=True)]
         )
         assert false_refusal.value.value == 0.0, "通用回答不该被算成'可答却拒答'"
+
+
+class TestEmptyDraftNoteIsClear:
+    """模型只给 claims、``answer`` 留空时，note 必须解释清楚（ADR-0060）。
+
+    实测现象：界面同时显示"有正文"和 note="答案文本为空"，会被读成自相矛盾。
+    """
+
+    def test_note_explains_sentence_assembled_answer(self, real_scope, monkeypatch):
+        from app.contracts.ai import Usage
+        from app.contracts.qa import QARequest
+        from app.modules.qa import service as qs
+
+        monkeypatch.setattr(
+            type(qs.settings), "has_llm", property(lambda self: True), raising=False,
+        )
+        monkeypatch.setattr(qs, "_retrieve", lambda *a, **k: ([_hit("片段", vector=0.8)], []))
+        # 必须有 snapshot id，否则 `_draft` 直接走 llm_unavailable 抽取降级，到不了 _llm_draft
+        monkeypatch.setattr(qs, "_snapshot_id", lambda ctx: "snap-1")
+        # 草稿：answer 空、claims 非空；句子经 gate 通过（这里直接伪造 gate 与句子）
+        monkeypatch.setattr(
+            qs, "_llm_draft",
+            lambda *a, **k: ("", [{"text": "事实句", "block_ids": ["b1"], "quote": "片段"}],
+                             Usage()),
+        )
+        monkeypatch.setattr(qs, "_gate_claims", lambda *a, **k: [_stmt(real_scope)])
+        monkeypatch.setattr(
+            qs.gate, "assess",
+            lambda *a, **k: SimpleNamespace(grounded=False, reason="答案文本为空",
+                                            confidence="Low"),
+        )
+        rec = qs.answer(real_scope, QARequest(question="本文的方法是什么？"), new_ctx(real_scope))
+        assert rec.text.text.strip(), "仍应给出由句子组成的正文"
+        assert "通过证据校验的事实句" in (rec.note or ""), rec.note
+
+
+def _stmt(scope):
+    from app.contracts.evidence import VerifiedStatement
+
+    return VerifiedStatement(scope=scope, id="s1", claim_id="c1", text="事实句",
+                             evidence_ids=["e1"], display_class="verified_fact")
 
