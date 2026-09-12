@@ -2,6 +2,7 @@
 
 import type { TableOut } from '@/lib/types';
 import { cn } from '@/lib/cn';
+import { renderMathInHtml } from '@/lib/mathHtml';
 
 /** 安全地渲染原始表格：优先展示 MinerU 原始 HTML 表（保留原格式/合并单元格/公式），
  *  仅当无 table_html 时才回退到 content 矩阵。已做基础消毒（去 script/on* 事件）。 */
@@ -15,7 +16,8 @@ function sanitizeTableHtml(html: string): string {
 }
 
 export function TableRender({ table, className }: { table: TableOut; className?: string }) {
-  const html = sanitizeTableHtml(table.table_html || '');
+  // 表格 HTML 里夹着 LaTeX（实测 `$1.0 \cdot 10^{20}$`）：先消毒，再就地渲染成公式
+  const html = renderMathInHtml(sanitizeTableHtml(table.table_html || ''));
   if (html) {
     return (
       <div

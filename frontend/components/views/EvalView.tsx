@@ -140,7 +140,7 @@ export function EvalView({
           </div>
           {scoreBasis === 'ai' && (
             <p className="mt-2 text-[10px] leading-relaxed text-amber-300/70">
-              AI 口径：support_precision/recall 由 **LLM 语义裁判**按语义判等给出（proxy），
+              AI 口径：support_precision/recall 由 LLM 语义裁判按语义判等给出（proxy），
               金标集未经人工确认 → 不是人工真值分。
             </p>
           )}
@@ -154,17 +154,17 @@ export function EvalView({
               <span>
                 {scoreAvailable ? null : aiScoreAvailable ? (
                   <>
-                    上面是 **AI 评测口径**的分数：金标集是机器从原文构造的草案（未人工确认），
+                    上面是 AI 评测口径的分数：金标集是机器从原文构造的草案（未人工确认），
                     所以 support_precision/recall 标为 proxy、由 LLM 语义裁判判等给出。
                     人工真值口径的综合评分仍不出（避免"让模型给自己出卷子"）。
                   </>
                 ) : goldenTuning ? (
-                  '综合评分尚未产出：金标集是**机器从原文自动构造的草案**，未经过人工确认，'
+                  '综合评分尚未产出：金标集是机器从原文自动构造的草案，未经过人工确认，'
                   + '因此不当作真值（避免"让模型给自己出卷子"）；AI 裁判本次也未给出结论。'
                 ) : (
                   '本篇尚未产出可用的综合评分：核心指标缺真值（需要 Golden Set 与已跑通的问答轨迹）。'
                 )}
-                界面**不以 0 分冒充通过**，缺失项一律标注"未评测"。
+                界面不以 0 分冒充通过，缺失项一律标注"未评测"。
               </span>
             </div>
           )}
@@ -271,7 +271,7 @@ export function EvalView({
           <div className="mt-5 rounded-xl border border-white/10 bg-white/[0.02] p-3.5">
             <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-400">
               <Info className="h-3.5 w-3.5" />
-              未评测指标（{notEvaluated.length} 项）——不是 0 分，是**尚无真值**：
+              未评测指标（{notEvaluated.length} 项）——不是 0 分，是尚无真值：
             </div>
             <div className="flex flex-wrap gap-1.5">
               {notEvaluated.map((name) => (

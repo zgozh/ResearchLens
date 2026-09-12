@@ -70,7 +70,7 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
             {/* 这行此前写死"作用 → 输入 → 骨干 → 模块 → 预测"，与实现不符（会误导）：
                 实际是"方法/实验章里按原文顺序排列的已验证断言，每条一步"。 */}
             <p className="mt-1 text-sm text-slate-400">
-              每个步骤 = 方法/实验章节里的一条**已验证断言**，按原文顺序排列；点击可查看该步骤的
+              每个步骤 = 方法/实验章节里的一条已验证断言，按原文顺序排列；点击可查看该步骤的
               原文依据与关联图表。
             </p>
           </div>
@@ -221,7 +221,7 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
                 return (
                   <p className="mt-2 text-[11px] text-amber-300/70">
                     {inferred.length > 0
-                      ? `其中 ${inferred.map((n) => `图/表 ${n}`).join('、')} 为**位置推断**`
+                      ? `其中 ${inferred.map((n) => `图/表 ${n}`).join('、')} 为位置推断`
                         + '（与断言同页或相邻页，非题注文字匹配）；其余为陈述显式引用或题注匹配。'
                       : '引用来源：陈述显式编号 或 题注文字匹配（均为可复核关联）。'}
                   </p>
@@ -229,16 +229,13 @@ export function MethodView({ detail, accent }: { detail: PaperDetail; accent: st
               })()}
               {stepFigures.length === 0 && relatedTables.length === 0 && (
                 <p className="mt-4 text-[12px] text-slate-500">
-                  该步骤的断言尚未绑定图表（证据门只把显式编号、题注词面重合、或**同页/相邻页**
-                  的图表绑上；都不满足就不绑，避免给出无关的图）。
+                  该步骤的断言没有可核实的图表关联（陈述里没写编号、题注不重合、同页/相邻页也没有图表），
+                  按“宁缺勿造”不关联任何图表。
                 </p>
               )}
-              {hero && stepFigures.length === 0 && relatedTables.length === 0 && (
-                <button onClick={() => heroRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-                  className="mt-2 inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-white/[0.03] px-4 py-2 text-[13px] font-medium text-indigo-300 transition hover:bg-white/[0.06]">
-                  <FileText className="h-4 w-4" /> 查看论文原图（图 {hero.fig_no}，非本步骤专属）
-                </button>
-              )}
+              {/* 用户要求：**该步骤什么都没引用时不要给出引用**。此前这里会给一个
+                  "查看论文原图（非本步骤专属）"的按钮 —— 那既不是它的证据，也会被读成
+                  "这就是本步骤的图"，已移除。 */}
             </GlassCard>
           </motion.div>
         </AnimatePresence>

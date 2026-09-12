@@ -342,10 +342,42 @@ def job_status(job_id: int, db: Session = Depends(get_db)):
 
 
 # ------------------------------------------------------------------ helpers
+def _official_url_for(p: models.Paper) -> str:
+    """论文的"官网/原文"链接（ADR-0069）。
+
+    真实缺陷（用户实测）：``pdf_url`` 存的是**容器内路径**
+    （``/app/data/uploads/attention-is-all-you-need.pdf``），前端把它当相对路径拼到
+    ``http://localhost:4002/app/data/...`` → 一定 404。修法两条：
+    1. 网址导入的论文有**原始来源 URL**（``sources.source_url``）→ 直接用官网地址；
+    2. 上传件没有官网地址 → 指向本服务的文档接口 ``/api/papers/{id}/document``
+       （那是**可访问的**地址，不是容器内路径）。
+    """
+    if not p.pdf_url:
+        return ""
+    try:
+        from sqlalchemy import select as _select
+
+        from app.core.db import SessionLocal as _SL
+        from app.models.source import SourceDocumentORM
+
+        with _SL() as db:
+            row = db.execute(
+                _select(SourceDocumentORM.source_url)
+                .where(SourceDocumentORM.paper_id == p.id)
+                .order_by(SourceDocumentORM.created_at.desc())
+                .limit(1)
+            ).scalars().first()
+        if row:
+            return str(row)
+    except Exception:  # noqa: BLE001  来源不可读时退回文档接口
+        pass
+    return f"/api/papers/{p.id}/document"
+
+
 def _paper_out(p: models.Paper) -> PaperOut:
     return PaperOut(
         id=p.id, slug=p.slug, title=p.title, subtitle=p.subtitle, authors=p.authors or [],
         year=p.year, domain=p.domain, abstract=p.abstract or "", tags=p.tags or [],
         source_mode=p.source_mode, status=p.status, map_summary=p.map_summary or {},
-        pdf_url=p.pdf_url or "", method_steps=p.method_steps or [],
+        pdf_url=_official_url_for(p), method_steps=p.method_steps or [],
     )

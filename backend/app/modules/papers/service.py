@@ -486,6 +486,35 @@ def _coerce_legacy_method_steps(raw: Any) -> List[dict]:
     return steps
 
 
+def _official_url(db, row) -> str:
+    """论文对外可访问的"官网/原文"地址（ADR-0069）。
+
+    真实缺陷（用户实测）：``papers.pdf_url`` 存的是**容器内路径**
+    （``/app/data/uploads/attention-is-all-you-need.pdf``），前端把它拼成
+    ``http://localhost:4002/app/data/...`` → 必然 404，"查看论文官网"点不动。
+    修法：① 网址导入的论文用**原始来源 URL**（``source_documents.source_url``）；
+    ② 上传件没有官网地址 → 指向本服务的文档接口 ``/api/papers/{id}/document``（可访问）。
+    """
+    if not getattr(row, "pdf_url", ""):
+        return ""
+    try:
+        from sqlalchemy import select as _select
+
+        from app.models.source import SourceDocumentORM
+
+        url = db.execute(
+            _select(SourceDocumentORM.source_url)
+            .where(SourceDocumentORM.paper_id == row.id)
+            .order_by(SourceDocumentORM.created_at.desc())
+            .limit(1)
+        ).scalars().first()
+        if url:
+            return str(url)
+    except Exception:  # noqa: BLE001  来源不可读时退回文档接口
+        pass
+    return f"/api/papers/{row.id}/document"
+
+
 def get_metadata(paper_id: PaperId) -> LegacyPaperMetadata:
     """旧详情元数据投影（不含可变 ORM 实例穿越）。"""
     with session_scope() as db:
@@ -499,7 +528,7 @@ def get_metadata(paper_id: PaperId) -> LegacyPaperMetadata:
             abstract=row.abstract or "",
             tags=list(row.tags or []),
             map_summary=dict(row.map_summary or {}),
-            pdf_url=row.pdf_url or "",
+            pdf_url=_official_url(db, row),
             method_steps=steps,
         )
 

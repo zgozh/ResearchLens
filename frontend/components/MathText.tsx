@@ -19,7 +19,10 @@ function cleanPlain(text: string): string {
     .replace(/\\&/g, '&')
     .replace(/\\#/g, '#')
     .replace(/\\\{/g, '{')
-    .replace(/\\\}/g, '}');
+    .replace(/\\\}/g, '}')
+    // **孤立美元符**：MinerU 的标记偶发落单（实测 paper 7 有 `$` 后跟一大段正文再出现下一个 `$`），
+    // 配不成公式就原样显示，用户看到的就是"乱码"。这里把**没能配对**的 `$` 直接去掉。
+    .replace(/\$/g, '');
 }
 
 function toKatex(tex: string, display: boolean): string {

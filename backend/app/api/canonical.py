@@ -473,6 +473,8 @@ class RebuildDerivedBody(BaseModel):
     # 图表绑定（statement→media）：确定性、不调 LLM。绑定规则升级后**必须回填**，
     # 否则方法步骤的图表引用会一直停留在旧规则的结果上（ADR-0059）。
     bindings: bool = True
+    # 模型快照回填：早期导入的 revision 没登记快照 → 问答退化成"无模型"（ADR-0067）
+    snapshot: bool = True
     structure: bool = False  # 结构/论文地图/方法步骤——**会调用 LLM**，故默认关闭
 
 
@@ -513,6 +515,26 @@ def rebuild_derived(
             "embedding_space": index_result.embedding_space,
             "warnings": [w.code for w in (index_result.warnings or [])],
         }
+
+    # 模型快照回填（ADR-0067）：早期由网址/上传导入的 revision 没登记
+    # ``model_snapshot_id`` → 问答退化成"无模型"（通用回答永远返回 None，界面转圈后没反应）。
+    if body.snapshot:
+        try:
+            from app.core.db import session_scope as _scope
+            from app.models.source import RevisionORM
+            from app.modules.ai import capabilities as capabilities_mod
+            from app.modules.papers import repository as papers_repo
+
+            snap = capabilities_mod.get_snapshot()
+            data = snap.model_dump() if hasattr(snap, "model_dump") else dict(snap)
+            with _scope() as db:
+                snapshot_id = papers_repo.find_or_create_snapshot(db, data).id
+                row = db.get(RevisionORM, scope.revision_id)
+                if row is not None:
+                    row.model_snapshot_id = snapshot_id
+            result["snapshot"] = {"model_snapshot_id": snapshot_id, "backfilled": True}
+        except Exception as exc:  # noqa: BLE001  回填失败不得让重建整体失败
+            result["snapshot"] = {"error": f"{type(exc).__name__}: {exc}"}
 
     if body.bindings:
         # 绑定规则升级后的**回填入口**（ADR-0059）：方法步骤的图表引用来自这些绑定，

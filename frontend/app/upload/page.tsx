@@ -128,7 +128,7 @@ export default function UploadPage() {
               <Btn type="submit" variant="primary">下载并处理</Btn>
             </form>
             {/* 示例论文网址：**全部实测可解析**（下载得到真 PDF，不是摘要页/HTML）。
-                选这些是因为它们是开放获取的**PDF 直链**——摘要页贴进来会返回 HTML，
+                选这些是因为它们是开放获取的PDF 直链——摘要页贴进来会返回 HTML，
                 后端现在会明确拒绝并提示改用直链（ADR-0064）。 */}
             <div className="mt-4 text-left">
               <p className="mb-2 text-[11px] text-slate-500">
@@ -150,7 +150,7 @@ export default function UploadPage() {
                 ))}
               </div>
               <p className="mt-2 font-mono text-[10px] text-slate-600">
-                点击只会**填入输入框**，不会自动下载；确认后再按"下载并处理"。
+                点击只会填入输入框，不会自动下载；确认后再按"下载并处理"。
               </p>
             </div>
             <p className="mt-3 text-left font-mono text-[11px] text-slate-600">

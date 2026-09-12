@@ -6,6 +6,7 @@ import { ChevronDown, FileText, Table2, Image as ImageIcon, Expand } from 'lucid
 import type { ReactNode } from 'react';
 import type { PaperDetail, SectionOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
+import { absoluteApiUrl } from '@/lib/api';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { FigureImage } from '@/components/FigureImage';
 import { TableRender } from '@/components/TableRender';
@@ -57,9 +58,12 @@ export function MapView({ detail, accent, onOpenSection }: {
           <span>领域 · {detail.domain}</span>
           <span>图表 · {detail.figures?.length ?? 0} 图 / {detail.tables?.length ?? 0} 表 · 章节 {detail.sections?.length} 个</span>
           {detail.pdf_url && (
-            <a href={detail.pdf_url} target="_blank" rel="noreferrer"
+            // `pdf_url` 现在给的是**可访问地址**：网址导入的是官网 URL，上传件是本站文档接口
+            // （`/api/papers/{id}/document`）。后者必须补成绝对地址，否则会拼到前端域名上
+            // （用户实测点开 404）。见 ADR-0069。
+            <a href={absoluteApiUrl(detail.pdf_url)} target="_blank" rel="noreferrer"
                className="inline-flex items-center gap-1 text-indigo-300 hover:text-indigo-200">
-              <ImageIcon className="h-3.5 w-3.5" /> 查看论文官网 ↗
+              <ImageIcon className="h-3.5 w-3.5" /> 查看论文原文 ↗
             </a>
           )}
         </div>

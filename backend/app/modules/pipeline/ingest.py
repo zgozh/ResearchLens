@@ -33,6 +33,24 @@ log = logging.getLogger("researchlens.pipeline.ingest")
 _TERMINAL = ("succeeded", "partial", "failed", "cancelled")
 
 
+def _ingest_ctx(paper_id: int, revision_id: str = ""):
+    """建 revision 用的 CallContext：**必须带运行时模型快照**（ADR-0067）。
+
+    真实缺陷：``create_revision`` 只在 ``ctx.model_snapshot`` 非空时才登记
+    ``model_snapshots`` 行并把 ``revision.model_snapshot_id`` 指向它。这里以前传 ``None``，
+    于是**通过网址/上传导入的论文 revision 没有快照** → ``snapshot_for_revision`` 回退到
+    运行时快照（**没有 id**）→ ``qa._snapshot_id(ctx)`` 为 None → 下游一律按"无模型"处理：
+    问答退化成抽取式、**通用回答永远返回 None**（用户实测"问了转圈后没反应"）。
+    """
+    try:
+        from app.modules.ai import capabilities as capabilities_mod
+
+        snapshot = capabilities_mod.get_snapshot()
+    except Exception:  # noqa: BLE001  拿不到快照不阻断 ingest（只是记录不到）
+        snapshot = None
+    return new_ctx(Scope(paper_id=paper_id, revision_id=revision_id), snapshot=snapshot)
+
+
 def ingest_pdf_for_paper(
     paper_id: int,
     data: bytes,
@@ -52,14 +70,17 @@ def ingest_pdf_for_paper(
 
     resolved_title = (title or "").strip() or "Uploaded Paper"
     source = _store_inline_source(paper_id, data, url, resolved_title)
-    revision = papers_mod.create_revision(paper_id, _source_id_of(source), "source")
+    # 传 ctx：让 revision 登记模型快照（见 _ingest_ctx 的说明）
+    revision = papers_mod.create_revision(
+        paper_id, _source_id_of(source), "source", _ingest_ctx(paper_id),
+    )
     spec = JobSpec(
         paper_id=paper_id,
         revision_id=revision.id,
         kind="ingest",
         source=source,
     )
-    ctx = new_ctx(Scope(paper_id=paper_id, revision_id=revision.id))
+    ctx = _ingest_ctx(paper_id, revision.id)
     from app.modules.pipeline import service as svc
 
     job = svc.enqueue(spec, ctx)
@@ -126,7 +147,7 @@ def _enqueue_and_run(paper_id: int, *, data: bytes, url: str, title: str) -> int
         source_input = SourceInput(kind="url", url=url, title=title)
 
     revision = papers_mod.create_revision(
-        paper_id, _source_id_of(source_input), "source"
+        paper_id, _source_id_of(source_input), "source", _ingest_ctx(paper_id)
     )
     spec = JobSpec(
         paper_id=paper_id,
@@ -134,7 +155,8 @@ def _enqueue_and_run(paper_id: int, *, data: bytes, url: str, title: str) -> int
         kind="ingest",
         source=source_input,
     )
-    ctx = new_ctx(Scope(paper_id=paper_id, revision_id=revision.id))
+    # 跑 pipeline 的 ctx 也要带快照（分批判定/问答/判定都依赖它）
+    ctx = _ingest_ctx(paper_id, revision.id)
     job = svc.enqueue(spec, ctx)
     _run_job_inline(job.id)
     return job.id

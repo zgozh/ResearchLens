@@ -1065,6 +1065,90 @@
 - 回归测试：`test_qa_latency_and_citations.py::TestAbsentObjectRefusal`（4 条，
   含"用户三类问题不得被误伤"与"对象缺失时必须拒答且不调用模型"）。
 
+## D-67 导入的 revision 必须登记模型快照（"问了转圈后没反应"的根因）
+
+- **用户实测**："证据问答依旧是问了之后转圈圈转了一会就没反应了"。
+- **排查**（先证后端）：SSE 本身正常（8.7s、14 个事件、有 final）；再证判据：聊天类问题
+  确实被判成"非论文问题"（`_is_paper_related=False`）；**最后一层才找到**：
+  `qa._snapshot_id(ctx)` 恒为 **None**。
+- **根因**：`papers.create_revision` **只在 `ctx.model_snapshot` 非空时**才登记
+  `model_snapshots` 行并把 `revision.model_snapshot_id` 指向它；而 `pipeline.ingest`
+  建 revision 时**没传 ctx**。于是：
+  - `snapshot_for_revision` 回退到**运行时快照**（有 chat_model 但 **没有 id**）；
+  - `qa.service` 看到 `snapshot_id is None` → 判"无模型" → 草稿走**抽取式**、
+    `_general_answer` 直接返回 None（**通用回答永远不可能成功**）。
+  - 实测：paper 1–3（早期 seed）snapshot=uuid；paper **7/9/10（网址/上传导入）snapshot=None**。
+- **修法**：`pipeline.ingest` 新增 `_ingest_ctx()`（带运行时快照），建 revision 与跑 pipeline
+  都用它；`rebuild-derived` 增加 `snapshot` 项作为**老数据回填**入口（已回填 7/9/10）。
+- **实测（回填后 paper 7）**：`你好，你能做什么？` → **general，243 字，4.9s**；
+  `什么是量子纠缠？` → general 279 字；`这篇论文的主要贡献是什么？` → generated/grounded 5.3s；
+  `论文用了什么数据集？` → grounded 473 字 9.6s；`Kubernetes`（不可答）→ 仍 abstained 0.9s。
+- 回归测试 `test_ingest_model_snapshot.py`（2 条）。
+
+## D-68 表格/公式里的 LaTeX 要**就地渲染**，孤立 `$` 要清掉
+
+- **用户实测**："表 2 有类似 `$1.0 \cdot 10^{20}$` 这样的未转义字符"、"证据里显示的
+  `$P _ { d r o p } = 0 . 1$` 也是没成功转义"、"结构化导读和全文原文像一堆乱码"。
+- **查证**（不是猜）：扫描 paper 7 的 9 段章节 + 15 页文本，统计出
+  行内 `$...$` **157** 处、块级 `$$...$$` **10** 处（`MathText` 都能渲染），
+  但**跨行/落单的 `$` 有 79 处**（MinerU 标记不配对）→ 这些 `$` 会**原样显示**；
+  另外表格走的是 `table_html` + `dangerouslySetInnerHTML`（`ExtractedTable` / `TableRender`），
+  **完全没过 KaTeX** → 单元格里的 LaTeX 就是源码（表 2 的 `$1.0 \cdot 10^{20}$` 来源）。
+- **修法**：
+  1. 新增 `lib/mathHtml.ts`：`renderMathInHtml(html)` 在**已消毒的 HTML** 里把
+     `$$...$$` / `$...$` 就地替换为 KaTeX 输出（渲染失败原样保留，绝不吞内容）；
+     `ExtractedTable` 与 `TableRender` 都改用它。
+  2. `MathText.cleanPlain` 增加"清掉**未配对**的 `$`"（MinerU 残留不再是乱码）。
+- **说明**：正文里的公式本来就是渲染的（157 处走 KaTeX），之前被当成"全是乱码"的主因是
+  表格未渲染 + 落单 `$`；这两处已修。
+
+## D-69 官网链接 / 图谱表公式节点 / 问答界面 / 方法步骤文案
+
+- **"查看论文官网"跳到 localhost 的坏链**（用户实测）：`papers.pdf_url` 存的是**容器内路径**
+  （`/app/data/uploads/attention-is-all-you-need.pdf`），前端拼成
+  `http://localhost:4002/app/data/...` → 必然 404。修法（ADR-0069）：
+  ① 网址导入的论文用**原始来源 URL**（`source_documents.source_url`）；
+  ② 上传件指向本服务的文档接口 `/api/papers/{id}/document`（实测 200 application/pdf）；
+  ③ 前端对相对路径补 `absoluteApiUrl`，并把文案改成"查看论文原文"。
+  **注意**：我在 `routes.py` 里第一版写错了模型类名（`SourceORM`，实际是
+  `SourceDocumentORM`），异常被 `except` 吞掉 → 先看返回值才发现没生效；正确的中枢是
+  `papers.service._official_url`（canonical 详情走的是那条路）。实测：paper 7 →
+  `https://arxiv.org/pdf/1706.03762`；paper 10 → `/api/papers/10/document`。
+- **图谱里表/公式节点显示"不可用 + 未找到任何可展示原件资产"**：`resolveMediaPolicy` 在
+  "有源但无裁剪、无整页锚点"时**直接判 unavailable**，哪怕媒体有 `extracted.table_html/latex`。
+  修法：该分支先看有没有**提取表示**，有就给 `extracted`（标签"再排版 / 提取"），
+  于是表格/公式能在节点里显示（且经 D-68 会渲染公式）。
+- **问答界面"转圈后没反应"的第二层**（前端）：
+  1. 流**结束但没有 final**（超时/中断）时，旧代码什么都不做 → 界面静默。现在会把已收到的
+     句子落成一条消息并写明"本次回答被中断，以上是已生成的部分"，不再空白。
+  2. SSE 路径构造的 `legacy` 漏了 `mode` 字段 → 通用回答在界面上按"拒答"样式渲染；
+     已补 `mode` 透传。
+- **方法步骤文案**：用户看到 `**同页/相邻页**` 字面星号（我在 JSX 文本里写了 Markdown）→
+  已改为纯文本；并**移除**"查看论文原图（图 N，非本步骤专属）"按钮
+  （用户要求：该步骤什么都没引用时就不该给出引用）。
+  同时扫掉 EvalView / MethodView / QAView / 上传页里所有**会显示出来**的 `**`（共 9 处）。
+
+## D-70 导入即自动 AI 评测（"自动评测里全是未评测"的根因）
+
+- **用户实测**："自动评测那里的指标都是显示未评测，不是说自动评测吗，应该直接 ai 评测。"
+- **根因（两处）**：
+  1. `stage_qa_bank` 只认 `spec["bank_questions"]`，而导入流程**从不设置**它 →
+     这一步**永远 skipped** → 拒答率/引文精确率/时延**没有分母**；
+  2. `stage_evaluate` 只传 `statements + media` —— **不带金标集、不带已作答的题库** →
+     几乎所有依赖真值/答案的指标都是 `not_evaluated`。
+- **修法**：
+  - `qa_bank`：没有显式题库时，**先用金标集的问题**；没有金标集就**先让 AI 起草参考断言**
+    （带逐字引文校验），再拿它的问题去问 —— 导入完即有一套可核对的问题与真值；
+  - `evaluate`：改用旧入口的 `_input_for(scope)`（收集 statements/answers/golden/media/
+    navigation_checks），**口径与 `GET /papers/{id}/evaluation` 完全一致**。
+- **实测（paper 10，此前 10 项"未评测"）**：直接跑这两个阶段 → `qa_bank` 成功（自动建
+  AI 参考集 + 答 8 题）、`evaluate` 成功 → **未评测降到 5 项**，并出现
+  `ai_overall=65.56 / precision=0.1724 / quote=0.9333 / refusal=1.0 / anchor_page=1.0`。
+  对照：paper 1 与 paper 7 现在只剩 **1 项**未评测（`anchor_region_hit_rate` —— 原文没有
+  坐标矩形，**拒绝编造 IoU**）。
+- **代价（如实说明）**：导入时多出"AI 起草参考断言（~30s）+ 题库作答（8 题 × ~15s）"，
+  所以一次导入从 ~140s 变成 ~4 分钟；这是"导入即评测"的必要成本。
+
 ## D-47 附（措辞修正）
 
 原文写"Compose 的 `.env` 是按当前工作目录查找的"，实测更精确的说法是：**Compose 先看当前工作目录的 `.env`、再看项目目录（compose 文件所在目录）的 `.env`，前者优先**。证据：`backend/.env` 存在时（以 `backend/` 为 CWD）端口/CORS 被它覆盖成 8001/3001；把它改名后，同样的工作目录又能正确读到根 `.env`（8002/4002、`DEMO_MODE=false`）。

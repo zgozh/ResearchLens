@@ -6,13 +6,15 @@
 import { Table2 } from 'lucide-react';
 import type { Media } from '@/lib/contracts';
 import { sanitizeTableHtml } from '@/lib/sanitize';
+import { renderMathInHtml } from '@/lib/mathHtml';
 
 export function ExtractedTable({ media, onShowOriginal }: {
   media: Media;
   onShowOriginal: (mediaId: string) => void;
 }) {
   const html = media.extracted?.table_html ?? '';
-  const clean = sanitizeTableHtml(html);
+  // 先消毒，再把单元格里的 LaTeX 渲染成公式（否则用户看到的是 `$1.0 \cdot 10^{20}$` 源码）
+  const clean = renderMathInHtml(sanitizeTableHtml(html));
 
   if (!clean) {
     return (

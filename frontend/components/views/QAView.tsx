@@ -117,6 +117,9 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
           confidence: c.confidence ?? 0,
         })),
         note: f.answer.note,
+        // **mode 必须透传**：前端靠它区分"通用回答"与"拒答"（ADR-0069）。
+        // 此前 SSE 路径漏了这个字段 → 通用回答也按"拒答"样式渲染。
+        mode: (f.answer as unknown as { mode?: string }).mode,
       };
       setMsgs([
         ...msgs,
@@ -131,6 +134,51 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
       const q = streamQuestion;
       setStreamQuestion('');
       void askFallback(q);
+    }
+    // **流结束却没有 final**：以前这里什么都不做 → 用户看到的是"转圈转了一会儿就没反应"
+    // （该说话的时候界面一片空白）。现在必须给出交代：把已收到的句子/引用落成一条消息，
+    // 并明确说明"回答被中断"，而不是静默。（ADR-0069）
+    if (stream.state === 'completed' && !finalEv && !streamDoneRef.current) {
+      streamDoneRef.current = true;
+      const sentences = stream.events
+        .filter((e) => e.type === 'sentence')
+        .map((e) => {
+          const s = e.data as QASentence;
+          return { text: s.statement.text, evidenceIds: s.statement.evidence_ids };
+        });
+      const citations = stream.events
+        .filter((e) => e.type === 'citation')
+        .map((e) => (e.data as QACitation).evidence);
+      const partial = sentences.map((s) => s.text).join(' ').trim();
+      setMsgs([
+        ...msgs,
+        { role: 'user', text: streamQuestion },
+        {
+          role: 'assistant',
+          text: partial,
+          resp: {
+            answer: partial,
+            grounded: false,
+            confidence: 'Low',
+            evidence: citations.map((c) => ({
+              page: c.source_page,
+              region: c.source_region?.[0]?.page_label ?? c.anchor_id,
+              region_type: 'anchor',
+              text: c.source_text,
+              quote: c.source_text,
+              confidence: c.confidence ?? 0,
+            })),
+            note: partial
+              ? '本次回答被中断（未收到完整结果），以上是已生成的部分；可以再问一次。'
+              : '本次回答被中断或超时，没有生成内容；请再问一次或换一种问法。',
+            mode: 'interrupted',
+          },
+          sentences,
+          citations,
+          streamed: true,
+        },
+      ]);
+      setStreamQuestion('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream.state, stream.events, streamQuestion]);

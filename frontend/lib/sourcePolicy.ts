@@ -124,7 +124,20 @@ export function resolveMediaPolicy(media: Media, assets: Asset[]): MediaViewPoli
         warnings,
       };
     }
-    // 有源但既无裁剪也无页 → 明示不可用（不伪造）
+    // 有源但既无裁剪也无页 → 先看**有没有提取表示**（表格 HTML / 公式 LaTeX）：
+    // 有就给"再排版 / 提取"，而不是"不可用"。
+    // 为什么（实测）：表格与公式媒体本来就没有原图资产，旧逻辑直接判 unavailable，
+    // 用户在图表节点上看到的就是"不可用的标签 + 未找到任何可展示原件资产"。
+    if (media.extracted && (media.extracted.table_html || media.extracted.latex)) {
+      warnings.push(warn('no_original_asset', '没有原件裁剪，改为展示解析提取的再排版表示。'));
+      return {
+        default_mode: 'extracted',
+        original_asset_ids: [],
+        fallback_page_ids: [],
+        label: EXTRACTED_LABEL,
+        warnings,
+      };
+    }
     warnings.push(warn('no_original_asset', '未找到任何可展示原件资产。'));
     return {
       default_mode: 'unavailable',

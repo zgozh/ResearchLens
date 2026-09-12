@@ -458,13 +458,34 @@ def stage_exhibits(scope: Scope, spec: Dict[str, Any], ctx: CallContext) -> Stag
 
 
 def stage_qa_bank(scope: Scope, spec: Dict[str, Any], ctx: CallContext) -> StageResult:
+    """预置题库作答。
+
+    **问题从哪来（ADR-0070）**：以前只认 ``spec["bank_questions"]``，而导入流程从来不设它
+    → 这一步**永远 skipped** → 拒答率/引文精确率/时延全都没有分母 → 用户在"自动评测"里
+    看到一片"未评测"。现在没有显式题库时**自动用金标集的问题**；没有金标集就先让
+    **AI 起草参考断言**（带逐字引文校验，见 golden_builder）——这样导入完就有一套
+    可核对的问题与真值，评测才有意义。
+    """
     from app.modules import qa as qa_mod
 
     questions = list(spec.get("bank_questions") or [])
-    if not questions:
-        return _skipped("qa_bank", "未配置预置题库问题（不生成假问答）")
-
     scope_ctx = _ctx_for(scope, ctx)
+
+    if not questions:
+        try:
+            from app.core.db import session_scope
+            from app.modules.evaluation import golden_builder
+
+            with session_scope() as db:
+                golden = golden_builder.find_for_scope(db, scope)
+            if golden is None:
+                golden = golden_builder.build_and_save_ai(scope, scope_ctx)
+            questions = [q.question for q in (golden.questions if golden else []) if q.question]
+        except Exception:  # noqa: BLE001  题库准备失败按"没有题库"处理，不伪造问题
+            questions = []
+        if not questions:
+            return _skipped("qa_bank", "未能取得题库问题（不生成假问答）")
+
     try:
         answers = qa_mod.build_bank(scope, questions, scope_ctx)
     except DomainError as exc:
@@ -478,16 +499,21 @@ def stage_qa_bank(scope: Scope, spec: Dict[str, Any], ctx: CallContext) -> Stage
 
 
 def stage_evaluate(scope: Scope, spec: Dict[str, Any], ctx: CallContext) -> StageResult:
-    from app.contracts.evaluation import EvaluationInput
-    from app.modules import claims as claims_mod, evaluation as eval_mod, visual as visual_mod
+    """计算评测报告。
+
+    **必须带上金标集与已作答的题库**（ADR-0070）：以前只传 statements + media，
+    于是 ``support_precision``/拒答率/引文精确率/时延全都没有分母 → 导入完的论文在
+    "自动评测"里几乎全是"未评测"。现在复用旧入口的 ``_input_for``（它会收集
+    statements/answers/golden/media/navigation_checks），口径与
+    ``GET /papers/{id}/evaluation`` 完全一致。
+    """
+    from app.modules import evaluation as eval_mod
 
     try:
-        statements = claims_mod.get_verified_statements(scope)
-        media_result = visual_mod.list_media(scope, limit=200)
-        report = eval_mod.compute(
-            EvaluationInput(scope=scope, statements=statements, media=list(media_result.items)),
-            _ctx_for(scope, ctx),
-        )
+        from app.modules.evaluation import legacy as eval_legacy
+
+        inp = eval_legacy._input_for(scope)
+        report = eval_mod.compute(inp, _ctx_for(scope, ctx))
     except DomainError as exc:
         return _failed("evaluate", exc)
     except Exception as exc:  # noqa: BLE001
