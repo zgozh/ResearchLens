@@ -60,3 +60,9 @@ build/
 # SQLite WAL/SHM（本地运行态）
 *.db-shm
 *.db-wal
+
+# 环境文件的所有变体（含备份）：backend/.env 曾被 compose 当作影子配置，
+# 且其备份会把真实密钥带进仓库——一律忽略
+**/.env
+**/.env.*
+!**/.env.example
