@@ -32,9 +32,11 @@ from app.modules import (
     parse as parse_mod,
     pipeline as pipeline_mod,
     qa as qa_mod,
+    retrieval as retrieval_mod,
     scene as scene_mod,
     visual as visual_mod,
 )
+from pydantic import BaseModel
 from app.schemas.adapters import to_legacy_paper
 from app.schemas.canonical import Capability, ExhibitBundle, MediaIndexItem, PaperManifest, SectionIndexItem
 from sqlalchemy.orm import Session
@@ -441,6 +443,91 @@ def review(paper_id: int, body: ReviewRequest, x_admin_token: Optional[str] = He
     if body.scope.paper_id != paper_id:
         raise conflict("scope.paper_id 与路径不一致")
     return evidence_mod.review(body, actor, new_ctx(body.scope))
+
+
+# ================================================================== rebuild derived
+
+
+class RebuildDerivedBody(BaseModel):
+    """重建范围。默认只重建**不需要 LLM** 的派生产物。"""
+
+    index: bool = True      # 检索索引（chunks + vectors）：问答与检索的前提
+    graph: bool = True      # 研究图谱快照（节点/边）
+    scene: bool = True      # 讲解分镜（确定性；基于**当前**结构，改过结构再重建）
+    structure: bool = False  # 结构/论文地图/方法步骤——**会调用 LLM**，故默认关闭
+
+
+@router.post("/papers/{paper_id}/rebuild-derived")
+def rebuild_derived(
+    paper_id: int,
+    body: RebuildDerivedBody = RebuildDerivedBody(),
+    revision_id: Optional[str] = None,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """重建**派生产物**（检索索引 / 图谱 / 结构），供运维与修复后回填。
+
+    为什么需要（ADR-0037/0043）：``retrieval.index`` 与 ``graph.build`` 此前**只有脚本
+    能调**。实测 papers 1–3 的 ``chunks``/``chunk_vectors`` 全为 0（行经 seed 路径入库、
+    跳过了 pipeline 的 index 阶段），于是"证据问答"整块不可用；图谱快照也停留在旧算法上。
+    没有任何 API 能把它们补起来，只能进容器跑脚本——这不是可运维的形态。
+
+    幂等：``retrieval.index`` 按 ``(revision_id, content_hash)`` 去重；``graph.build``
+    覆盖写同 revision 的快照。
+
+    ``structure=true`` 会调用 LLM（结构/地图/方法步骤），因此**默认关闭**。
+    """
+    actor = require_admin(x_admin_token)
+    scope, _rev = _resolve_scope(paper_id, revision_id)
+    ctx = new_ctx(scope, snapshot=papers_mod.snapshot_for_revision(scope), deadline_ms=900_000)
+
+    result: dict = {
+        "scope": {"paper_id": scope.paper_id, "revision_id": scope.revision_id},
+        "actor": getattr(actor, "kind", "") or str(actor),
+    }
+
+    if body.index:
+        index_result = retrieval_mod.index(scope, ctx)
+        result["index"] = {
+            "chunk_count": index_result.chunk_count,
+            "vector_count": index_result.vector_count,
+            "status": index_result.status,
+            "embedding_space": index_result.embedding_space,
+            "warnings": [w.code for w in (index_result.warnings or [])],
+        }
+
+    if body.graph:
+        artifact = graph_mod.build(scope)
+        kinds: dict = {}
+        for node in artifact.nodes:
+            kinds[node.kind] = kinds.get(node.kind, 0) + 1
+        relations: dict = {}
+        for edge in artifact.edges:
+            relations[edge.relation] = relations.get(edge.relation, 0) + 1
+        result["graph"] = {
+            "nodes": len(artifact.nodes), "node_kinds": kinds,
+            "edges": len(artifact.edges), "edge_relations": relations,
+            "warnings": [w.code for w in (artifact.warnings or [])],
+        }
+
+    if body.structure:
+        structure = claims_mod.build_structure(scope, ctx)
+        result["structure"] = {
+            "sections": len(structure.sections),
+            "map_items": len(getattr(structure.map, "items", []) or []),
+            "method_steps": len(structure.method_steps),
+        }
+
+    if body.scene:
+        # 分镜基于**当前**结构生成；若同一请求里重建了结构，则用新结构。
+        current = structure if body.structure else claims_mod.get_structure(scope)
+        artifact = scene_mod.build(scope, current)
+        result["scene"] = {
+            "scenes": len(artifact.scenes),
+            "statement_ids": sum(len(s.statement_ids or []) for s in artifact.scenes),
+            "warnings": [w.code for w in (artifact.warnings or [])],
+        }
+
+    return result
 
 
 __all__ = ["router"]

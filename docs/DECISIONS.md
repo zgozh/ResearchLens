@@ -427,3 +427,61 @@
 2. **存量论文的问答不会跟着变**：`/qa/stream` 用 `papers_mod.snapshot_for_revision(scope)`，即 **revision pin 的 `model_snapshot_id`**（实测 paper 1 pin 的是 `fd4c8b11…` = qwen-plus）。换了运行时模型后，老论文仍然用旧模型回答；要变必须重 pin（新 revision 或显式改 `revision.model_snapshot_id`）。
 3. 切换会产生新的 snapshot id → QA 缓存键变化 → 旧答案自动失效（这是好事，不会拿旧模型的答案冒充新模型）。
 4. `VISION_MODEL=qwen-vl-max` **全项目零调用**（`services/ai.py: vision()` 无调用者），图表信息完全来自 MinerU，没有视觉模型补强。
+
+## D-40 跨块引文纠错：模型标错块号时救回**逐字存在**的引文
+
+- **决策**：新增 `locator.match_quote_across_blocks()`；`claims.service._draft_batch_from_raw` 在主匹配失败后，在**本次语料覆盖的所有块**里再找一次，命中则挂到正确的块并留 `quote_block_corrected` 告警。
+- **背景（Postgres 实测 paper 2）**：一轮 12 条断言里 **8 条**报 `quote_not_in_block`。此前的实现**只在模型自报的那个块里**找引文；而 MinerU 会把一段话拆进相邻块（跨页、表题与表体相邻），模型复述时块号极易错位，于是**逐字正确的引文**被当成"不在原文中"丢弃 → citations 空 → gate 全拒。用户看到的就是"证据链少证据、图谱少连线"。
+- **取舍**：
+  - **只认能产生 `QuoteSpan` 的档位**（`exact` / `normalized`，含空白无关匹配），**绝不接受 `fuzzy`**：纠错的前提是"这段引文确实逐字存在于某块原文"，否则就是给引文随便找个落点（等于伪造引用）。单测含两条否定用例。
+  - 纠错后回填的引文是**原文真实切片**，不是模型给的那串字（否则 gate 仍会判 `quote_not_in_block`）。
+  - 只搜**本次语料覆盖的块**（模型实际看过的那批），不扩大到全篇——避免把引用挂到模型没见过的上下文上。
+  - 廉价预筛（规范化+去空白后是否为子串）避免对每个块跑 difflib。
+- **结论**：回归测试 `test_quote_cross_block_recovery.py`（9 条）。
+
+## D-41 可见性隔离：`answer_only` 断言**不得**进入论文产物
+
+- **决策**：`claims.get_verified_statements`、`claims.build_structure`、`graph/repository.list_claims`、`scene/repository.list_claims` 一律只读 `visibility='exhibit'` 的断言；`get_verified_statements` 只排除**明确标记为 `answer_only`** 的陈述（没有 claim 行的历史陈述不误伤）。
+- **背景（Postgres 实测 paper 1）**：`claim_records` 里 `answer_only` **15 条** vs `exhibit` **5 条**。问答每次回答都会用 `register_statement` 落库一批 `answer_only` 断言，它们同样是 `verified_fact`；而上述四个读取点**都没有按 visibility 过滤**，于是问答答案被编进论文地图 / 方法步骤 / 讲解分镜 / 研究图谱 / 展项包 / 评测指标。实测：我跑过几轮问答之后，paper 1 的 `method_steps` 从 **1 条涨到 12 条**，内容全部来自 `answer_only`。用户可见后果就是"论文地图/方法动画里混进针对某次提问临时生成的句子"。
+- **取舍**：排除"已知是问答派生"的即可，不去猜来源不明的行——`test_statement_without_claim_is_kept` 锁住"不误伤"。
+- **结论**：回归测试 `test_visibility_isolation.py`（6 条）。
+- **顺带发现（未做）**：应给 `answer_only` 增加**保留期或清理策略**——它们目前永久留在库里并参与评测指标的分母候选，长期会让 `support_precision` 之类的口径漂移。
+
+## D-42 方法步骤：按**方法/实验章归属**取，且顺序必须确定
+
+- **决策**：新增 `_steps_from_sections()`——方法/实验章内按**引用块的文档位置**排序的已验证陈述即步骤，`phase` 用章节标题；归属为空时退回旧的"METHOD 类型断言"路径（`_steps_from_method_claims`）。同时给"模型给了步骤/地图但 claim_ids 全不命中"补上 `method_steps_dropped` / `map_items_dropped` 告警。
+- **背景（paper 1 实测）**：`method_steps` 只有 1 步。根因有二：① 确定性路径只把 `type == "METHOD"` 的断言当步骤，而 `_claim_type_for` 是关键词启发式（文本含"方法/算法/流程/训练"才算 METHOD）——paper 1 有 **2 个 method 章 + 1 个 experiment 章**，但 5 条展项断言里只有 1 条被判成 METHOD；② LLM 结构路径对这篇实测返回 `method_steps=0`，没有任何补充。此外丢弃步骤时**完全没有告警**，"为什么只有 1 步"在 API 里不可见。
+- **顺带修掉一个真缺陷（顺序不确定）**：`repo.list_claim_rows` 按 `ClaimRecordORM.id`（**随机 UUID**）排序，所以任何"按 claim 顺序生成序列"的地方都是**非确定**的——新写的步骤排序单测因此在全量跑时随机失败，暴露出步骤顺序每次构建都不同。现改为按引用块的文档位置排序（`doc_pos`），连跑 3 次稳定通过。
+- **取舍**：`detail` 仍留空——`ArtifactText.spans` 是 **statement 级且必须完整覆盖文本**，模型给的自由散文无法落 span（"禁止无引用副文案"的纪律）；前端读 `label` 文本渲染，不需要重复一份。这解释了 `_MethodStepDraft.detail` 被"丢弃"并非疏忽，而是契约约束；真正缺的是**可观测性**（已补告警）。
+- **结论**：回归测试 `test_method_steps_source.py`（5 条）。
+
+## D-43 `POST /papers/{id}/rebuild-derived`：让派生产物可被 API 重建
+
+- **决策**：新增 admin 端点，默认重建 `index` + `graph` + `scene`（均不需要 LLM），`structure` 为**显式 opt-in**（会调 LLM）；返回每项的计数与告警，便于核对。走既有 `require_admin(X-Admin-Token)` 模式。
+- **背景（ADR-0037 记的缺口）**：`retrieval.index` 与 `graph.build` 此前**只有脚本能调**。实测 papers 1–3 的 `chunks` / `chunk_vectors` 全为 0（经 seed 路径入库、跳过了 pipeline 的 index 阶段），"证据问答"整块不可用；图谱快照也停留在旧算法上。没有任何 API 能补——只能进容器跑脚本，这不是可运维的形态。
+- **取舍**：`structure` 默认关闭，因为它是唯一会花钱的一项；"重建"不该悄悄产生 LLM 费用。`scene` 默认开启（确定性），但**基于当前结构**——改过结构要先 `structure=true`。
+- **结论**：回归测试 `test_rebuild_derived_api.py`（5 条：错误凭据 403 / index+graph 重建并返回计数 / structure 必须显式开启 / scene 默认重建 / 重复调用幂等）。全量 pytest **433 passed**。
+
+## D-44 重抽取必须**重建** media 绑定（它自己删掉的）
+
+- **决策**：`claims.reextract` 在重抽取完成后调用 `evidence.bind_media_for_statements(scope, built.statements, ctx)`，并留 `media_bindings_rebuilt` 告警；绑定失败只记 `media_bindings_rebuild_failed`，不让重抽取整体失败。
+- **背景（paper 1 实测）**：`delete_claim_artifacts` 会删除 `bindings`（它被归类为"断言派生物"），而重抽取**从不重建它**。后果：statement→media 的 `illustrates` 边消失，图谱只剩 `supports`、讲解与"关键图表"的关联整块断掉——实测 bindings 由 **6 条变 0 条**，图谱 `illustrates` 边归零。
+- **取舍**：绑定是**派生增强**（不是断言正确性的前提），因此失败降级为告警而非异常——否则一个媒体的 caption 匹配问题会让整个重抽取白跑。
+- **结论**：修复后重抽取 paper 1：`media_bindings_rebuilt` 出现，图谱恢复 **4 条 illustrates + 8 条 supports**。回归测试 `test_reextract.py` 增至 9 条。
+
+## D-45 引文"最长逐字子串"恢复 + paper 2 失配的实测归因
+
+- **决策**：新增 `locator.match_quote_trimmed()`，作为抽取路径的**最后一道**恢复：当整串引文匹配失败时，取模型引文与原文块的**最长逐字子串**，要求 `≥20 字` 且 `≥ 引文长度 × 50%`；命中则回填**原文切片**并留 `quote_trimmed` 告警。契约上 span 标 `normalized`（不是 `exact`），因此**不计入 `quote_exact_rate`**，避免精确率虚高。
+
+### paper 2 失配的实测归因（一次抽取 15 条断言，失配 4 条）
+
+| # | 模型报的引文 | 原文块 | 归因 | 处置 |
+|---|---|---|---|---|
+| 1 | `Download Percentile (i) = \frac {n - r a n k _ {i}}{n}.` | 块里只有后半段公式 | 引文**逐字存在**，被套了非原文前缀 | ✅ 新增 trimmed 恢复救回 |
+| 2 | `use of卸载率(U-I ratio)这一相对指标…` | `使用卸载率(U-I ratio)这一相对指标…` | 模型改写（漏字/并句） | ❌ 正确拒绝 |
+| 3 | `can use users' update ratio to represent…` | 中文原句 | **模型翻译**成英文 | ❌ 正确拒绝 |
+| 4 | MSE / Kendall τ 的指标句 | 该块讲的是 Lasso/岭回归/随机森林 | 句子来自**语料外**的块（每节预算截断） | ❌ 正确拒绝 |
+
+- **结论（回答"paper 2 图谱为什么只有 1 条证据边"）**：该篇的低验证率**主要不是定位器失准，而是模型改写/翻译引文**——4 条失配里只有 1 条属于"逐字存在但被套前缀"。继续"放宽匹配"会把译文和改写作当成引用，**那才是真正的伪造**。要提升 paper 2 只能改**抽取提示词/模型**，不能松 gate。
+- **顺带观测（重要）**：同一篇论文两次抽取的失配数差异很大（10/11 vs 4/15），说明该环节**方差高**；`support_recall` 这类指标若只跑一次，噪声会盖过信号。
+- 回归测试 `test_quote_cross_block_recovery.py` 增至 14 条；全量 pytest **441 passed**。

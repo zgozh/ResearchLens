@@ -389,6 +389,27 @@ def _call_extraction(
     return result.value
 
 
+def _trimmed_across_blocks(locator_mod, proposed_quote: str, block_index, uuid, block_text):
+    """在块集合里找"最长逐字子串"（模型给引文套了非原文前后缀时）。
+
+    先试模型自报的那个块，再按语料顺序试其余块；取第一个能产生 span 的结果。
+    """
+    first = locator_mod.match_quote_trimmed(
+        block_id=uuid, text=block_text, proposed_quote=proposed_quote
+    )
+    if first is not None and first.span is not None:
+        return first
+    for other_uuid, other_text in block_index.values():
+        if other_uuid == uuid:
+            continue
+        hit = locator_mod.match_quote_trimmed(
+            block_id=other_uuid, text=other_text, proposed_quote=proposed_quote
+        )
+        if hit is not None and hit.span is not None:
+            return hit
+    return None
+
+
 def _draft_batch_from_raw(
     raw, scope: Scope, block_index: Dict[str, Tuple[str, str]]
 ) -> Tuple[List[StatementDraft], List[Warning]]:
@@ -452,9 +473,44 @@ def _draft_batch_from_raw(
                 block_id=uuid, text=block_text, proposed_quote=cite_quote
             )
             if matched.span is None:
+                # 跨块纠错（ADR-0040）：模型报的块号可能错位（MinerU 把一段话拆进相邻块、
+                # 跨页、表题与表体相邻），而引文本身**逐字存在**于别的块里。实测 paper 2
+                # 一轮 12 条断言里 8 条报 quote_not_in_block，其中相当一部分并非编造。
+                # 只在**本次语料覆盖的块**里找，且只认能产生 QuoteSpan 的档位（不含 fuzzy）。
+                recovered = locator_mod.match_quote_across_blocks(
+                    proposed_quote=cite_quote,
+                    blocks=[(v[0], v[1]) for v in block_index.values()],
+                )
+                if recovered is None or recovered.span is None:
+                    # 最后一道：引文**逐字存在**但被套了非原文前后缀（实测 paper 2：
+                    # 模型在原文句子前加了 "Download Percentile (i) = "）。
+                    # 只取最长逐字子串，且要求够长且占引文比例够高；译文仍会被拒。
+                    recovered = _trimmed_across_blocks(
+                        locator_mod, cite_quote, block_index, uuid, block_text
+                    )
+                if recovered is not None and recovered.span is not None:
+                    corrected_short = next(
+                        (k for k, v in block_index.items() if v[0] == recovered.block_id), "?"
+                    )
+                    warnings.append(Warning(
+                        code="quote_block_corrected" if recovered.kind != "trimmed" else "quote_trimmed",
+                        message=(
+                            f"引用报的是 block {short_id}，实际逐字命中 block "
+                            f"{corrected_short}（{recovered.kind}），已按原文纠正"
+                        ),
+                        stage="claims",
+                    ))
+                    citations.append(CitationCandidate(
+                        block_id=recovered.block_id,
+                        proposed_quote=recovered.span.source_text,
+                    ))
+                    continue
                 warnings.append(Warning(
                     code="quote_not_in_block",
-                    message=f"引用不在 block {short_id} 原文中，已丢弃（{matched.kind}）",
+                    message=(
+                        f"引用不在 block {short_id} 原文中、也不在本次语料任何块中，"
+                        f"已丢弃（{matched.kind}）"
+                    ),
                     stage="claims",
                 ))
                 continue
@@ -506,6 +562,28 @@ def reextract(scope: Scope, ctx: CallContext) -> ClaimBuildResult:
             stage="claims",
         )
     ]
+    # **必须重建 media 绑定**：清理阶段把 ``bindings`` 一起删了（它是断言派生物），
+    # 而 statement→media 的 ``illustrates`` 边正是图谱"断言↔图表"与讲解"关联图表"的来源。
+    # 不重建的后果实测：重抽取后 paper 1 的 bindings 由 6 条变 0 条，图谱的
+    # illustrates 边整块消失（只剩 supports），前端"关键图表"关联断掉。
+    # 绑定失败只记告警：它是派生增强，不该让重抽取整体失败。
+    try:
+        from app.modules import evidence as evidence_mod
+
+        rebound = evidence_mod.bind_media_for_statements(
+            scope, list(built.statements or []), ctx
+        )
+        warnings.append(Warning(
+            code="media_bindings_rebuilt",
+            message=f"重抽取后已重建 statement→media 绑定 {len(rebound)} 条（清理阶段删除了旧绑定）",
+            stage="claims",
+        ))
+    except Exception as exc:  # noqa: BLE001 - 派生增强失败不得中断重抽取
+        warnings.append(Warning(
+            code="media_bindings_rebuild_failed",
+            message=f"重抽取后媒体绑定重建失败，图谱关联图表可能缺失：{type(exc).__name__}",
+            stage="claims",
+        ))
     # **deadline 陷阱**（ADR-0026）：``new_ctx()`` 默认只有 120s，而真实作业由
     # ``pipeline.service`` 按 ``budget.max_wall_ms``（默认 600s）设置。重抽取要跑
     # 「一次抽取 + 每条陈述一次语义判定」，用 120s 会中途过期——语义判定全部降级为
@@ -791,13 +869,28 @@ def get_statements(scope: Scope, ids: Sequence[str]) -> List[VerifiedStatement]:
 
 
 def get_verified_statements(scope: Scope) -> List[VerifiedStatement]:
-    """只返回**已验证/推断**的陈述（场景与图谱的唯一合法输入）。"""
+    """只返回**已验证/推断**的陈述（场景与图谱的唯一合法输入）。
+
+    **必须同时排除问答派生的 ``answer_only``**（ADR-0041）：QA 回答时会用
+    ``register_statement`` 落库一批 ``visibility='answer_only'`` 的陈述，
+    它们同样是 ``verified_fact``，此前只过滤 ``display_class`` → 泄漏进
+    讲解分镜 / 研究图谱 / 展项包 / 评测指标（实测 paper 1 有 15 条 answer_only
+    对 5 条 exhibit，论文产物被问答句子污染）。
+
+    只排除**明确标记为 answer_only** 的；没有 claim 行的历史陈述一律保留，不误伤。
+    """
     _require_scope(scope)
     with session_scope() as db:
         rows = repo.list_statement_rows(db, scope.revision_id)
+        hidden = {
+            row.statement_id
+            for row in repo.list_claim_rows(db, scope.revision_id, visibility="answer_only")
+        }
         out: List[VerifiedStatement] = []
         for row in rows:
             if (row.display_class or "unverified") in ("unverified",):
+                continue
+            if row.id in hidden:
                 continue
             out.append(repo.statement_dto(scope, row))
         return out
@@ -815,7 +908,10 @@ def build_structure(scope: Scope, ctx: CallContext) -> StructureArtifact:
     _require_scope(scope)
     with session_scope() as db:
         statement_rows = repo.list_statement_rows(db, scope.revision_id)
-        claim_rows = repo.list_claim_rows(db, scope.revision_id)
+        # **只取展项断言**（ADR-0041）：问答产生的 ``answer_only`` 不得进入论文地图 /
+        # 方法步骤 / 章节概览。此前这里是全量 list_claim_rows，实测跑过几轮问答后
+        # paper 1 的 method_steps 从 1 条涨到 12 条，内容全部来自问答答案。
+        claim_rows = repo.list_claim_rows(db, scope.revision_id, visibility="exhibit")
         block_rows = repo.list_block_rows(db, scope.revision_id)
 
     verified_claims = [
@@ -1097,9 +1193,103 @@ def _structure_without_llm(
                 claim_ids=list(claim_ids),
             ))
 
+    steps = _steps_from_sections(
+        scope, sections, statement_rows, verified_claims, texts, statement_ids_by_claim,
+        {row.id: idx for idx, row in enumerate(block_rows)},
+    )
+    if not steps:
+        # 兜底：方法/实验章没有可归属的断言时，退回"METHOD 类型断言"（保持旧行为）。
+        steps = _steps_from_method_claims(
+            scope, verified_claims, texts, statement_ids_by_claim
+        )
+
+    map_artifact = (
+        MapArtifact(scope=scope, id=f"map-{scope.revision_id}", items=map_items)
+        if map_items else None
+    )
+    return StructureArtifact(scope=scope, sections=sections, map=map_artifact, method_steps=steps)
+
+
+#: 能承载"方法步骤"的章节 kind（标题确定性推断出来的）
+_STEP_SECTION_KINDS = ("method", "experiment")
+
+
+def _steps_from_sections(
+    scope: Scope, sections, statement_rows, verified_claims: List[ClaimRecord],
+    texts: Dict[str, str], statement_ids_by_claim: Dict[str, str],
+    doc_pos: Dict[str, int],
+) -> List[MethodStepRecord]:
+    """**方法/实验章内的已验证陈述** → 有序方法步骤（确定性，不调 LLM）。
+
+    为什么（真实缺陷，paper 1 实测）：此前只把 ``type == "METHOD"`` 的断言当步骤，
+    而 ``_claim_type_for`` 是关键词启发式（文本含"方法/算法/流程/训练"才算 METHOD）。
+    paper 1 有 2 个 method 章 + 1 个 experiment 章，但 5 条展项断言里只有 1 条被判成
+    METHOD → "方法动画"只有 1 步（LLM 结构路径对这篇实测返回 method_steps=0，
+    没有任何补充）。
+
+    这里改为**按章节归属**取步骤：与讲解侧同源的块级判定（陈述引用的块落在本节
+    ``source_block_ids``），文本仍是断言原文、``phase`` 用章节标题。
+    同一断言只归属一个步骤（与讲解侧同一条不变式）。
+
+    **顺序按引用块的文档位置**（``doc_pos``），不能沿用 ``verified_claims`` 的顺序——
+    后者来自 ``repo.list_claim_rows``，按 ``ClaimRecordORM.id``（随机 UUID）排序，
+    会让步骤顺序每次构建都不一样（真实缺陷：单测因此随机失败）。
+    """
     steps: List[MethodStepRecord] = []
-    method_claims = [c for c in verified_claims if c.type == "METHOD"]
-    for order, claim in enumerate(method_claims[: prompts.MAX_METHOD_STEPS]):
+    assigned: Set[str] = set()
+    statement_by_id = {row.id: row for row in statement_rows}
+    cited_blocks = {
+        cid: _citation_block_ids(statement_by_id.get(sid)) for cid, sid in statement_ids_by_claim.items()
+    }
+    for section in sections:
+        if (getattr(section, "kind", "") or "") not in _STEP_SECTION_KINDS:
+            continue
+        block_ids = set(getattr(section, "source_block_ids", []) or [])
+        if not block_ids:
+            continue
+        # 本节内、按文档顺序排列的候选
+        candidates: List[Tuple[int, ClaimRecord]] = []
+        for claim in verified_claims:
+            if claim.claim_id in assigned:
+                continue
+            hits = [b for b in cited_blocks.get(claim.claim_id, []) if b in block_ids]
+            if not hits:
+                continue
+            candidates.append((min(doc_pos.get(b, 10 ** 6) for b in hits), claim))
+        for _pos, claim in sorted(candidates, key=lambda kv: kv[0]):
+            if claim.claim_id in assigned:
+                continue
+            text = _claim_text(claim.claim_id, texts)
+            artifact = build_artifact_text(text, [statement_ids_by_claim[claim.claim_id]])
+            if not artifact.text:
+                continue
+            assigned.add(claim.claim_id)
+            steps.append(MethodStepRecord(
+                scope=scope,
+                id=f"step-{claim.claim_id}",
+                order=len(steps),
+                label=artifact,
+                # detail 仍留空：``ArtifactText`` 的 spans 是 statement 级且必须**完整覆盖**
+                # 文本，模型给的自由散文无法落 span（§"禁止无引用副文案"），
+                # 前端取 ``label`` 文本渲染，不需要重复一份。
+                detail=ArtifactText(text="", spans=[]),
+                phase=(getattr(section, "heading", "") or None),
+                claim_ids=[claim.claim_id],
+            ))
+            if len(steps) >= prompts.MAX_METHOD_STEPS:
+                return steps
+    return steps
+
+
+def _steps_from_method_claims(
+    scope: Scope, verified_claims: List[ClaimRecord],
+    texts: Dict[str, str], statement_ids_by_claim: Dict[str, str],
+) -> List[MethodStepRecord]:
+    """兜底：一条 METHOD 类型断言 = 一个步骤（旧行为，保持兼容）。"""
+    steps: List[MethodStepRecord] = []
+    for order, claim in enumerate(
+        [c for c in verified_claims if c.type == "METHOD"][: prompts.MAX_METHOD_STEPS]
+    ):
         text = _claim_text(claim.claim_id, texts)
         artifact = build_artifact_text(text, [statement_ids_by_claim[claim.claim_id]])
         if not artifact.text:
@@ -1113,12 +1303,7 @@ def _structure_without_llm(
             phase=None,
             claim_ids=[claim.claim_id],
         ))
-
-    map_artifact = (
-        MapArtifact(scope=scope, id=f"map-{scope.revision_id}", items=map_items)
-        if map_items else None
-    )
-    return StructureArtifact(scope=scope, sections=sections, map=map_artifact, method_steps=steps)
+    return steps
 
 
 def _structure_with_llm(
@@ -1191,7 +1376,8 @@ def _structure_with_llm(
         ))
 
     map_items: List[MapItem] = []
-    for idx, item in enumerate(getattr(raw, "map_items", []) or []):
+    raw_map_items = list(getattr(raw, "map_items", []) or [])
+    for idx, item in enumerate(raw_map_items):
         valid_ids = [cid for cid in (item.claim_ids or []) if cid in known]
         if not valid_ids:
             continue
@@ -1205,7 +1391,8 @@ def _structure_with_llm(
         ))
 
     steps: List[MethodStepRecord] = []
-    for idx, step in enumerate(getattr(raw, "method_steps", []) or []):
+    raw_steps = list(getattr(raw, "method_steps", []) or [])
+    for idx, step in enumerate(raw_steps):
         if idx >= prompts.MAX_METHOD_STEPS:
             break
         valid_ids = [cid for cid in (step.claim_ids or []) if cid in known]
@@ -1219,6 +1406,26 @@ def _structure_with_llm(
             scope=scope, id=f"step-{idx}-{scope.revision_id[:8]}", order=idx,
             label=artifact, detail=ArtifactText(text="", spans=[]),
             phase=step.phase, claim_ids=valid_ids,
+        ))
+    if raw_steps and not steps:
+        # 可观测性（此前是静默 continue）：模型给了步骤但**全部**因 claim_ids 对不上
+        # 而被丢弃时，必须说出来——否则"方法动画只有 1 步/ 没步骤"看起来像模型没产出。
+        warnings.append(Warning(
+            code="method_steps_dropped",
+            message=(
+                f"模型给出 {len(raw_steps)} 个方法步骤，但其 claim_ids 无一命中已验证断言，"
+                "已全部丢弃（将使用确定性章节归属生成步骤）"
+            ),
+            stage="claims",
+        ))
+    if raw_map_items and not map_items:
+        warnings.append(Warning(
+            code="map_items_dropped",
+            message=(
+                f"模型给出 {len(raw_map_items)} 条论文地图项，但其 claim_ids 无一命中已验证断言，"
+                "已全部丢弃（将使用按类型确定性生成的地图）"
+            ),
+            stage="claims",
         ))
 
     map_artifact = (

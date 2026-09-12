@@ -184,6 +184,56 @@ class TestDeleteClaimArtifacts:
         assert _counts(other_scope)["claim_records"] == 1, "不得误删其他 revision"
 
 
+class TestReextractRebuildsMediaBindings:
+    """重抽取删了 ``bindings``，就必须**重建**它（ADR-0044）。
+
+    真实缺陷（paper 1 实测）：清理阶段删除 ``bindings``（断言派生物），
+    而重抽取**从不重建** → statement→media 的 ``illustrates`` 边消失，
+    图谱只剩 supports、讲解的"关联图表"整块断掉（bindings 6 条 → 0 条）。
+    """
+
+    def test_rebinding_is_attempted_with_the_new_statements(self, world, monkeypatch):
+        from app.modules import claims as claims_mod
+        from app.modules import evidence as evidence_mod
+        from app.contracts.common import new_ctx
+
+        scope = world["scope"]
+        _seed_claim_stack(scope)
+        seen: dict = {}
+
+        def fake_bind(scope_arg, statements, ctx_arg, **kwargs):  # noqa: ANN001
+            seen["scope"] = scope_arg
+            seen["statements"] = list(statements)
+            return []
+
+        monkeypatch.setattr(evidence_mod, "bind_media_for_statements", fake_bind)
+
+        result = claims_mod.reextract(scope, new_ctx())
+
+        assert seen.get("scope") == scope, "必须对同一 revision 重建绑定"
+        assert isinstance(seen.get("statements"), list)
+        codes = [w.code for w in result.warnings]
+        assert "media_bindings_rebuilt" in codes, codes
+
+    def test_rebinding_failure_does_not_break_reextract(self, world, monkeypatch):
+        """绑定是派生增强：失败只记告警，不得让重抽取整体失败。"""
+        from app.contracts.common import new_ctx
+        from app.modules import claims as claims_mod
+        from app.modules import evidence as evidence_mod
+
+        scope = world["scope"]
+
+        def boom(*args, **kwargs):  # noqa: ANN001
+            raise RuntimeError("binding down")
+
+        monkeypatch.setattr(evidence_mod, "bind_media_for_statements", boom)
+
+        result = claims_mod.reextract(scope, new_ctx())
+
+        codes = [w.code for w in result.warnings]
+        assert "media_bindings_rebuild_failed" in codes, codes
+
+
 class TestReextract:
     def test_clears_previous_claim_rows(self, world):
         """重抽取必须先清旧断言——否则新旧 claim 混杂成孤儿。"""

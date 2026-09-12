@@ -114,9 +114,17 @@ def put_presentation_blob(
 
 
 def list_claims(db: Session, revision_id: str) -> List[ClaimRow]:
+    """讲解分镜只读取**展项断言**（``visibility='exhibit'``）。
+
+    ADR-0041：QA 回答落库的 ``answer_only`` 断言同样是 verified，
+    此前会被编进分镜（讲解里出现"针对某次提问临时生成"的句子）。
+    """
     stmt = (
         select(ClaimRecordORM)
-        .where(ClaimRecordORM.revision_id == revision_id)
+        .where(
+            ClaimRecordORM.revision_id == revision_id,
+            ClaimRecordORM.visibility == "exhibit",
+        )
         .order_by(ClaimRecordORM.claim_id)
     )
     return [

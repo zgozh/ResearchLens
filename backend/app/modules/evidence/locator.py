@@ -287,6 +287,118 @@ def locate_in_blocks(
     return QuoteMatch(kind="missing", block_id=block_id, reason="引用的 block 不在本 scope 原文中")
 
 
+#: ``match_quote_trimmed`` 的接受门槛：最长逐字子串必须同时满足"够长"与"占引文比例够高"。
+#: 50% 而非更高（实测：模型给 54 字的引文套了 28 字前缀，逐字命中 31 字 = 57%，
+#: 60% 的门槛会把这类真实可救的引文挡在外面）；``min_chars=20`` 是下限保护——
+#: 连续 20 个汉字与原文一致不可能是巧合。
+TRIMMED_MIN_CHARS = 20
+TRIMMED_MIN_RATIO = 0.5
+
+
+def match_quote_trimmed(
+    *, block_id: BlockId, text: str, proposed_quote: str,
+    min_chars: int = TRIMMED_MIN_CHARS, min_ratio: float = TRIMMED_MIN_RATIO,
+) -> Optional[QuoteMatch]:
+    """引文**逐字存在**但模型多加了前缀/后缀时，取**最长逐字子串**作为引用。
+
+    为什么需要（paper 2 诊断实测）：模型报的引文是
+    ``Download Percentile (i) = \\frac {n - r a n k _ {i}}{n}.``，而原文块里只有后半段——
+    引文内容确实存在，只是被套了一个不属于原文的前缀，于是整串匹配失败、引用被丢弃。
+    同一批失配里的**译文**（中文原文 / 英文引文）则必须继续拒绝。
+
+    **纪律**：只接受"最长逐字子串"同时满足 ``≥ min_chars`` 且 ``≥ min_ratio × 引文长度``；
+    回填的仍是**原文真实切片**。这既不放宽"必须逐字存在"，也不会让两个字的偶然重叠挂上引用。
+    """
+    quote = (proposed_quote or "").strip()
+    if not quote or not text:
+        return None
+
+    # 先按常规档位试一次：本来就逐字命中时不该被标成 trimmed
+    base = match_quote_text(block_id=block_id, text=text, proposed_quote=quote)
+    if base.span is not None:
+        return base
+
+    norm_block = normalize_with_map(text)
+    compact, compact_index = _compact_without_whitespace(norm_block)
+    needle = "".join(
+        c for c in normalize_with_map(quote, fold_case=True).norm if c.strip() != ""
+    )
+    if not compact or not needle:
+        return None
+
+    matcher = difflib.SequenceMatcher(None, compact.casefold(), needle.casefold())
+    block_match = matcher.find_longest_match(0, len(compact), 0, len(needle))
+    if block_match.size < max(min_chars, int(len(needle) * min_ratio)):
+        return None
+
+    n_start = compact_index[block_match.a]
+    n_end = compact_index[block_match.a + block_match.size - 1] + 1
+    mapped = norm_block.to_raw_span(n_start, n_end)
+    if mapped is None:
+        return None
+    start, end = mapped
+    raw_slice = text[start:end]
+    if not raw_slice.strip():
+        return None
+    return QuoteMatch(
+        kind="trimmed", block_id=block_id,
+        span=QuoteSpan(
+            block_id=block_id, start_cp=start, end_cp=end,
+            source_text=raw_slice,
+            # 契约只允许 exact|normalized。标 normalized 而不是 exact：
+            # 这段切片不是"模型给的引文的精确子串"（它被裁过），
+            # 因此**不该**计入 quote_exact_rate（否则精确率虚高，见 metrics.quote_exact_rate）。
+            match_method="normalized",
+            normalizer_version=NORMALIZER_VERSION,
+        ),
+        score=round(block_match.size / max(1, len(needle)), 4),
+        reason=f"引文含非原文前后缀，已取最长逐字子串（{block_match.size} 字）",
+    )
+
+
+def match_quote_across_blocks(
+    *, proposed_quote: str, blocks: Sequence[Tuple[BlockId, str]]
+) -> Optional[QuoteMatch]:
+    """在**多个块**里找引用，返回最佳的一个（模型标错块号时的确定性纠错）。
+
+    为什么需要（Postgres 实测 paper 2：一轮 12 条断言里 8 条 ``quote_not_in_block``）：
+    ``claims.service._draft_batch_from_raw`` 原先**只在模型自报的那个块里**找引文。
+    但 MinerU 会把一段话拆进相邻块（跨页、表题与表体相邻），模型复述时块号极易错位，
+    于是**逐字正确的引文**被当成"不在原文中"丢弃 → citations 空 → gate 全拒。
+
+    **纪律（安全网不是放宽）**：只接受能产生 ``QuoteSpan`` 的档位
+    （``exact`` / ``normalized``，含空白无关匹配），**绝不接受 ``fuzzy``** ——
+    纠错的前提是"这段引文确实逐字存在于某块原文"，否则就是给引文随便找个落点。
+    排序：先 ``exact`` 后 ``normalized``（同档取文档顺序在前者，结果稳定）。
+    """
+    quote = (proposed_quote or "").strip()
+    if not quote or not blocks:
+        return None
+
+    # 廉价预筛：规范化+去空白后是否为该块子串。避免对每个块都跑模糊相似度
+    # （difflib 在长块上是主要开销），且不会漏掉下面会命中的档位。
+    needle = "".join(c for c in normalize_with_map(quote, fold_case=True).norm if c.strip() != "")
+    if not needle:
+        return None
+    needle_cf = needle.casefold()
+
+    best: Optional[QuoteMatch] = None
+    for block_id, text in blocks:
+        if not text:
+            continue
+        compact, _idx = _compact_without_whitespace(normalize_with_map(text))
+        if needle_cf not in compact.casefold():
+            continue
+        match = match_quote_text(block_id=block_id, text=text, proposed_quote=quote)
+        if match.span is None:  # fuzzy / missing：不作为纠错依据
+            continue
+        if best is None or (best.kind != "exact" and match.kind == "exact"):
+            best = match
+            if match.kind == "exact":
+                break  # 精确命中即最优，无需再看后面的块
+    return best
+
+
 def locate_anywhere(
     blocks: Sequence[Block], proposed_quote: str, *, preferred_page: Optional[int] = None
 ) -> List[Tuple[Block, QuoteMatch]]:
@@ -401,6 +513,9 @@ __all__ = [
     "strip_boilerplate",
     "ratio",
     "match_quote",
+    "match_quote_text",
+    "match_quote_trimmed",
+    "match_quote_across_blocks",
     "locate_in_blocks",
     "locate_anywhere",
     "join_source_text",

@@ -121,9 +121,17 @@ class ClaimRow:
 
 
 def list_claims(db: Session, revision_id: str) -> List[ClaimRow]:
+    """图谱只读取**展项断言**（``visibility='exhibit'``）。
+
+    ADR-0041：QA 回答会落库一批 ``answer_only`` 断言，它们同样是 verified，
+    此前会变成图谱节点（用户看到"节点里混着问答临时生成的句子"）。
+    """
     stmt = (
         select(ClaimRecordORM)
-        .where(ClaimRecordORM.revision_id == revision_id)
+        .where(
+            ClaimRecordORM.revision_id == revision_id,
+            ClaimRecordORM.visibility == "exhibit",
+        )
         .order_by(ClaimRecordORM.claim_id)
     )
     return [
