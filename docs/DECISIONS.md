@@ -371,3 +371,13 @@
   paper 2 仍只有 1 条证据边，是因为该篇的证据本身只有 1 行（8/12 条引文 `quote_not_in_block` 被判不通过）——那是**抽取质量**问题，不是图谱问题。
 - **回归测试**：`test_graph_evidence_edges.py`（5 条：无绑定时必须成边 / `insufficient` 不成边 / `contradicts` 连 `contradicts` / 显式绑定不重复 / 推导必须留告警）。
 - **仍存缺口（未做，两处同源）**：`retrieval.index` 与 `graph.build` 这类**派生产物重建**没有公开入口，存量论文只能跑脚本补（本次分别跑了 `retrieval.index` 与 `graph.build`）。建议后续加 `POST /papers/{id}/rebuild-derived`（admin）把 re-index 与 rebuild-graph 变成可触发、可观测的作业，而不是运维手动介入。
+
+## D-38 QA 兜底：模型草稿全被 gate 拒时降级为"检索原文抽取"
+
+- **决策**：`_draft` 在"模型给了草稿但**没有一句**通过 gate"且存在检索命中时，改走 `_extractive_draft` 用**检索命中的原文**作答，并留 `extractive_fallback` 告警；同时修好 `_extractive_draft` 自身的一处缺陷。
+- **背景（实测，同一问题连续两次结果不同）**：第一次 `grounded=true / confidence=High` + 3 条带页码证据、答案 105 字；紧接着第二次 `mode=abstained`、`statements=0`、`text=""`。根因是**模型每次改写引文的程度不同**，而 gate 逐句严格校验，抽到 0 句就直接拒答——用户看到的就是"证据问答时好时坏、多数时候不能用"。
+- **顺带修掉的缺陷**：`_extractive_draft` 此前直接把命中文本整句当引文，而命中文本是 `chunking.block_context_line()` 产出的 `【章节：6 总结】` + **多块拼接**；该结构说明只存在于检索文本、原文块里没有，于是 gate 判 `quote_not_in_block`，**连兜底答案也被丢光**。现在先 `_chunk_body()` 剥掉结构说明前缀，再用 `_recover_citation` 收敛成某一块的原文切片，定位不到就跳过该命中（不伪造引用）。
+- **取舍**：
+  - 会不会把"不可答问题"也答了？兜底答案**只引用检索命中的原文**且逐句过 gate，`note` 会标注为抽取式作答；相比"永远拒答"，这是设计里既有的降级路径（`llm_failed` 分支早就这么做），只是漏了"0 句通过"这个入口。`unanswerable_refusal_rate` 指标可能因此下降，属于已知取舍。
+  - 不改成"模型改写也放过"：那才是真正的放宽 gate，会引入幻觉；宁可降级为原文引用。
+- **回归测试**：`test_qa_citation_recovery.py` 增至 9 条（新增"兜底必须剥掉章节前缀并把引用落在真实块上""草稿全被拒时必须走兜底并留告警"）。

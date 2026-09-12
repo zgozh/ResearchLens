@@ -212,6 +212,19 @@ def _draft(
         return text, sentences, Usage(), None, warnings
 
     sentences = _gate_claims(scope, claims, hits, warnings, ctx)
+    if not sentences and hits:
+        # 模型给了草稿，但**没有一句通过 gate**（实测常见：模型把原文改写后引用不上，
+        # 同一问题这次 2 句通过、下次 0 句）。直接拒答会让"证据问答"看起来完全不能用，
+        # 因此按设计里的降级路径改用**检索到的原文**作答——原文本身就是可验证证据，
+        # 不是编造，且 note 会明确标注这是抽取式作答。
+        fallback_text, fallback_sentences = _extractive_draft(scope, question, hits, ctx, warnings)
+        if fallback_sentences:
+            warnings.append(Warning(
+                code="extractive_fallback",
+                message="模型草稿未通过证据校验，已降级为检索原文抽取作答",
+                stage="qa",
+            ))
+            return fallback_text, fallback_sentences, usage, snapshot_id, warnings
     return raw_text, sentences, usage, snapshot_id, warnings
 
 
@@ -422,32 +435,61 @@ def _register_statement(
         return None
 
 
+#: 分块正文前的结构说明行（``chunking.block_context_line`` 产出，形如 ``【章节：6 总结】``）。
+#: 它只存在于**检索文本**里、不在原文块中，因此拿命中文本当引文前必须剥掉。
+_CHUNK_CONTEXT_RE = re.compile(r"^\s*(?:【[^】]*】\s*)+")
+
+
+def _chunk_body(text: str) -> str:
+    """剥掉检索文本的结构说明前缀，返回可拿去原文定位的正文。"""
+    return _CHUNK_CONTEXT_RE.sub("", text or "").strip()
+
+
 def _extractive_draft(
-    scope: Scope, question: str, hits: Sequence[RetrievalHit]
+    scope: Scope,
+    question: str,
+    hits: Sequence[RetrievalHit],
+    ctx: Optional[CallContext] = None,
+    warnings: Optional[List[Warning]] = None,
 ) -> Tuple[str, List[VerifiedStatement]]:
-    """无模型时的抽取式草稿：直接用检索命中的原文句作事实句。"""
+    """抽取式草稿：直接用检索命中的**原文**作事实句（无模型或模型草稿全被 gate 拒时）。
+
+    关键细节（真实缺陷）：命中文本是 ``【章节：…】`` + **多块拼接**，整句未必能原样
+    落在某一个块里，于是 gate 判 ``quote_not_in_block``，连兜底答案也被丢光。
+    这里先用确定性定位 ``_recover_citation`` 把句子收敛成**某一块的原文切片**，
+    定位不到就跳过该命中（不伪造引用）。
+    """
     parts: List[str] = []
     sentences: List[VerifiedStatement] = []
-    warnings: List[Warning] = []
+    local: List[Warning] = warnings if warnings is not None else []
 
     for idx, hit in enumerate(hits[:MAX_CONTEXT_HITS]):
-        snippet = _first_sentence(hit.text)
+        # 必须先剥掉 ``【章节：…】`` 结构说明：它只在检索文本里，原文块中没有，
+        # 带着它去定位必然失败，兜底答案会被整条丢光。
+        snippet = _first_sentence(_chunk_body(hit.text))
         if not snippet:
+            continue
+        allowed = set(hit.block_ids or [])
+        if not allowed:
+            continue
+        block_ids, quote = _recover_citation(scope, snippet, snippet, [hit], allowed)
+        if not block_ids:
             continue
         statement = _register_statement(
             scope,
-            _draft_from_hit(scope, snippet, hit, idx),
-            warnings,
+            _draft_from_hit(scope, quote or snippet, hit, idx, block_ids),
+            local,
+            ctx,
         )
         if statement is None:
             continue
         sentences.append(statement)
-        parts.append(snippet)
+        parts.append(quote or snippet)
 
     return " ".join(parts), sentences
 
 
-def _draft_from_hit(scope: Scope, snippet: str, hit: RetrievalHit, idx: int):
+def _draft_from_hit(scope: Scope, snippet: str, hit: RetrievalHit, idx: int, block_ids):
     from app.contracts.evidence import CitationCandidate, StatementDraft
 
     return StatementDraft(
@@ -458,7 +500,7 @@ def _draft_from_hit(scope: Scope, snippet: str, hit: RetrievalHit, idx: int):
         kind="quote",
         citations=[
             CitationCandidate(block_id=bid, proposed_quote=snippet)
-            for bid in (hit.block_ids or [])[:1]
+            for bid in list(block_ids)[:1]
         ] or [CitationCandidate(block_id="", proposed_quote=snippet)],
     )
 

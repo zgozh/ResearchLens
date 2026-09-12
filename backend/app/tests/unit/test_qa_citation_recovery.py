@@ -166,6 +166,69 @@ class TestRecoverCitation:
         assert ids == [], "不得引用未被检索命中的块"
 
 
+class TestExtractiveFallback:
+    """模型草稿全被 gate 拒时，必须降级为**检索原文**作答，而不是直接拒答。
+
+    实测同一问题会出现"这一次 2 句通过、下一次 0 句通过"（模型改写引文），
+    直接拒答会让"证据问答"看起来完全不能用。
+    """
+
+    def _hit_with_chapter_prefix(self, block_id: str):
+        """命中文本与真实检索一致：``【章节：…】`` 前缀 + 多块拼接。
+
+        兜底抽取此前直接把这种文本整句当引文 → gate 判 ``quote_not_in_block``
+        → 连兜底答案也被丢光。这里锁住"必须先收敛到某一块的原文切片"。
+        """
+        return _hit(block_id, f"【章节：6 总结】\n{BLOCK_TEXT}")
+
+    def test_extractive_draft_recovers_verbatim_slice(self, world):
+        from app.modules import claims as claims_svc
+        from app.modules.qa.service import _extractive_draft, _statement_id
+
+        scope = world["scope"]
+        hits = [self._hit_with_chapter_prefix(world["block_id"])]
+        warnings: list = []
+
+        text, _sentences = _extractive_draft(scope, "本文方法是什么？", hits, None, warnings)
+
+        codes = [w.code for w in warnings]
+        assert "gate_unavailable" not in codes, [(w.code, w.message) for w in warnings]
+        assert text, "兜底抽取必须产出原文句子"
+        assert "【章节" not in text, f"章节前缀不该进入引文：{text[:60]!r}"
+        stored = claims_svc.get_statements(scope, [_statement_id(scope.revision_id, text, 0)])
+        assert stored, "兜底抽取必须真的注册陈述（引用落在真实块上）"
+        assert [c.block_id for c in stored[0].citations] == [world["block_id"]]
+
+    def test_draft_falls_back_when_all_claims_rejected(self, world, monkeypatch):
+        """``_llm_draft`` 给的句子全部无法定位时，``_draft`` 必须走抽取兜底并留告警。"""
+        from app.contracts.common import new_ctx
+        from app.modules.qa import service as qa_svc
+
+        scope = world["scope"]
+        hits = [self._hit_with_chapter_prefix(world["block_id"])]
+        # 单测默认关闭 LLM；这里显式打开，才能走到"模型给了草稿但全被 gate 拒"的分支
+        # （``has_llm`` 是只读 property，只能打在类上）
+        monkeypatch.setattr(
+            type(qa_svc.settings), "has_llm", property(lambda self: True), raising=False,
+        )
+        ctx = new_ctx(scope, snapshot={"id": "snap-test", "chat_model": "qwen-plus"})
+        monkeypatch.setattr(
+            qa_svc, "_llm_draft",
+            lambda q, h, c: ("模型改写过的答案。", [{
+                "text": "这篇论文证明了永动机可行。",
+                "block_ids": [], "quote": "永动机是可行的。", "kind": "fact",
+            }], qa_svc.Usage()),
+        )
+
+        text, _sentences, _usage, _snap, returned_warnings = qa_svc._draft(
+            scope, "本文方法是什么？", hits, ctx
+        )
+
+        codes = [w.code for w in returned_warnings]
+        assert "extractive_fallback" in codes, [(w.code, w.message) for w in returned_warnings]
+        assert text, "兜底必须产出可发布文本"
+
+
 class TestGateClaimsUsesRecovery:
     def test_recovered_citation_reaches_the_gate(self, world):
         """端到端效果：模型不给引用时，恢复出的引用**必须真的送进 gate**。
