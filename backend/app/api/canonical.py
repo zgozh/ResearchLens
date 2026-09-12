@@ -530,4 +530,36 @@ def rebuild_derived(
     return result
 
 
+@router.post("/papers/{paper_id}/golden-set")
+def build_golden_set(
+    paper_id: int,
+    revision_id: Optional[str] = None,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """构造并保存该 revision 的 **Golden Set**（真值取自原文，不由模型自证）。
+
+    为什么需要（ADR-0046）：``golden_sets`` 表 0 行时，``overall_score`` 的四个核心
+    指标里 ``support_precision`` 与 ``unanswerable_refusal_rate`` 永远没有分母，
+    综合评分只能是 null（前端只能诚实显示"未评测"）。
+
+    **不调 LLM**：claim 文本逐字取自原文块、锚点页取自块的物理页、
+    "不可答"术语经程序检查确认全文不出现。
+    """
+    require_admin(x_admin_token)
+    scope, _rev = _resolve_scope(paper_id, revision_id)
+    from app.modules.evaluation import golden_builder
+
+    golden = golden_builder.build_and_save(scope)
+    return {
+        "scope": {"paper_id": scope.paper_id, "revision_id": scope.revision_id},
+        "golden": {
+            "id": golden.id, "version": golden.version,
+            "claims": len(golden.claims),
+            "answerable_questions": sum(1 for q in golden.questions if q.answerable),
+            "unanswerable_questions": sum(1 for q in golden.questions if not q.answerable),
+            "anchors": len(golden.anchors),
+        },
+    }
+
+
 __all__ = ["router"]

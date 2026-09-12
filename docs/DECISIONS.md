@@ -485,3 +485,62 @@
 - **结论（回答"paper 2 图谱为什么只有 1 条证据边"）**：该篇的低验证率**主要不是定位器失准，而是模型改写/翻译引文**——4 条失配里只有 1 条属于"逐字存在但被套前缀"。继续"放宽匹配"会把译文和改写作当成引用，**那才是真正的伪造**。要提升 paper 2 只能改**抽取提示词/模型**，不能松 gate。
 - **顺带观测（重要）**：同一篇论文两次抽取的失配数差异很大（10/11 vs 4/15），说明该环节**方差高**；`support_recall` 这类指标若只跑一次，噪声会盖过信号。
 - 回归测试 `test_quote_cross_block_recovery.py` 增至 14 条；全量 pytest **441 passed**。
+
+## D-46 Golden Set：真值必须来自**原文**，不能由模型自证
+
+- **决策**：新增 `evaluation/golden_builder.py`（确定性、不调 LLM）+ 两个 admin 端点
+  `POST /papers/{id}/golden-set`（构造并保存）与既有的 `rebuild-derived`；同时给
+  `evaluation/legacy._input_for()` 补上 `golden` 与 `navigation_checks` 的装配。
+- **背景**：`golden_sets` 0 行 → `overall_score` 公式（§5.9）的 4 个核心指标里
+  `support_precision`(0.4) 与 `unanswerable_refusal_rate`(0.2) **永远没有分母** →
+  `overall_score_available=false`，前端只能显示"未评测"。
+  但**"补一批 golden 数据"不能靠模型生成**——那等于让模型给自己出卷子，指标变成自我确认。
+- **三条纪律（都有单测锁定）**：
+  1. `GoldenClaim.text` 必须**逐字出现在**它声明的块里（真值来自 parser 产出）；
+  2. `GoldenAnchor.expected_page_index` 必须等于该块所在**物理页**；块没有矩形就不给
+     `expected_rect`（宁缺勿造，避免 `anchor_region_hit_rate` 变假）；
+  3. 不可答题所用术语必须**经程序检查确认全文不出现**（"不可答"要被验证，不能猜）。
+- **`anchor_page_accuracy` 的真值独立于被判对象**：期望页取自**引用块所在页**（parser 事实），
+  实际页取自**证据记录的锚点**（导航会打开的那页），两者来自不同表 → 是真实交叉校验。
+- **踩坑与修正（两次）**：
+  - 首版 golden claim 取"前 12 个内容块的首句"，**全落在题名/作者/单位/邮箱/摘要**上，
+    与真实断言最高相似度仅 **0.13** → `support_precision` 被算成 0。
+    **那是构造器取句取错了，不是指标不行**。修法：排除首页杂项（邮箱/上标/单位/引用格式/
+    参考文献），并在全文 4 个位置桶间**轮转取样**，优先取带数字/结论动词的句子。
+  - 可答题先用满 `question_limit` → 章节多的论文（paper 3 有 9 章）构造出 **0 条不可答题**，
+    拒答率又没分母。修法：可答题配额压到 `question_limit // 2`，其余留给不可答题。
+- **实测（3 篇真实论文，各 12 golden claims / 4 可答 / 4 不可答 / 12 anchors）**：
+  `anchor_page_accuracy = 1.0`、`quote_exact_rate = 1.0`、paper 3 的
+  `support_precision = 0.375 / support_recall = 0.25`；paper 1/2 仍为 0（见下）。
+- **仍未出综合评分，如实说明原因**：`overall_score` 要求 **4 个核心指标全部 measured**。
+  现在 `unanswerable_refusal_rate` 需要把 golden 问题**真问一遍**（`qa.build_bank`），
+  已提供脚本；而 `support_precision` 在 paper 1/2 上为 0 是**口径问题**：
+  `metrics.similarity` 是"单字 Jaccard + 数字集合 Jaccard（数字权重 0.4）"，
+  而产品产出的是**改写句**（含大量数字），与原文句的字面重合度天然低于 `SIM_THRESHOLD=0.42`。
+  要让它有意义，必须**产品侧决策**：要么 golden claim 用"事实"而非"原句"（需要人工标注），
+  要么承认该指标衡量的是字面重合、把阈值/口径写进规格。**我不擅自调阈值**。
+- **顺带：新增的评测第一次量化了我自己在 D-38 引入的回归**——
+  `_draft` 的"抽取兜底"此前**无条件**触发，导致模型明确回答"资料不足"（`claims=[]`）时
+  也照样从检索原文拼一个答案 → 不可答问题不再被拒答（拒答率会归零）。
+  已修正为：**只有模型给出了 claims 但全被 gate 拒时**才兜底；`claims` 为空则尊重拒答。
+
+## D-47 事故根因（D-34 未查清的那一条）：`backend/.env` 影子配置
+
+- **现象（复现两次）**：`docker-compose up -d --build backend worker` 之后，后端落到
+  **8001**、`CORS_ORIGINS` 变成 `http://localhost:3001,...` —— 而根 `.env` 与前端烘焙的都是
+  **8002/4002**，于是前端所有请求失败（"页面什么都没有"）。D-34 当时只记了"容器是陈旧实例"，
+  没找到来源。
+- **根因**：仓库里存在一份 **`backend/.env`**（被 `.gitignore` 忽略的本地残留），内容是
+  一份**旧端口方案**：`BACKEND_PORT=8001`、`FRONTEND_PORT=3001`、
+  `NEXT_PUBLIC_API_URL=http://localhost:8001`。
+  **Compose 的 `.env` 是按"当前工作目录"查找的**，所以只要以 `backend/` 为 CWD 运行 compose，
+  它读的就是这一份 → 宿主端口 8001；而 `docker-compose.yml:11` 的
+  `CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-4002},...` 也随 FRONTEND_PORT=3001 变成 3001。
+  **同一个仓库、同一条命令，只因为工作目录不同就切换到另一套端口**，而且没有任何提示。
+- **证据**：`docker-compose config`（根目录运行）解析 `published: "8002"`、`CORS=4002`；
+  而容器 env 实测 `CORS_ORIGINS=http://localhost:3001,...`、宿主端口 8001。
+  容器 labels 显示 project/config 都是根目录那份 → 差异只能来自 `.env` 的加载目录。
+- **处置**：把 `backend/.env` 重命名为 `backend/.env.bak-unused-by-compose-20260912`
+  （**内容保留、可随时恢复**），然后从根目录 `--force-recreate` → 后端回到 8002、CORS 4002。
+- **纪律**：**任何 docker-compose 命令都必须在仓库根目录执行**；排查"前端全空"时，
+  第一步永远是核对 `docker ps` 的端口映射与 `docker inspect` 的 `CORS_ORIGINS`。

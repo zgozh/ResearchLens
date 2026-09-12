@@ -212,11 +212,16 @@ def _draft(
         return text, sentences, Usage(), None, warnings
 
     sentences = _gate_claims(scope, claims, hits, warnings, ctx)
-    if not sentences and hits:
+    if not sentences and hits and claims:
         # 模型给了草稿，但**没有一句通过 gate**（实测常见：模型把原文改写后引用不上，
         # 同一问题这次 2 句通过、下次 0 句）。直接拒答会让"证据问答"看起来完全不能用，
         # 因此按设计里的降级路径改用**检索到的原文**作答——原文本身就是可验证证据，
         # 不是编造，且 note 会明确标注这是抽取式作答。
+        #
+        # **但 ``claims`` 为空时必须尊重拒答**：那表示模型明确判定"给定片段不足以回答"
+        # （提示词要求这种情况返回空数组）。若无条件兜底，不可答问题也会被"答"出来，
+        # ``unanswerable_refusal_rate`` 直接归零——这是真实取舍，由新增的 Golden Set
+        # 评测第一次量化出来（ADR-0046）。
         fallback_text, fallback_sentences = _extractive_draft(scope, question, hits, ctx, warnings)
         if fallback_sentences:
             warnings.append(Warning(

@@ -79,8 +79,68 @@ def to_legacy_evaluation(report: EvaluationReport) -> Dict[str, Any]:
     return {"metrics": metrics, "overall_score": legacy_overall}
 
 
+def _navigation_checks(scope: Scope):
+    """由 **证据锚点页 vs 引用块所在页** 的确定性对照生成导航校验样本（ADR-0046）。
+
+    为什么需要：``anchor_page_accuracy`` 需要 ``navigation_checks``，而 ``_input_for``
+    此前根本不传它 → 该指标永远 ``not_evaluated``，进而 ``overall_score`` 永远是 None。
+
+    **真值来源独立**：期望页取自**引用块所在的物理页**（parser 事实），
+    实际页取自**证据记录的锚点**（导航会打开的那一页）。两者来自不同的表，
+    所以这是一个真实的交叉校验，不是"自己跟自己比"。
+    缺锚点或缺引用块的证据**不产生样本**（不猜、不补 0）。
+    """
+    from sqlalchemy import select
+
+    from app.contracts.evaluation import NavigationCheck
+    from app.core.db import session_scope
+    from app.models.artifacts import AnchorORM, BlockORM, PageORM
+    from app.modules.evidence import repository as ev_repo
+
+    out = []
+    try:
+        with session_scope() as db:
+            block_page = {
+                row[0]: int(row[1] or 0)
+                for row in db.execute(
+                    select(BlockORM.id, PageORM.pdf_page_index)
+                    .outerjoin(PageORM, PageORM.id == BlockORM.page_id)
+                    .where(BlockORM.revision_id == scope.revision_id)
+                ).all()
+            }
+            anchor_page = {}
+            for row in db.execute(
+                select(AnchorORM).where(AnchorORM.revision_id == scope.revision_id)
+            ).scalars().all():
+                segments = row.segments or []
+                if segments and isinstance(segments[0], dict):
+                    index = segments[0].get("pdf_page_index")
+                    if index is not None:
+                        anchor_page[row.id] = int(index)
+            for row in ev_repo.list_evidence_rows(db, scope.revision_id):
+                if not row.anchor_id or row.anchor_id not in anchor_page:
+                    continue
+                regions = list(row.source_region or [])
+                if not regions or not isinstance(regions[0], dict):
+                    continue
+                block_ids = list(regions[0].get("block_ids") or [])
+                expected = next((block_page[b] for b in block_ids if b in block_page), None)
+                if expected is None:
+                    continue
+                actual = anchor_page[row.anchor_id]
+                out.append(NavigationCheck(
+                    anchor_id=row.anchor_id,
+                    page_correct=(actual == expected),
+                    region_iou=None,      # 块没有矩形就不给 IoU（宁缺勿造）
+                    latency_ms=0,
+                ))
+    except Exception:  # noqa: BLE001  评测输入装配失败不得让评测 500
+        return []
+    return out
+
+
 def _input_for(scope: Scope):
-    """旧入口没有现成 EvaluationInput：从库中收集 statements/answers。"""
+    """旧入口没有现成 EvaluationInput：从库中收集 statements/answers/golden 等。"""
     from app.contracts.evaluation import EvaluationInput
     from app.core.db import session_scope
 
@@ -105,8 +165,20 @@ def _input_for(scope: Scope):
     except Exception:  # noqa: BLE001
         answers = []
 
+    # Golden Set：没有它 precision / 拒答率就没有分母（ADR-0046）。
+    # 用 ``find_for_scope`` 按 scope 校验，避免把别篇真值套上来。
+    golden = None
+    try:
+        from app.modules.evaluation import golden_builder
+
+        with session_scope() as db:
+            golden = golden_builder.find_for_scope(db, scope)
+    except Exception:  # noqa: BLE001
+        golden = None
+
     return EvaluationInput(
         scope=scope, statements=statements, answers=answers,
+        golden=golden, navigation_checks=_navigation_checks(scope),
     )
 
 
