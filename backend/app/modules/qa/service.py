@@ -43,6 +43,18 @@ ALGORITHM_VERSION = "rl.qa/2"
 
 #: 判为「拒答」的 note（服务端生成，不依赖模型措辞）
 ABSTAIN_NOTE = "论文中没有足够的已验证证据支持回答；已按 Evidence Gate 拒绝进入事实层。"
+
+#: 拒答**正文**模板：空白正文在界面上就是"什么都没有"，用户读成"问答坏了"（REFACTOR_PLAN M7）。
+NOT_MENTIONED_TPL = (
+    "论文中没有提到「{obj}」。我只依据这篇论文的原文作答，不会拿别的相关内容顶替；"
+    "如果你问的是别的对象，可以换个说法再问一次。"
+)
+ABSTAIN_TPL = (
+    "我在这篇论文里没有找到能支撑这个问题的原文证据，所以不能给出结论"
+    "（本产品只依据论文原文作答，不编造）。可以换一种更具体的问法试试。"
+)
+ABSTAIN_HINT_TPL = "\n\n与问题最接近的原文片段（{where}，仅供参考、未通过证据校验）：{snippet}"
+NOT_MENTIONED_NOTE = "论文中没有出现问题所问的对象；按『不拿别的相关内容顶替』如实作答（mode=not_mentioned）。"
 EXTRACTIVE_NOTE = "由论文原文证据抽取作答（未调用生成模型）。"
 GENERATED_NOTE = "由模型基于检索到的论文原文作答，且已逐句通过 Evidence Gate。"
 DEGRADED_NOTE = "生成模型不可用，已降级为原文证据抽取作答。"
@@ -116,7 +128,7 @@ def answer(
             message="问题所问的对象在检索到的原文中没有出现，按无证据拒答（不拿别的相关内容顶替）",
             stage="qa",
         ))
-        record = _abstained(scope, question, warnings)
+        record = _abstained(scope, question, warnings, reason="object_absent", hits=hits)
         _persist(scope, record, source_digest, key)
         return record
 
@@ -129,7 +141,7 @@ def answer(
     decision = gate.assess(draft_text, sentences, mode=_mode_for(draft_text, sentences))
 
     if not decision.grounded and not sentences:
-        record = _abstained(scope, question, warnings)
+        record = _abstained(scope, question, warnings, hits=hits)
         _persist(scope, record, source_digest, key)
         return record
 
@@ -163,8 +175,28 @@ def answer(
         usage=usage,
         warnings=warnings,
     )
+    record = _ensure_readable(record, question, hits)
     _persist(scope, record, source_digest, key)
     return record
+
+
+def _ensure_readable(
+    record: AnswerRecord, question: str, hits: Sequence[RetrievalHit]
+) -> AnswerRecord:
+    """兜底不变量：**任何**落库答案都必须有可读内容（正文或句子）。
+
+    空白正文在界面上就是一片空白，用户读成"问答根本不能用"（REFACTOR_PLAN M7）。
+    这里只在"既没有正文、也没有任何句子"时补一段如实的说明，绝不补造论文内容。
+    """
+    body = (record.text.text or "").strip() if record.text is not None else ""
+    if body or record.statements:
+        return record
+    return record.model_copy(update={
+        "text": ArtifactText(text=_abstain_body(question, hits, absent=False), spans=[]),
+        "note": record.note or ABSTAIN_NOTE,
+        "grounded": False,
+        "mode": "abstained",
+    })
 
 
 def build_bank(
@@ -193,8 +225,28 @@ _PAPER_HINT_RE = re.compile(
     re.I,
 )
 
+#: 学术话题词：问句里出现它们，几乎一定是在问**这篇论文**。
+#: 为什么要加（实测 2026-09-12，paper 7）：问「主要贡献是什么？」既没有"论文/本文"指向词，
+#: vector_score 也只有 0.48 → 被判"与论文无关" → 用通用助手口吻答"我提供的是通用助手…"。
+#: 实测同一篇论文上所有问题的 vector_score 都落在 0.41–0.60，`_PAPER_SEMANTIC_HIT=0.6`
+#: 这条线**实际不可达**，只靠它判"论文相关"等于没有这条通路。
+#: 这些词在日常闲聊/领域常识问题里几乎不出现（"什么是量子纠缠"/"今天天气"都不含）。
+_PAPER_TOPIC_RE = re.compile(
+    r"贡献|创新|动机|数据集|语料|实验|消融|基线|对比|结果|结论|局限|不足|缺点|质疑|"
+    r"评估|指标|精度|性能|效率|参数|超参|训练|推理|收敛|架构|模块|算法|公式|推导|"
+    r"作者|引用|相关工作|未来工作|改进|复现|开销|复杂度|"
+    r"\b(?:contributions?|datasets?|experiments?|ablation|baselines?|results?|conclusions?|"
+    r"limitations?|evaluations?|metrics?|accuracy|performance|parameters?|training|"
+    r"inference|architecture)\b",
+    re.I,
+)
+
 #: 语义相似度到这条线以上，就认为问的正是论文里的内容（即使没提"论文"二字）
 _PAPER_SEMANTIC_HIT = 0.6
+
+#: rerank 分数到这条线以上 → 问题确实落在本文内容上（实测论文内问题 0.55–1.0，
+#: 而闲聊/离题问题通常没有 rerank 命中）。这是比 vector_score 更能拉开差距的信号。
+_PAPER_RERANK_HIT = 0.6
 
 #: 通用回答的提示词：**明确不引用论文**，避免把领域常识说成"论文里写的"
 GENERAL_ANSWER_PROMPT = (
@@ -208,22 +260,31 @@ GENERAL_ANSWER_PROMPT = (
 
 
 def _is_paper_related(question: str, hits: Sequence[RetrievalHit]) -> bool:
-    """判断问题是否**指向这篇论文**（ADR-0057）。
+    """判断问题是否**指向这篇论文**（ADR-0057 / REFACTOR_PLAN M7）。
 
-    判据有两路，任一路成立即算论文问题：
-    1. 问句里出现"论文/本文/这一节/图 3/实验"这类指向词；
-    2. 检索命中里有**足够高**的语义相似度（问的正是文中内容，只是没用"论文"二字）。
+    判据有三路，任一路成立即算论文问题：
+    1. 问句里出现"论文/本文/这一节/图 3/实验"这类**指向词**；
+    2. 问句里出现**学术话题词**（贡献/数据集/局限/实验…）——它们几乎只在问论文时出现；
+    3. 检索命中里有足够高的语义分（vector）或 **rerank 分**。
+
+    第 3 条里的 rerank 是 2026-09-12 补的：实测同一篇论文上 vector_score 全落在
+    0.41–0.60（含明确指向论文的问题），0.6 这条线不可达；而 rerank 能到 0.55–1.0。
+    第 2 条是补的：实测「主要贡献是什么？」两路都不成立 → 被当成闲聊。
 
     **不把"检索有没有命中"当判据**：问"什么是量子纠缠"时检索也会返回一堆片断，
-    但那是无关命中；反过来"这篇论文用了什么数据集"即便索引空也仍是论文问题。
+    但那是无关命中。
     """
     text = (question or "").strip()
-    if text and _PAPER_HINT_RE.search(text):
+    if text and (_PAPER_HINT_RE.search(text) or _PAPER_TOPIC_RE.search(text)):
         return True
     for hit in list(hits or []):
-        vector = getattr(hit, "vector_score", None)
-        if isinstance(vector, (int, float)) and float(vector) >= _PAPER_SEMANTIC_HIT:
-            return True
+        for field, threshold in (
+            ("vector_score", _PAPER_SEMANTIC_HIT),
+            ("rerank_score", _PAPER_RERANK_HIT),
+        ):
+            value = getattr(hit, field, None)
+            if isinstance(value, (int, float)) and float(value) >= threshold:
+                return True
     return False
 
 
@@ -316,6 +377,24 @@ _GENERIC_ACADEMIC = frozenset({
 })
 
 
+def _absent_objects(question: str, hits: Sequence[RetrievalHit]) -> List[str]:
+    """问题里"像具体对象"的词中，**完全没有**出现在检索文本里的那些。"""
+    terms = _query_terms(question)
+    text = " ".join(_chunk_body(h.text or "") for h in (hits or [])).lower()
+    if not terms or not text.strip():
+        return []
+    checked = [
+        t for t in terms
+        if (t.isascii() and len(t) >= 3) or (
+            not t.isascii() and len(t) >= 3
+            and t not in _GENERIC_ACADEMIC
+            # 词里**含有**泛化学术词（如"的贡献"含"贡献"）也不当成"具体对象"
+            and not any(g in t for g in _GENERIC_ACADEMIC)
+        )
+    ]
+    return [t for t in checked if t.lower() not in text]
+
+
 def _object_absent_from_hits(question: str, hits: Sequence[RetrievalHit]) -> bool:
     """问题问的**具体对象**是否在检索到的原文里完全不出现（ADR-0066）。
 
@@ -331,22 +410,7 @@ def _object_absent_from_hits(question: str, hits: Sequence[RetrievalHit]) -> boo
     这样"论文用了什么数据集"（数据集是泛化词，不检查）与"哪里最值得质疑"
     （"质疑"仅 2 字）都不会被误拒。
     """
-    terms = _query_terms(question)
-    text = " ".join(_chunk_body(h.text or "") for h in (hits or [])).lower()
-    if not terms or not text.strip():
-        return False
-    checked = [
-        t for t in terms
-        if (t.isascii() and len(t) >= 3) or (
-            not t.isascii() and len(t) >= 3
-            and t not in _GENERIC_ACADEMIC
-            # 词里**含有**泛化学术词（如"的贡献"含"贡献"）也不当成"具体对象"
-            and not any(g in t for g in _GENERIC_ACADEMIC)
-        )
-    ]
-    if not checked:
-        return False
-    return all(t.lower() not in text for t in checked)
+    return bool(_absent_objects(question, hits))
 
 
 def _retrieval_version() -> str:
@@ -1027,21 +1091,80 @@ def _evidence_records(scope: Scope, sentences: Sequence[VerifiedStatement]) -> L
         return []
 
 
-def _abstained(scope: Scope, question: str, warnings: List[Warning]) -> AnswerRecord:
-    """无证据的合法拒答：grounded=False，mode=abstained，**不补造证据**。"""
+def _abstained(
+    scope: Scope,
+    question: str,
+    warnings: List[Warning],
+    *,
+    reason: str = "no_evidence",
+    hits: Sequence[RetrievalHit] = (),
+) -> AnswerRecord:
+    """无证据的合法拒答：grounded=False，**不补造证据**，但**必须有可读正文**。
+
+    真实缺陷（REFACTOR_PLAN M7，实测 2026-09-12）：这里以前产出 ``text=""``，
+    前端只渲染 statements/answer 文本 → 用户看到的是"无证据支持"外加一片空白，
+    读起来就是"问答坏了、根本没有调用到模型"。拒答也要把话说清楚。
+    """
+    absent = reason == "object_absent"
     return AnswerRecord(
         scope=scope,
         id=_answer_id(scope.revision_id, question),
         question=question,
-        text=ArtifactText(text="", spans=[]),
+        text=ArtifactText(text=_abstain_body(question, hits, absent=absent), spans=[]),
         statements=[], evidence=[],
         grounded=False,
         confidence="Low",
-        note=ABSTAIN_NOTE,
-        mode="abstained",
+        note=NOT_MENTIONED_NOTE if absent else ABSTAIN_NOTE,
+        mode="not_mentioned" if absent else "abstained",
         usage=Usage(),
         warnings=warnings,
     )
+
+
+def _abstain_body(question: str, hits: Sequence[RetrievalHit], *, absent: bool) -> str:
+    """拒答正文：点名"没提到什么"或解释"为什么答不了"，并给一条最接近的原文线索。"""
+    if absent:
+        objects = _absent_objects(question, hits)
+        if objects:
+            # 用**问句里的原始写法**回显（词表里是小写，直接回显会变成「kubernetes」）
+            return NOT_MENTIONED_TPL.format(
+                obj="、".join(_original_form(question, t) for t in objects[:3])
+            )
+    return ABSTAIN_TPL + _closest_snippet(hits)
+
+
+def _original_form(question: str, term: str) -> str:
+    """在问句里找回该词的原始大小写/写法（找不回就原样返回）。"""
+    idx = (question or "").lower().find(term.lower())
+    if idx < 0:
+        return term
+    return question[idx:idx + len(term)]
+
+
+def _closest_snippet(hits: Sequence[RetrievalHit], limit: int = 160) -> str:
+    """给一条"最接近问题"的原文片段作线索。
+
+    纪律：片段**逐字来自检索结果**（不加工、不改写），并且明确标注"未通过证据校验、
+    仅供参考" —— 它不是 evidence，不参与 grounded，也不进引用列表。
+    """
+    best = None
+    for hit in list(hits or []):
+        text = " ".join(_chunk_body(getattr(hit, "text", "") or "").split())
+        if len(text) < 40:
+            continue
+        score = 0.0
+        for field in ("rerank_score", "vector_score", "rrf_score"):
+            value = getattr(hit, field, None)
+            if isinstance(value, (int, float)) and float(value) > score:
+                score = float(value)
+        if best is None or score > best[0]:
+            best = (score, text, getattr(hit, "page", None))
+    if best is None:
+        return ""
+    _, text, page = best
+    where = f"第 {page} 页" if isinstance(page, int) and page > 0 else "论文原文"
+    snippet = text if len(text) <= limit else text[:limit] + "…"
+    return ABSTAIN_HINT_TPL.format(where=where, snippet=snippet)
 
 
 def _artifact_text(text: str, sentences: Sequence[VerifiedStatement]) -> ArtifactText:

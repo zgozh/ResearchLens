@@ -1,10 +1,22 @@
 'use client';
 
 import type { ReactNode } from 'react';
+import { renderRichHtml } from '@/lib/richtext';
 import { cn } from '@/lib/cn';
 
 type RefItem = { type: 'figure'; figure: any } | { type: 'table'; table: any };
 type Opts = { figures?: any[]; tables?: any[]; onOpenMedia?: (item: RefItem) => void };
+
+/**
+ * 段落内的普通文本一律过**唯一渲染内核**（M2/M3）：
+ * 这样方法步骤、问答回答里的 `$…$`、`<sup>∗</sup>` 与正文/表格表现完全一致。
+ * 不要在这里自己写公式或转义逻辑。
+ */
+function RichSpan({ text, className }: { text: string; className?: string }) {
+  const html = renderRichHtml(text).html;
+  if (!html) return null;
+  return <span className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+}
 
 /** 内联渲染：**bold**、`code` 以及 "图N"/"表N" 引用（若提供 figures/tables + onOpenMedia）。 */
 function renderInline(text: string, opts: Opts, keyBase: number): ReactNode[] {
@@ -15,7 +27,7 @@ function renderInline(text: string, opts: Opts, keyBase: number): ReactNode[] {
   let m: RegExpExecArray | null;
   let i = 0;
   while ((m = re.exec(text)) !== null) {
-    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m.index > last) out.push(<RichSpan key={`${keyBase}-t${i}`} text={text.slice(last, m.index)} />);
     const tok = m[0];
     if (tok.startsWith('**')) {
       out.push(
@@ -53,13 +65,13 @@ function renderInline(text: string, opts: Opts, keyBase: number): ReactNode[] {
           </button>,
         );
       } else {
-        out.push(<span key={`${keyBase}-p${i}`} className="text-slate-300">{tok}</span>);
+        out.push(<RichSpan key={`${keyBase}-p${i}`} text={tok} className="text-slate-300" />);
       }
     }
     last = m.index + tok.length;
     i += 1;
   }
-  if (last < text.length) out.push(text.slice(last));
+  if (last < text.length) out.push(<RichSpan key={`${keyBase}-tail`} text={text.slice(last)} />);
   return out;
 }
 

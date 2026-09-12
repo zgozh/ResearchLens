@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, List, Optional
 
 from app.contracts.common import CallContext, Scope
@@ -92,13 +93,17 @@ async def stream(
 ) -> AsyncIterator[bytes]:
     """产出 SSE 字节流。**final 只在 Answer 完整持久化后发送**。
 
-    生成过程在取消令牌触发时提前结束，并尽量发出唯一终态。
+    真实缺陷与修复（REFACTOR_PLAN M6）：以前只有 ``svc.answer(...)`` 那一句在
+    try/except 里，**发事件的那一段在保护之外**——那里一旦抛异常（投影字段不合法、
+    `QAFinal` 构造失败…），生成器直接死掉、连接关闭，**既没有 final 也没有 error**，
+    前端只能显示"本次回答被中断"。现在**所有**事件都在保护区里，任何异常都收敛成
+    ``error`` 终结事件；等待生成期间每 ``HEARTBEAT_SECONDS`` 发一个注释帧保活。
     """
     encoder = EventEncoder()
     terminal = _Terminal()
     request_id = _request_id(ctx)
 
-    # meta：先声明本次回答的身份与截止时间
+    # meta：先声明本次回答的身份（answer_id 是断流恢复的凭据）与截止时间
     yield encoder.encode(_event(
         encoder.next_id(), request_id, "meta",
         QAMeta(
@@ -108,84 +113,146 @@ async def stream(
         ),
     ))
 
-    yield encoder.encode(_event(
-        encoder.next_id(), request_id, "status",
-        QAStatus(stage="retrieving", message="正在检索论文原文"),
-    ))
+    try:
+        yield encoder.encode(_event(
+            encoder.next_id(), request_id, "status",
+            QAStatus(stage="retrieving", message="正在检索论文原文"),
+        ))
 
-    if _cancelled(ctx):
+        if _cancelled(ctx):
+            raise _StreamCancelled()
+
+        holder: dict = {}
+        async for ping in _answer_with_heartbeat(holder, scope, request, ctx, encoder):
+            yield ping
+        record = holder.get("record")
+        if record is None:  # 防御：不应发生
+            raise RuntimeError("answer 未返回结果")
+        # 兜底不变量：**空正文不许下发**（空白气泡就是用户眼里的"问答坏了"）。
+        # 正常情况下 service.answer 已经保证了，这里防的是"上游被替换/回归"。
+        record = svc._ensure_readable(record, request.question, ())
+
+        # status：告知已进入验证/降级/通用回答（ADR-0057）
+        mode = str(getattr(record, "mode", "") or "")
+        if mode in ("general",):
+            stage, message = "drafting", "通用回答（未使用论文证据）"
+        elif mode in ("abstained", "not_mentioned"):
+            stage, message = "degraded", "论文中没有可支撑回答的证据，按如实说明返回"
+        elif record.grounded:
+            stage, message = "verifying", "正在逐句核验证据"
+        else:
+            stage, message = "degraded", "按拒答返回"
+        yield encoder.encode(_event(
+            encoder.next_id(), request_id, "status", QAStatus(stage=stage, message=message),
+        ))
+
+        sent_evidence: List[str] = []
+
+        # 先发全部 citation（保证 sentence 引用它时已被发送过）
+        for st in record.statements:
+            for ev in _evidence_for(record, st):
+                if ev.id in sent_evidence:
+                    continue
+                sent_evidence.append(ev.id)
+                yield encoder.encode(_event(
+                    encoder.next_id(), request_id, "citation", _citation_payload(ev),
+                ))
+
+        # 再发 sentence（只发可发布句子，unverified 草稿不发）
+        for st in gate.publishable_sentences(record.statements):
+            yield encoder.encode(_event(
+                encoder.next_id(), request_id, "sentence", QASentence(statement=st),
+            ))
+
+        # 唯一终态：final（AnswerRecord 已在上一步持久化完成）
+        # **先投影再占位**：`_final_payload` 可能抛（投影字段不合法）。若先 claim 后投影，
+        # 异常时终态已被占，error 事件发不出去 → 客户端又看到"被中断"（实测回归）。
+        final_payload = _final_payload(record)
+        if terminal.claim("final"):
+            yield encoder.encode(_event(
+                encoder.next_id(), request_id, "final", final_payload,
+            ))
+    except _StreamCancelled:
         if terminal.claim("error"):
             yield encoder.encode(_event(
                 encoder.next_id(), request_id, "error",
                 QAError(error=_cancelled_error(), partial=False),
             ))
-        return
-
-    loop = asyncio.get_event_loop()
-    try:
-        record = await loop.run_in_executor(None, svc.answer, scope, request, ctx)
     except DomainError as exc:
         if terminal.claim("error"):
             yield encoder.encode(_event(
                 encoder.next_id(), request_id, "error",
                 QAError(error=exc.to_dict(), partial=False),
             ))
-        return
     except Exception as exc:  # noqa: BLE001  未知异常也必须给唯一终态
         if terminal.claim("error"):
             yield encoder.encode(_event(
                 encoder.next_id(), request_id, "error",
                 QAError(error=_internal_error(exc), partial=False),
             ))
-        return
 
-    if _cancelled(ctx):
-        if terminal.claim("error"):
-            yield encoder.encode(_event(
-                encoder.next_id(), request_id, "error",
-                QAError(error=_cancelled_error(), partial=False),
-            ))
-        return
-
-    # status：告知已进入验证/降级/通用回答（ADR-0057）
-    mode = str(getattr(record, "mode", "") or "")
-    if mode == "general":
-        stage, message = "drafting", "通用回答（未使用论文证据）"
-    elif record.grounded:
-        stage, message = "verifying", "正在逐句核验证据"
-    else:
-        stage, message = "degraded", "按拒答返回"
-    yield encoder.encode(_event(
-        encoder.next_id(), request_id, "status",
-        QAStatus(stage=stage, message=message),
-    ))
-
-    sent_evidence: List[str] = []
-
-    # 先发全部 citation（保证 sentence 引用它时已被发送过）
-    for st in record.statements:
-        for ev in _evidence_for(record, st):
-            if ev.id in sent_evidence:
-                continue
-            sent_evidence.append(ev.id)
-            yield encoder.encode(_event(
-                encoder.next_id(), request_id, "citation",
-                _citation_payload(ev),
-            ))
-
-    # 再发 sentence（只发可发布句子，unverified 草稿不发）
-    for st in gate.publishable_sentences(record.statements):
+    if terminal.sent is None:  # pragma: no cover - 防御性兜底
+        terminal.claim("error")
         yield encoder.encode(_event(
-            encoder.next_id(), request_id, "sentence",
-            QASentence(statement=st),
+            encoder.next_id(), request_id, "error",
+            QAError(error=_missing_terminal_error(), partial=False),
         ))
 
-    # 唯一终态：final（AnswerRecord 已在上一步持久化完成）
-    if terminal.claim("final"):
-        yield encoder.encode(_event(
-            encoder.next_id(), request_id, "final",
-            _final_payload(record),
-        ))
+
+class _StreamCancelled(Exception):
+    """客户端已断开（内部信号，不对外暴露）。"""
+
+
+async def _answer_with_heartbeat(
+    holder: dict,
+    scope: Scope,
+    request: QARequest,
+    ctx: Optional[CallContext],
+    encoder: EventEncoder,
+) -> AsyncIterator[bytes]:
+    """在线程池里跑同步 ``svc.answer``，等待期间发注释帧保活并守住 deadline。
+
+    为什么要保活：一次草稿实测可长达 100s+，期间一个字节都不发；虽然本机没有反向代理，
+    但浏览器/中间件/容器网络都可能在静默连接上动手脚，用户看到的就是"一直在转"。
+    为什么要有流级 deadline：``ai.complete`` 的截止时间只在**模型调用**那一层生效，
+    检索/闸门/持久化不受它约束；这里按 ``ctx.deadline_at`` 兜一层总闸。
+    """
+    loop = asyncio.get_event_loop()
+    task = loop.run_in_executor(None, svc.answer, scope, request, ctx)
+    deadline = _deadline_ts(ctx)
+    while True:
+        timeout = _heartbeat_seconds()
+        if deadline is not None:
+            # 注意：deadline 是 datetime，相减得到 timedelta —— 必须 total_seconds()，
+            # 否则 min(float, timedelta) 直接 TypeError，**每一次真实 SSE 都会变成 error**。
+            remaining = (deadline - _now_ts()).total_seconds()
+            if remaining <= 0:
+                raise DomainError(
+                    ErrorCode.DEADLINE_EXCEEDED,
+                    "回答超过约定截止时间仍未完成，已中断（可重试或换一种问法）",
+                )
+            timeout = min(timeout, remaining)
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+        if done:
+            break
+        yield encoder.comment()
+    holder["record"] = task.result()
+
+
+def _heartbeat_seconds() -> float:
+    """读模块级常量（测试可 monkeypatch ``stream.HEARTBEAT_SECONDS``）。"""
+    return float(globals().get("HEARTBEAT_SECONDS", 10.0))
+
+
+def _deadline_ts(ctx: Optional[CallContext]):
+    value = getattr(ctx, "deadline_at", None) if ctx is not None else None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _now_ts() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 async def heartbeat_stream(
@@ -328,8 +395,17 @@ def _cancelled_error() -> dict:
 
 
 def _internal_error(exc: Exception) -> dict:
+    # 带上异常正文：这类"未知异常"以前只有类型名，线上排查只能靠猜（实测吃过一次亏）
     return DomainError(
-        ErrorCode.INTERNAL_ERROR, f"内部错误：{type(exc).__name__}"
+        ErrorCode.INTERNAL_ERROR, f"内部错误：{type(exc).__name__}: {exc}"
+    ).to_dict()
+
+
+def _missing_terminal_error() -> dict:
+    """防御性兜底：走到这里说明有代码路径没发终结事件（理论不可达）。"""
+    return DomainError(
+        ErrorCode.STREAM_NO_TERMINAL_EVENT,
+        "本次回答没有产生完整结果（服务端自检触发），请重试一次",
     ).to_dict()
 
 

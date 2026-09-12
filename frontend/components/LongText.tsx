@@ -5,13 +5,15 @@
 // 为什么需要：`sections[].body` 是**章节原文全文**（实测最长 6647 字）、
 // `pages[].text` 是整页原文，此前整段塞进一个 <p>：没有段落间距、没有行宽限制，
 // 一大坨挤在一起，读者无法定位。这里统一处理：
-//   ① 按换行切段，逐段渲染（段间留白）；
+//   ① 按换行切段，逐段渲染（段间留白）；切段是**数学感知**的（splitParagraphs），
+//      不会把跨行块级公式 `$$\n…\n$$` 拦腰截断（截断后永远配不成公式，就是"乱码"）；
 //   ② 每段过 MathText（KaTeX + 转义清理）；
 //   ③ 长文默认折叠（可给出高度阈值），点"展开全文"再展开——避免首屏被一大段塞满。
 
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { MathText } from '@/components/MathText';
+import { splitParagraphs } from '@/lib/richtext';
 import { cn } from '@/lib/cn';
 
 export function LongText({
@@ -33,14 +35,7 @@ export function LongText({
   clampLines?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const paragraphs = useMemo(() => {
-    const raw = (text || '').replace(/\r\n/g, '\n');
-    const parts = raw
-      .split(/\n{2,}|\n/)
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0);
-    return parts;
-  }, [text]);
+  const paragraphs = useMemo(() => splitParagraphs(text || ''), [text]);
 
   if (paragraphs.length === 0) return null;
 

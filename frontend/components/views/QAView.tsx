@@ -9,11 +9,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Send, ShieldCheck, ShieldAlert, Quote, FileText, CornerDownLeft, ChevronDown, Loader2, Info } from 'lucide-react';
+import { Send, ShieldCheck, ShieldAlert, Quote, FileText, CornerDownLeft, ChevronDown, Loader2, Info, SearchX, MessageCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { AskResponse, EvidenceOut, PaperDetail } from '@/lib/types';
 import type {
-  EvidenceRecord, NavigationTarget, QACitation, QAFinal, QASentence, QAStatus, Scope,
+  EvidenceRecord, NavigationTarget, QACitation, QAFinal, QAMeta, QASentence, QAStatus, Scope,
 } from '@/lib/contracts';
 import { useQAStream } from '@/hooks/useQAStream';
 import { Badge, Btn, GlassCard, Kicker, Spinner } from '@/components/ui';
@@ -135,11 +135,15 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
       setStreamQuestion('');
       void askFallback(q);
     }
-    // **流结束却没有 final**：以前这里什么都不做 → 用户看到的是"转圈转了一会儿就没反应"
-    // （该说话的时候界面一片空白）。现在必须给出交代：把已收到的句子/引用落成一条消息，
-    // 并明确说明"回答被中断"，而不是静默。（ADR-0069）
+    // **流结束却没有 final**（ADR-0069 / REFACTOR_PLAN M6）：
+    // 以前这里什么都不做 → 用户看到"转圈转了一会儿就没反应"。
+    // 现在分两步：① 若已拿到 meta.answer_id，就按它去后端**取回已落库的结果**
+    // （服务端在发 final 之前就持久化了，网络断了不代表答案没了）；② 取不回来才退回
+    // "已生成的部分 + 可重试"提示，绝不静默。
     if (stream.state === 'completed' && !finalEv && !streamDoneRef.current) {
       streamDoneRef.current = true;
+      const meta = stream.events.find((e) => e.type === 'meta');
+      const answerId = (meta?.data as QAMeta | undefined)?.answer_id;
       const sentences = stream.events
         .filter((e) => e.type === 'sentence')
         .map((e) => {
@@ -150,35 +154,63 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
         .filter((e) => e.type === 'citation')
         .map((e) => (e.data as QACitation).evidence);
       const partial = sentences.map((s) => s.text).join(' ').trim();
-      setMsgs([
-        ...msgs,
-        { role: 'user', text: streamQuestion },
-        {
-          role: 'assistant',
-          text: partial,
-          resp: {
-            answer: partial,
-            grounded: false,
-            confidence: 'Low',
-            evidence: citations.map((c) => ({
-              page: c.source_page,
-              region: c.source_region?.[0]?.page_label ?? c.anchor_id,
-              region_type: 'anchor',
-              text: c.source_text,
-              quote: c.source_text,
-              confidence: c.confidence ?? 0,
-            })),
-            note: partial
-              ? '本次回答被中断（未收到完整结果），以上是已生成的部分；可以再问一次。'
-              : '本次回答被中断或超时，没有生成内容；请再问一次或换一种问法。',
-            mode: 'interrupted',
+
+      const finish = (resp: AskResponse, note: string) => {
+        setMsgs([
+          ...msgs,
+          { role: 'user', text: streamQuestion },
+          { role: 'assistant', text: resp.answer, resp: { ...resp, note, mode: resp.mode ?? 'cached' },
+            sentences, citations, streamed: true },
+        ]);
+        setStreamQuestion('');
+      };
+
+      if (answerId && scope) {
+        void api
+          .qaAnswer(scope.paper_id, answerId)
+          .then((r) => {
+            if (r.status === 'completed' && r.legacy) {
+              finish(r.legacy, '连接中断，已从服务端取回完整结果。');
+              return;
+            }
+            fallbackPartial();
+          })
+          .catch(() => fallbackPartial());
+        return;
+      }
+      fallbackPartial();
+
+      function fallbackPartial() {
+        setMsgs([
+          ...msgs,
+          { role: 'user', text: streamQuestion },
+          {
+            role: 'assistant',
+            text: partial,
+            resp: {
+              answer: partial,
+              grounded: false,
+              confidence: 'Low',
+              evidence: citations.map((c) => ({
+                page: c.source_page,
+                region: c.source_region?.[0]?.page_label ?? c.anchor_id,
+                region_type: 'anchor',
+                text: c.source_text,
+                quote: c.source_text,
+                confidence: c.confidence ?? 0,
+              })),
+              note: partial
+                ? '本次回答被中断（未收到完整结果），以上是已生成的部分；可以再问一次。'
+                : '本次回答被中断或超时，没有生成内容；请再问一次或换一种问法。',
+              mode: 'interrupted',
+            },
+            sentences,
+            citations,
+            streamed: true,
           },
-          sentences,
-          citations,
-          streamed: true,
-        },
-      ]);
-      setStreamQuestion('');
+        ]);
+        setStreamQuestion('');
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream.state, stream.events, streamQuestion]);
@@ -281,7 +313,13 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
               ) : (
                 <div className="w-full">
                   <div className="mb-1.5 flex items-center gap-2">
-                    {m.resp?.grounded ? (
+                    {m.resp?.mode === 'not_mentioned' ? (
+                      <Badge tone="slate"><SearchX className="h-3 w-3" /> 论文未提及</Badge>
+                    ) : m.resp?.mode === 'general' ? (
+                      <Badge tone="cyan"><MessageCircle className="h-3 w-3" /> 通用回答 · 未用论文证据</Badge>
+                    ) : m.resp?.mode === 'interrupted' ? (
+                      <Badge tone="amber"><ShieldAlert className="h-3 w-3" /> 回答被中断</Badge>
+                    ) : m.resp?.grounded ? (
                       <Badge tone="emerald"><ShieldCheck className="h-3 w-3" /> 有据可依</Badge>
                     ) : (
                       <Badge tone="amber"><ShieldAlert className="h-3 w-3" /> 无证据支持</Badge>

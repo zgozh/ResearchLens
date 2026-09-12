@@ -321,7 +321,8 @@ def _is_refusal(answer) -> bool:
     """
     mode = getattr(answer, "mode", None)
     if mode:
-        return mode == "abstained"
+        # ``not_mentioned``（"论文中没有提到 X"）也是拒答：它同样没交付任何论文内容。
+        return mode in ("abstained", "not_mentioned")
     # 没有 mode 字段（旧记录）→ 退化为"是否交付内容"：无句子且无文本才算拒答
     statements = getattr(answer, "statements", None) or []
     text = getattr(getattr(answer, "text", None), "text", "") or ""

@@ -418,6 +418,37 @@ async def qa_stream(paper_id: int, body: QARequest, revision_id: Optional[str] =
     )
 
 
+@router.get("/papers/{paper_id}/qa/answers/{answer_id}")
+def qa_answer_recover(paper_id: int, answer_id: str, db: Session = Depends(get_db)):
+    """断流恢复（REFACTOR_PLAN M6 §5.2）：按 answer_id 取回**已落库**的回答。
+
+    为什么需要：浏览器上一次 SSE 可能被网络/服务重启切断在 final 之前。答案其实
+    **已经落库**（服务端在发 final 前就持久化了），但前端没有凭据去取。现在 ``meta``
+    事件先发 ``answer_id``，客户端断流后可以凭它在 30 秒内把结果捞回来，
+    而不是让用户重问一遍、白烧一次模型调用。
+    """
+    from app.modules.qa import repository as qa_repository
+    from app.modules.qa import service as qa_service
+
+    row = qa_repository.get_answer(db, answer_id)
+    if row is None:
+        raise not_found(f"没有这个回答：{answer_id}")
+    record = qa_service._row_to_answer(row)
+    if record is None:
+        # 行还在写（streaming）或旧数据缺字段：如实告诉客户端"还在生成，稍后再拉"
+        return {"status": "streaming", "answer_id": answer_id}
+    payload = stream_mod_legacy(record)
+    return {"status": "completed", "answer_id": answer_id, "legacy": payload,
+            "answer": record.model_dump(mode="json")}
+
+
+def stream_mod_legacy(record):
+    """复用 SSE final 的 legacy 投影，保证"流里看到的"和"恢复取回的"完全一致。"""
+    from app.modules.qa.stream import _legacy_answer
+
+    return _legacy_answer(record)
+
+
 # ================================================================== jobs events / cancel / retry
 
 

@@ -18,6 +18,7 @@ import type { GraphOut, GraphNode, ClaimOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { api } from '@/lib/api';
 import { SourceMedia } from '@/components/source/SourceMedia';
+import { layoutGraph } from '@/lib/graphLayout';
 import { cn } from '@/lib/cn';
 
 // D29 修复：此前只写死 problem/method/experiment/claim/evidence/media 六类，
@@ -105,32 +106,49 @@ export function GraphView({ graph, accent, onClaimSelected, paperId, onNavigate,
     return { order, x, color, label };
   }, [graph.nodes]);
 
-  const nodes = useMemo<Node[]>(() => {
-    const perKind: Record<string, number> = {};
-    return graph.nodes.map((n) => {
-      const kind = n.kind;
-      const col = kindMeta.x[kind] ?? 0;
-      const row = perKind[kind] ?? 0;
-      perKind[kind] = row + 1;
-      return {
-        id: n.id, type: 'lens',
-        position: { x: col * 250, y: row * 90 },
-        data: {
-          label: n.label, kind, props: n.props, claim_id: n.props?.claim_id,
-          color: kindMeta.color[kind],
-        },
-      };
-    });
-  }, [graph.nodes, kindMeta]);
+  // M8：分层布局只算一次（泳道 + 拓扑层 + 保证不重叠），节点位置与边标签共用结果。
+  // 旧实现是 `col*250, row*90` 的手写网格 —— 行距 90 小于节点实际高度（~104），
+  // 同列节点互相压住，连线与关系名字都被盖掉（用户反馈"全堆在一起、看不到关系名字"）。
+  const layout = useMemo(
+    () =>
+      layoutGraph(
+        graph.nodes.map((n) => ({ id: n.id, kind: n.kind })),
+        graph.edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+      ),
+    [graph.nodes, graph.edges],
+  );
+
+  const nodes = useMemo<Node[]>(
+    () =>
+      graph.nodes.map((n) => {
+        const kind = n.kind;
+        const pos = layout.positions[n.id] ?? { x: 0, y: 0, lane: kind, layer: 0 };
+        return {
+          id: n.id, type: 'lens',
+          position: { x: pos.x, y: pos.y },
+          data: {
+            label: n.label, kind, props: n.props, claim_id: n.props?.claim_id,
+            color: kindMeta.color[kind],
+          },
+        };
+      }),
+    [graph.nodes, kindMeta, layout],
+  );
 
   const edges = useMemo<Edge[]>(() => {
-    return graph.edges.map((e) => ({
-      id: e.id, source: e.source, target: e.target, label: e.label, animated: true,
-      style: { stroke: `${accent}88`, strokeWidth: 1.4 },
-      labelStyle: { fill: '#94A3B8', fontSize: 10 },
-      labelBgStyle: { fill: '#0c1830', fillOpacity: 0.9 }, labelBgPadding: [4, 2] as [number, number], labelBgBorderRadius: 4,
-    }));
-  }, [graph.edges, accent]);
+    return graph.edges.map((e) => {
+      // 关系名字只在**不压节点**时显示（避不开就宁可不显示，不可遮挡）
+      const lp = layout.edgeLabels[e.id];
+      const label = e.label && lp && !lp.hidden ? e.label : undefined;
+      return {
+        id: e.id, source: e.source, target: e.target, label, animated: true,
+        style: { stroke: `${accent}88`, strokeWidth: 1.4 },
+        labelStyle: { fill: '#94A3B8', fontSize: 10 },
+        labelBgStyle: { fill: '#0c1830', fillOpacity: 0.92 },
+        labelBgPadding: [4, 2] as [number, number], labelBgBorderRadius: 4,
+      };
+    });
+  }, [graph.edges, accent, layout]);
 
   const onNodeClick = (_: any, node: Node) => {
     const found = graph.nodes.find((n) => n.id === node.id) || null;

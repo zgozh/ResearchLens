@@ -34,6 +34,9 @@ backend/data/uploads/
 backend/app/tests/unit/_tmp/
 backend/app/tests/unit/_tmp_shared/
 
+# 前端内核单测的 tsc 编译产物（npm run test:rich 生成）
+frontend/.tmp/
+
 # 本地工具状态（备份 tarball 等，非源码）
 .workbuddy/
 

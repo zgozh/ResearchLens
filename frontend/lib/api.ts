@@ -135,6 +135,13 @@ export const api = {
       body: JSON.stringify({ question }),
       headers: JSON_HEADERS,
     }),
+  /** 断流恢复（REFACTOR_PLAN M6）：按 answer_id 取回**已落库**的回答。 */
+  qaAnswer: (id: number, answerId: string) =>
+    http<{
+      status: 'streaming' | 'completed';
+      answer_id: string;
+      legacy?: AskResponse;
+    }>(`/api/papers/${id}/qa/answers/${encodeURIComponent(answerId)}`),
   evaluation: (id: number) =>
     http<EvaluationOut>(`/api/papers/${id}/evaluation`),
   // --- live: upload + process ---

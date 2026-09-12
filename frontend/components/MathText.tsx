@@ -1,121 +1,41 @@
 'use client';
 
+// 公式/富文本渲染（REFACTOR_PLAN M2/M3）。
+//
+// 历史：这里曾自己实现"切分 $…$ / $$…$$ + 清 LaTeX + escapeHtml"，与表格、媒体介绍、
+// 证据抽屉里的另外三份实现**行为不一致**，于是同一段 MinerU 文本在不同面板表现不同
+// （实测：`<sup>∗</sup>` 在正文被转义成字面量、`$$…\tag{1}$$` 在媒体介绍里原样显示）。
+//
+// 现在它是 `lib/richtext.ts` 唯一内核的薄壳：解析 / 渲染 / 降级 / 安全全部在内核里，
+// 本文件只负责套一层元素与类名。**不要在这里再加任何解析逻辑。**
+
 import { useMemo } from 'react';
-import katex from 'katex';
-import 'katex/dist/katex.min.css';
+import { renderRichHtml, type Tone } from '@/lib/richtext';
 import { cn } from '@/lib/cn';
 
-/** 把 LaTeX/乱码符号清理为可读文本（非公式场景）。 */
-function cleanPlain(text: string): string {
-  // 去掉围栏里的 raw LaTeX 命令残留
-  return text
-    .replace(/\\(?:times|cdot|le|ge|neq|approx|pm|times|div|rightarrow|leftarrow|ast|star)\b/g, (m) =>
-      ({ times: '×', cdot: '·', le: '≤', ge: '≥', neq: '≠', approx: '≈', pm: '±', div: '÷', rightarrow: '→', leftarrow: '←', ast: '*', star: '★' }[m.replace('\\', '')] || m),
-    )
-    .replace(/\\(?:text|mathrm|mathbf|mathit|operatorname|mathbb|mathcal|bf|it)\{([^}]*)\}/g, '$1')
-    .replace(/\\(?:frac|dfrac)\{([^}]*)\}\{([^}]*)\}/g, '$1/$2')
-    .replace(/\\_/g, '_')
-    .replace(/\\%/g, '%')
-    .replace(/\\&/g, '&')
-    .replace(/\\#/g, '#')
-    .replace(/\\\{/g, '{')
-    .replace(/\\\}/g, '}')
-    // **孤立美元符**：MinerU 的标记偶发落单（实测 paper 7 有 `$` 后跟一大段正文再出现下一个 `$`），
-    // 配不成公式就原样显示，用户看到的就是"乱码"。这里把**没能配对**的 `$` 直接去掉。
-    .replace(/\$/g, '');
-}
+export function MathText({
+  text,
+  className,
+  tone = 'dark',
+  blockMath = true,
+}: {
+  text?: string | null;
+  className?: string;
+  /** 深色阅读面板（默认）或浅色原件/表格卡片。 */
+  tone?: Tone;
+  blockMath?: boolean;
+}) {
+  const html = useMemo(() => {
+    if (!text) return '';
+    return renderRichHtml(text, { tone, blockMath }).html;
+  }, [text, tone, blockMath]);
 
-function toKatex(tex: string, display: boolean): string {
-  try {
-    return katex.renderToString(tex, {
-      displayMode: display,
-      throwOnError: false,
-      strict: false,
-      output: 'html',
-    });
-  } catch {
-    // 不识别就直接按纯文本放（避免中断整段渲染）
-    return cleanPlain(tex);
-  }
-}
-
-/** 受保护的美元符号占位符：``\$`` 是"字面美元"，不能参与公式定界符匹配。 */
-const DOLLAR_PLACEHOLDER = '\u0001';
-
-/**
- * 渲染可能含 LaTeX 公式的文本：
- * - `$...$` / `\(...\)` → 行内公式（KaTeX）
- * - `$$...$$` / `\[...\]` → 块级公式（KaTeX）
- * - 其余文本做 LaTeX 命令清理 + HTML 实体转义，避免显示未转义符号
- *
- * **`\$` 必须先保护再切分**（实测 paper 2 的 `rf\$importance`）：否则这个 `$`
- * 会和后面任意一个 `$` 配成一对，把中间大段正文吞进"公式"里，看起来就是乱码。
- */
-export function MathText({ text, className }: { text: string; className?: string }) {
-  const parts = useMemo(() => {
-    if (!text) return [{ type: 'plain', val: '' }] as { type: 'plain' | 'math'; val: string; display?: boolean }[];
-    // 先切块级公式，再切行内公式
-    const tokens: { type: 'plain' | 'math'; val: string; display?: boolean }[] = [];
-    const rest = text.replace(/\\\$/g, DOLLAR_PLACEHOLDER);
-    // 块级：$$...$$ 或 \[...\]
-    const blockRe = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g;
-    let last = 0;
-    let m: RegExpExecArray | null;
-    while ((m = blockRe.exec(rest)) !== null) {
-      if (m.index > last) tokens.push({ type: 'plain', val: rest.slice(last, m.index) });
-      tokens.push({ type: 'math', val: (m[1] ?? m[2]).trim(), display: true });
-      last = m.index + m[0].length;
-    }
-    if (last < rest.length) tokens.push({ type: 'plain', val: rest.slice(last) });
-    // 再把每个 plain 内部的行内公式切开：$...$ 与 \(...\)
-    const out: { type: 'plain' | 'math'; val: string; display?: boolean }[] = [];
-    for (const t of tokens) {
-      if (t.type === 'math') {
-        out.push(t);
-        continue;
-      }
-      const inlineRe = /\$([^$\n]+?)\$|\\\(([\s\S]+?)\\\)/g;
-      let last2 = 0;
-      let m2: RegExpExecArray | null;
-      while ((m2 = inlineRe.exec(t.val)) !== null) {
-        if (m2.index > last2) out.push({ type: 'plain', val: t.val.slice(last2, m2.index) });
-        const tex = (m2[1] ?? m2[2]).trim();
-        if (tex && !/^\s*[a-zA-Z0-9\s,.\u4e00-\u9fff，。、：；]{0,3}\s*$/.test(tex) && /[\\=_{}^]/.test(tex)) {
-          out.push({ type: 'math', val: tex, display: false });
-        } else {
-          // 太短或无 LaTeX 特征（如 $^1$ 上标、$a$ 单字母）——不当公式，清理文本
-          out.push({ type: 'plain', val: m2[0] });
-        }
-        last2 = m2.index + m2[0].length;
-      }
-      if (last2 < t.val.length) out.push({ type: 'plain', val: t.val.slice(last2) });
-    }
-    return out;
-  }, [text]);
-
+  if (!html) return null;
   return (
-    <span className={cn('text-[13.5px] leading-relaxed', className)}>
-      {parts.map((p, i) =>
-        p.type === 'math' ? (
-          <span
-            key={i}
-            className={p.display ? 'rl-math-block' : 'rl-inline-math'}
-            // KaTeX 输出已做转义；用 HTML 渲染公式
-            dangerouslySetInnerHTML={{ __html: toKatex(p.val, !!p.display) }}
-          />
-        ) : (
-          <span
-            key={i}
-            dangerouslySetInnerHTML={{
-              __html: escapeHtml(cleanPlain(p.val)).split(DOLLAR_PLACEHOLDER).join('$'),
-            }}
-          />
-        ),
-      )}
-    </span>
+    <span
+      className={cn('text-[13.5px] leading-relaxed', className)}
+      // 内核输出：文本已 escapeHtml、行内标签走白名单、公式为 KaTeX（trust=false）
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
   );
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

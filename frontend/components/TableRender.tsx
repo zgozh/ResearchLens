@@ -3,6 +3,7 @@
 import type { TableOut } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { renderMathInHtml } from '@/lib/mathHtml';
+import { renderRichHtml } from '@/lib/richtext';
 
 /** 安全地渲染原始表格：优先展示 MinerU 原始 HTML 表（保留原格式/合并单元格/公式），
  *  仅当无 table_html 时才回退到 content 矩阵。已做基础消毒（去 script/on* 事件）。 */
@@ -34,7 +35,9 @@ export function TableRender({ table, className }: { table: TableOut; className?:
         <thead>
           <tr className="bg-white/[0.04]">
             {(table.content[0] || []).map((h, i) => (
-              <th key={i} className="border-b border-[var(--line)] px-2.5 py-1.5 font-medium text-slate-200">{h}</th>
+              <th key={i} className="border-b border-[var(--line)] px-2.5 py-1.5 font-medium text-slate-200">
+                <span dangerouslySetInnerHTML={{ __html: renderRichHtml(String(h ?? '')).html }} />
+              </th>
             ))}
           </tr>
         </thead>
@@ -42,7 +45,10 @@ export function TableRender({ table, className }: { table: TableOut; className?:
           {table.content.slice(1).map((row, ri) => (
             <tr key={ri} className="border-b border-[var(--line)]">
               {row.map((cell, ci) => (
-                <td key={ci} className="px-2.5 py-1.5 text-slate-300">{cell}</td>
+                <td key={ci} className="px-2.5 py-1.5 text-slate-300">
+                  {/* 矩阵回退路径里的单元格同样可能夹 LaTeX：与正文/表格共用同一内核 */}
+                  <span dangerouslySetInnerHTML={{ __html: renderRichHtml(String(cell ?? '')).html }} />
+                </td>
               ))}
             </tr>
           ))}

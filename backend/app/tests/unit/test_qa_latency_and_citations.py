@@ -364,7 +364,10 @@ class TestAbsentObjectRefusal:
         monkeypatch.setattr(qs, "_llm_draft", boom)
         rec = qs.answer(real_scope, QARequest(question="本文是如何使用 Kubernetes 完成实验与部署的？"),
                         new_ctx(real_scope))
-        assert rec.mode == "abstained", f"必须拒答，实际 {rec.mode}"
+        # REFACTOR_PLAN M7：拒答也要说人话 —— 从"空白 abstained"改成
+        # mode=not_mentioned 且正文点名"论文中没有提到 Kubernetes"。
+        assert rec.mode == "not_mentioned", f"必须拒答，实际 {rec.mode}"
+        assert "Kubernetes" in rec.text.text
         assert any(getattr(w, "code", "") == "question_object_absent" for w in rec.warnings)
 
 

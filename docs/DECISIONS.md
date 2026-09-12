@@ -1152,3 +1152,126 @@
 ## D-47 附（措辞修正）
 
 原文写"Compose 的 `.env` 是按当前工作目录查找的"，实测更精确的说法是：**Compose 先看当前工作目录的 `.env`、再看项目目录（compose 文件所在目录）的 `.env`，前者优先**。证据：`backend/.env` 存在时（以 `backend/` 为 CWD）端口/CORS 被它覆盖成 8001/3001；把它改名后，同样的工作目录又能正确读到根 `.env`（8002/4002、`DEMO_MODE=false`）。
+
+---
+
+# 第五批：REFACTOR_PLAN（docs/REFACTOR_PLAN.md）M1–M8 落地
+
+## D-71 富文本渲染统一到**一个内核**（"看论文像看乱码"的根因与修法）
+
+- **用户实测**：结构化导读/全文原文里出现 `Ashish Vaswani<sup>∗</sup> Google Brain
+  avaswani@google.com`、`$P _ { d r o p } = 0 . 1$`；"原件媒体"的介绍里出现
+  `$$ \operatorname{Attention}(Q,K,V)=…\tag{1} $$`。
+- **根因（四处各写各的 + 一个真 bug）**：
+  1. 正文走 `LongText → MathText`：`MathText` 自己实现了一套 `$…$` 切分，**且把 `<sup>`
+     当普通文本 `escapeHtml`** → 标签变成字面量；
+  2. 表格走 `TableRender/ExtractedTable` 的 `dangerouslySetInnerHTML`，另有一套
+     `renderMathInHtml`；媒体介绍走 `ExtractedFormula`，把**带 `$$` 定界符与 `\tag`
+     的原始串**直接丢给 KaTeX（`throwOnError:false` → 渲染成红色错误串）；
+  3. 证据引文走 `RichText`（`**bold**`/`图N` 那套），**完全没有公式渲染**；
+  4. **真 bug**：`LongText` 先 `split(/\n/)` 再逐段渲染 → **跨行块级公式
+     `$$\n…\tag{1}\n$$` 被拦腰截断**，永远配不成公式 —— 这才是"媒体介绍里那段 LaTeX 原样显示"
+     的直接原因（`MathText` 收到的是半截 `$$`）。
+- **修法**：新增 `frontend/lib/richtext.ts` 作为**唯一**解析/渲染内核
+  （`parseRichText` / `renderRichHtml` / `splitParagraphs` / `compactLatex` /
+  `renderMathInHtmlString`），并把 `MathText`、`LongText`、`TableRender`、
+  `RichText`（方法步骤/问答正文）、`ExtractedFormula`、`SourceMedia` 的题注
+  **全部改为委托它**。内核规则：文本一律 `escapeHtml`；行内标签只放行
+  `sup/sub/i/b/em/strong/code/br`；公式压掉 MinerU 的 token 断裂
+  （`P _ { d r o p } = 0 . 1` → `P_{drop}=0.1`）；`\tag{N}` 剥离成编号角标；
+  未配对 `$` 丢弃并记 `UNPAIRED_DOLLAR`；KaTeX 失败降级为**去定界符**的等宽文本
+  （绝不让 `$`/`$$`/`\tag` 出现在 DOM 里）；`splitParagraphs` **数学感知**，不再切碎块级公式。
+- **实测（真实数据，不是截图）**：`.scratch/verify_richtext_live.cjs` 把线上 API 返回的
+  每一条文本都喂给内核 —— paper 7（Attention）扫描 70 段：剩余 `$` **0**、
+  被转义的标签字面量 **0**、残留 `\tag` **0**、渲染出 KaTeX **1302** 个；
+  paper 1：60 段 / 1190 个公式，paper 10：106 段 / 1287 个公式，**均为 0 残留**。
+- **测试**：`frontend/tests/richtext.spec.ts`（`npm run test:rich`，23 条）覆盖
+  `<sup>` 语义化、行内/块级公式、`\tag`、未配对 `$`、`\$` 字面美元、非白名单标签、
+  控制符、幂等、`plain`/`rich` 逐字一致、KaTeX 降级、表格 HTML 就地渲染、以及
+  `<script>`/`<img onerror>` 不产生可执行节点。
+- **踩坑（值得记）**：内核第一版把扫描正则放在模块级并递归调用自己解析 `<sup>` 内容 →
+  **`g` 正则的 `lastIndex` 被递归覆盖 → 死循环吃满 4GB 堆**（node OOM）。现在每次调用
+  新建正则实例。另有占位符选了 `\u0001`，被控制符清洗规则当脏字符删掉，
+  导致 `rf\$importance` 里的 `$` 静默消失 —— 占位符改用私用区 `\uE000/\uE001`。
+
+## D-72 问答「论文相关」判据加宽 + 拒答**必须有话可说**
+
+- **用户实测（2026-09-12，paper 7 逐条探针）**：
+  | 问题 | 修前 | 修后 |
+  |---|---|---|
+  | 这篇论文哪里最值得质疑？ | `abstained`，**answer 空串** | `abstained`，**如实说明 + 最接近的原文片段** |
+  | 主要贡献是什么？ | `general`（用通用助手口吻答"我提供的是通用助手…"） | **`generated` + 2 引用 + 真答案** |
+  | 论文用了什么数据？ | `abstained`，空串 | `abstained`，**如实说明 + 片段线索** |
+  | 你好，介绍一下你自己 | `general`（本来就对） | `general`（不变） |
+- **根因一（路由错）**：`_is_paper_related` 只认"论文/本文…"指向词 + `vector_score ≥ 0.6`。
+  **实测同一篇论文上所有问题的 `vector_score` 都在 0.41–0.60**（包括明确指向论文的问题），
+  0.6 这条线**实际不可达**；而 rerank 分能到 0.55–1.0。→ 加两路判据：
+  ① 学术话题词（贡献/数据集/局限/实验/指标/训练…，日常闲聊几乎不出现）；
+  ② `rerank_score ≥ 0.6`。闲聊与领域常识仍走 `general`（不受限问答这条不能丢）。
+- **根因二（空白拒答）**：`_abstained` 产出 `ArtifactText(text="")`，前端只渲染
+  statements/answer 文本 → 用户看到"无证据支持"外加一片空白，读成"根本没调用到模型"。
+  → 拒答模板化：问的是**具体对象**（"论文提到 Kubernetes 了吗"）→
+  `mode="not_mentioned"` 且点名对象；否则 `mode="abstained"` 解释为什么答不了；
+  两者都附一条**逐字来自检索结果**、明确标注"未通过证据校验、仅供参考"的最接近片段
+  （不产生 evidence、不影响 grounded）。另加 `_ensure_readable` 兜底不变量：
+  **任何**落库答案都必须有正文或句子，空了就补如实说明。
+- **改动面**：`contracts/qa.py`（`AnswerMode` 加 `not_mentioned`）、
+  `qa/answer_gate.is_abstention`、`evaluation/metrics` 的拒答口径同步认它
+  （口径变了两处指标才不会虚高/虚低）。前端 `QAView` 新增"论文未提及 / 通用回答·未用论文证据"
+  两种徽标。
+- **测试**：`backend/app/tests/unit/test_qa_answer_integrity.py`（16 条，含"真实量级
+  vector_score=0.48 仍必须判为论文问题"这条回归锁）。
+
+## D-73 SSE **终结事件保证** + 断流恢复（"本次回答被中断"的服务端根因）
+
+- **用户实测**：证据问答三条默认问题都显示"本次回答被中断或超时，没有生成内容"。
+- **根因（服务端侧，两处真缺陷）**：
+  1. `stream()` 里**只有 `svc.answer(...)` 那一句在 try/except 内**，后面发
+     status/citation/sentence/final 的整段在保护区**之外**：那里一旦抛异常，生成器直接死掉、
+     连接关闭，**既没有 final 也没有 error** → 前端只能显示"被中断"；
+  2. 更隐蔽：`terminal.claim("final")` 在 `_final_payload(record)` **之前**调用 ——
+     投影一旦抛异常，终态位已被占，error 事件**发不出去**（现在先投影、后占位）。
+- **顺带修掉一个必然触发的 bug**：等待生成的循环里 `remaining = deadline - now` 得到
+  `timedelta`，`min(float, timedelta)` 直接 `TypeError` → **每一次真实 SSE 都会变成
+  INTERNAL_ERROR**。由新增的"final 必须存在"测试当场抓住（`total_seconds()` 修复）。
+- **修法**：所有事件都进保护区，任何异常收敛成唯一 `error`；等待期间按
+  `HEARTBEAT_SECONDS` 发注释帧 `: ping` 保活（一次草稿实测可长达 100s+）；
+  按 `ctx.deadline_at` 兜一层**流级**总闸（`ai.complete` 的截止时间只管模型调用那一层）；
+  新增 `GET /papers/{id}/qa/answers/{answer_id}`：`meta` 事件先发 `answer_id`，
+  前端断流后凭它取回**已落库**的结果，而不是让用户重问、白烧一次调用。
+  新增错误码 `STREAM_NO_TERMINAL_EVENT`（服务端自检，理论不可达，出现即报警）。
+- **实测**：修后四条问题（两条论文内、一条领域常识、一条闲聊）**全部**以 `final` 结束
+  （`meta→status→status→…→final`），无一条"被中断"；恢复端点对已有 answer_id 返回
+  `status=completed` + 完整 legacy 投影，对不存在的 id 返回 404。
+- **测试**：`backend/app/tests/unit/test_qa_stream_contract.py`（12 条）覆盖成功/生成异常/
+  **发事件阶段异常**/final 投影异常/超时取消/DomainError/心跳/空正文兜底/
+  终结事件恰一次且此后不再发事件。
+
+## D-74 研究图谱改为**分层布局**（"节点全堆在一起、看不到关系名字"）
+
+- **用户实测**：图谱节点密密麻麻、关系线纠缠、看不到关系名字。
+- **根因**：布局是手写的 `x: col*250, y: row*90` —— **行距 90 小于节点实际高度
+  （约 104px）**，同列节点直接互相压住；连线与边标签都被节点盖掉。
+- **修法**：新增 `frontend/lib/graphLayout.ts`（纯函数、零依赖，不引 ELK/dagre/cytoscape）：
+  泳道（按 kind 分列，列宽 = 节点宽 + 间距）→ 拓扑分层（Kahn 最长路径，**有环不死循环**）
+  → 层内按原始序 → `y = 行号 × (节点高 + 间距)`，**行距大于节点高，全局无重叠**；
+  边标签放中点，与节点包围盒相交时逐级纵向避让，避不开就 `hidden`
+  （**宁可不显示，也不让文字压在节点上**）。确定性：同输入同输出。
+- **实测**：`npm run test:graph`（9 条，`frontend/tests/graphLayout.spec.ts`）对
+  39 节点/33 边、100 节点图断言"任意两节点包围盒不相交"、边标签不压节点、
+  同输入两次调用 deep equal、含环图有位置、100 节点布局 < 200ms、bounds 覆盖全部节点。
+
+## D-75 `textnorm` 模块（M1）落地，但**尚未接入流水线**（如实登记）
+
+- **做了什么**：新增 `backend/app/modules/textnorm/`（纯规则、零 LLM、零 DB）与
+  `backend/app/contracts/textnorm.py`，对外只暴露 `normalize(text, kind)` 与 `scan(text)`，
+  产出 `NormalizedText{plain, rich, issues}`；`backend/app/tests/unit/test_textnorm.py` 88 条全绿。
+- **明确未做（不要误解为已生效）**：**没有任何既有模块 import 它** —— 导入阶段的
+  `textnorm` 阶段、`blocks.normalized_*` 落库、以及 M5（证据门判定输入规范化）
+  都还没做。当前线上"看起来正常"靠的是前端内核（D-71）与后端原有的清洗逻辑。
+- **一处与任务书的偏离（有理由，已锁测试）**：plain 里未配对 `$` 写作 `\$`、
+  未知标签写作 `&lt;unk&gt;`。任务书同时要求"plain 保留字面 `<unk>`"与"二次 normalize
+  不再产 UNKNOWN_TAG"，这在纯字符串上不可兼得（plain 里出现字面 `<unk>` ⟺ 再命中一次）。
+  选择幂等 + 不丢字符（转义可逆，测试断言实体解码后与原文逐字相同）。
+- **下一步**：M5 把 `textnorm.normalize` 接进证据门（判定输入用 `plain`、保留 `raw` 供逐字核对），
+  这才是它真正产生价值的地方。

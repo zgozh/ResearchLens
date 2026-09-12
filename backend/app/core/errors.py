@@ -28,6 +28,8 @@ class ErrorCode(str, Enum):
     CANCELLED = "CANCELLED"
     # 业务结果类：通常不抛，仅用于流/任务终态与报告
     EVIDENCE_REJECTED = "EVIDENCE_REJECTED"
+    #: 流式回答**没有产生终结事件**（服务端自检；理论不可达，出现即说明有缺陷被兜住）
+    STREAM_NO_TERMINAL_EVENT = "STREAM_NO_TERMINAL_EVENT"
 
 
 HTTP_STATUS: Dict[ErrorCode, int] = {
@@ -45,6 +47,7 @@ HTTP_STATUS: Dict[ErrorCode, int] = {
     ErrorCode.INTERNAL_ERROR: 500,
     ErrorCode.CANCELLED: 500,  # 仅用于已建立的流/任务终态
     ErrorCode.EVIDENCE_REJECTED: 200,
+    ErrorCode.STREAM_NO_TERMINAL_EVENT: 200,  # 只作为流内 error 事件下发
 }
 
 # 明确可重试的错误码默认值（网络/依赖类）

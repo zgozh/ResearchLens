@@ -118,10 +118,13 @@ class TestGroundedSemantics:
             new_ctx(scope),
         )
         assert record.grounded is False
-        assert record.mode == "abstained"
+        assert record.mode in ("abstained", "not_mentioned")
         assert record.statements == []
         assert record.evidence == []
-        assert record.text.text == ""
+        # REFACTOR_PLAN M7：拒答**不再留空正文**——空白气泡会被用户读成"问答坏了"。
+        # 现在必须给出如实说明（且不冒充证据：statements/evidence 仍为空）。
+        assert record.text.text.strip(), "拒答必须给出可读正文"
+        assert not record.evidence, "拒答正文不是证据，不得进 evidence 列表"
 
     def test_abstention_never_grounded(self, world):
         """**拒答绝不能被判 grounded=true**（哪怕文本里没有拒答词）。"""

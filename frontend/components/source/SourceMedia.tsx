@@ -11,6 +11,7 @@ import { findAsset, resolveMediaPolicy } from '@/lib/sourcePolicy';
 import { SourceBadge } from './SourceBadge';
 import { ExtractedTable } from './ExtractedTable';
 import { ExtractedFormula } from './ExtractedFormula';
+import { MathText } from '@/components/MathText';
 import { cn } from '@/lib/cn';
 import { absoluteApiUrl } from '@/lib/api';
 
@@ -132,7 +133,11 @@ export function SourceMedia({
       </div>
 
       {media.caption && (
-        <p className={cn('px-3 pb-3 text-xs leading-relaxed text-slate-500')}>{media.caption}</p>
+        // 题注同样夹 LaTeX/`<sup>`（实测用户看到的 `$$…\tag{1}$$` 就在这里）：
+        // 与正文、表格共用同一内核渲染，浅色底用 tone="light"
+        <div className="px-3 pb-3">
+          <MathText text={media.caption} tone="light" className={cn('block text-xs leading-relaxed text-slate-500')} />
+        </div>
       )}
     </figure>
   );

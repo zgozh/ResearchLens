@@ -43,8 +43,8 @@ class GateDecision:
 
 
 def is_abstention(note: str, mode: str, sentences: Sequence[VerifiedStatement]) -> bool:
-    """拒答 = 显式 abstained 模式，或没有任何可发布的句子。"""
-    if mode == "abstained":
+    """拒答 = 显式 abstained/not_mentioned 模式，或没有任何可发布的句子。"""
+    if mode in ("abstained", "not_mentioned"):
         return True
     return not _publishable(sentences)
 
