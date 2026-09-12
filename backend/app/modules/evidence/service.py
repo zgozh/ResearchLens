@@ -88,6 +88,7 @@ def _load_gate_input(
     llm_available: bool = False,
     semantic_model_verdict: Optional[str] = None,
     semantic_model_confidence: Optional[float] = None,
+    semantic_model_reason: str = "",
 ) -> GateInput:
     """把 DB 世界读成纯 GateInput（读操作，短事务内完成）。"""
     from app.models.source import RevisionORM
@@ -151,6 +152,7 @@ def _load_gate_input(
         llm_available=llm_available,
         semantic_model_verdict=semantic_model_verdict,
         semantic_model_confidence=semantic_model_confidence,
+        semantic_model_reason=semantic_model_reason,
     )
 
 
@@ -229,9 +231,10 @@ def validate(
     if semantic_verdict is None:
         evidence_text = gate_mod._evidence_text_for(candidates, gate_input.blocks)
         if evidence_text:
-            verdict, confidence, _msg = semantic_mod.judge(draft.text, evidence_text, ctx)
+            verdict, confidence, judge_msg = semantic_mod.judge(draft.text, evidence_text, ctx)
             if verdict is not None:
-                # 拿到判定后重跑 gate（纯函数，无云调用），让 ⑤ 步命中模型分支
+                # 拿到判定后重跑 gate（纯函数，无云调用），让 ⑤ 步命中模型分支。
+                # **把模型给的理由一起带进去**：界面上的"未支持"必须能解释原因（M5）。
                 with session_scope() as db:
                     media_items = _media_dtos(db, draft.scope)
                     gate_input2 = _load_gate_input(
@@ -239,6 +242,7 @@ def validate(
                         llm_available=llm_available,
                         semantic_model_verdict=verdict,
                         semantic_model_confidence=confidence,
+                        semantic_model_reason=judge_msg,
                     )
                     report, _c = gate_mod.assess(draft, gate_input2, review=review)
     return report

@@ -1288,3 +1288,34 @@
   （宁可滚动，不裁掉内容）。旋转后点图仍能打开大图（工具栏按钮在图片节点之外，不误触发）。
 - **测试**：`npm run test:media`（6 条）：角度恒在 {0,90,180,270}、左转不出现负角度、
   缩放边界夹取、非法输入回落、transform 串正确、旋转后容器高度不缩水。
+
+## D-77 证据门：判定输入先规范化 + 判定理由必须透出来（M5）
+
+- **用户实测**："这些未转义导致证据链里引用到这些证据显示『未支持』"。
+- **根因（两处）**：
+  1. `evidence.service.validate` 把 `_evidence_text_for(...)` 拿到的**原文切片原样**送给
+     语义判定模型 —— 切片里带着 MinerU 的 `$P _ { d r o p } = 0 . 1$`、`<sup>∗</sup>`、
+     跨行 `$$…\tag{1}$$`，模型读到的是符号噪声而不是可读句子，判定大面积落到
+     `insufficient`（界面就是"引用到的证据却显示未支持"）；
+  2. 模型**其实输出了 `reason` 字段**（`_Verdict.reason` 是必填），但 `judge()` 返回时
+     被丢弃成固定串"模型语义判定"，`gate.semantic_model_reason` 也不存在 ——
+     用户问"为什么判未支持"时**没有任何答案可看**。
+- **修法**：
+  - 新增 `evidence.semantic.normalize_evidence_text(text) -> (clean, issues)`：走
+    `textnorm.normalize`（M1），**只返回新串、不就地改写原文**（落库引文仍逐字来自原文块，
+    纪律 3 不破）；`textnorm` 不可用时**降级为原文**，绝不中断 gate；
+  - `judge()` / `batch_judge()` 内部对陈述与证据都做规范化（所有调用方自动受益）；
+  - `judge()` 把模型的 `reason` 作为 message 返回；`GateInput` 新增
+    `semantic_model_reason`，`service.validate` 重跑 gate 时把它带进去 →
+    `ValidationReport.reasons[].message` 里能直接看到"模型语义判定：<模型给的理由>"。
+- **实测（真实数据，容器内探针 `.scratch/verify_m5.py`）**：paper 7 的 **173 个 block 中
+  有 48 个**带 `$`/`<sup>`/`\tag`；规范化后 `Ashish Vaswani<sup>∗</sup> Google Brain …`
+  → `Ashish Vaswani∗ Google Brain …`，`$`/`<sup>`/`\tag` 残留**为 0**。
+  （即：此前**约 28% 的证据切片**是带着符号噪声进判定模型的。）
+- **如实说明（未做完的部分）**：本次**只证明了"送进模型的输入干净了"**，
+  **尚未**用同一批 statement 跑"修前/修后 supports 率对比" —— 那需要重跑 verify 阶段
+  （LLM 调用量大），是下一步。所以"未支持变少"目前**只是机制上的推论，不是实测数字**。
+- **测试**：`backend/app/tests/unit/test_evidence_semantic_normalization.py`（10 条）：
+  脏证据送模型前已干净、原文不被就地改写、干净文本零 issue、陈述同样规范化、
+  批量判定同样规范化、依赖不可用降级为原文、模型 reason 透出、空 reason 回落、
+  非法 verdict 仍不猜、gate 状态不被破坏。全量 **709 passed / 0 failed**。

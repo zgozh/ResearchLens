@@ -77,6 +77,37 @@ SEMANTIC_JUDGE_PROMPT = (
 )
 
 
+def normalize_evidence_text(text: str) -> Tuple[str, list]:
+    """把**取证原文**规范化为"模型真正该读的干净文本"（REFACTOR_PLAN M5）。
+
+    为什么必须做（用户实测）：证据切片里带着 MinerU 的原始产物 ——
+    `$P _ { d r o p } = 0 . 1$`、`<sup>∗</sup>`、跨行 `$$…\\tag{1}$$`。
+    这些串以前**原样**送进判定模型，模型读到的是符号噪声而不是可读句子，
+    于是判定大面积落到 `insufficient`，界面上就是"引用到的证据却显示未支持"。
+
+    返回 ``(clean_text, issues)``：
+
+    - 只返回**新串**，绝不就地改写调用方手里的原文 —— 落库引文仍必须逐字来自原文块
+      （纪律 3），规范化只作用于"送给模型的那一份"；
+    - `textnorm` 不可用/抛异常时**降级为原文**（依赖不可用不得中断 gate）。
+    """
+    raw = text or ""
+    if not raw.strip():
+        return raw, []
+    try:
+        from app.modules.textnorm import normalize
+
+        result = normalize(raw, kind="body")
+    except Exception as exc:  # noqa: BLE001 - 规范化是增强，失败必须退回原文
+        log.info("textnorm 不可用，判定输入按原文处理：%s", exc)
+        return raw, []
+    plain = getattr(result, "plain", None)
+    issues = list(getattr(result, "issues", []) or [])
+    if not isinstance(plain, str) or not plain.strip():
+        return raw, issues
+    return plain, issues
+
+
 def judge(
     statement: str,
     evidence_text: str,
@@ -89,11 +120,15 @@ def judge(
     - ``verdict`` ∈ ``{"supports","contradicts","insufficient"}`` 或 ``None``；
     - ``None`` 表示"未判定"（无 LLM / 调用失败 / 输出非法），
       由 ``gate`` 决定降级为 ``unreviewed``；
+    - ``message`` **带上模型自己给的理由**（此前被丢弃成固定的"模型语义判定"，
+      用户问"为什么判未支持"时没有任何答案可看）。
 
     **绝不返回 ``supports`` 之外的成功默认值**——无结论就是无结论。
     """
-    stmt = (statement or "").strip()
-    ev = (evidence_text or "").strip()
+    stmt, _ = normalize_evidence_text(statement)
+    ev, _ = normalize_evidence_text(evidence_text)
+    stmt = (stmt or "").strip()
+    ev = (ev or "").strip()
     if not stmt or not ev:
         return None, None, "陈述或证据为空，无法判定"
 
@@ -139,7 +174,9 @@ def judge(
         conf = float(conf) if conf is not None else None
     except (TypeError, ValueError):
         conf = None
-    return verdict, conf, "模型语义判定"
+    reason = str(getattr(value, "reason", "") or "").strip()
+    message = f"模型语义判定：{reason}" if reason else "模型语义判定"
+    return verdict, conf, message
 
 
 BATCH_JUDGE_PROMPT = (
@@ -169,6 +206,9 @@ def batch_judge(
     （调用方逐句回退到原来的单句判定，不改变正确性，只影响速度）。
     """
     pairs = [(str(s or "").strip(), str(e or "").strip()) for s, e in (items or [])]
+    # 与单句判定同一条纪律：送进模型的是**规范化后的**陈述与证据（M5）
+    pairs = [(normalize_evidence_text(s)[0], normalize_evidence_text(e)[0]) for s, e in pairs]
+    pairs = [(str(s or "").strip(), str(e or "").strip()) for s, e in pairs]
     pairs = [(s, e) for s, e in pairs if s and e]
     if not pairs:
         return {}
@@ -238,6 +278,7 @@ __all__ = [
     "BATCH_JUDGE_PROMPT",
     "MAX_EVIDENCE_CHARS",
     "MAX_STATEMENT_CHARS",
+    "normalize_evidence_text",
     "judge",
     "batch_judge",
 ]

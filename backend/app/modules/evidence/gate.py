@@ -65,6 +65,8 @@ class GateInput:
     #: 模型对"是否支持"的判定（None=未评估/不可用）
     semantic_model_verdict: Optional[str] = None
     semantic_model_confidence: Optional[float] = None
+    #: 模型给出的**理由**（M5：界面上的"未支持"必须能解释为什么，不能只有结论）
+    semantic_model_reason: str = ""
     warnings: List[Warning] = field(default_factory=list)
 
 
@@ -229,7 +231,8 @@ def semantic_verdict(
     # 模型判定优先（若编排器提供了受控判定）
     if gate.semantic_model_verdict in ("supports", "contradicts", "insufficient"):
         conf = gate.semantic_model_confidence
-        return gate.semantic_model_verdict, conf, "模型语义判定"
+        reason = (gate.semantic_model_reason or "").strip()
+        return gate.semantic_model_verdict, conf, (reason or "模型语义判定")
 
     # 无模型：仅允许确定性规则强放行，否则 insufficient（不自动通过）
     if _has_contradiction_marker(evidence) and not _has_contradiction_marker(statement):
