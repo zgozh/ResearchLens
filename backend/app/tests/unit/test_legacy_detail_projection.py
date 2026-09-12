@@ -107,6 +107,106 @@ class TestAbstractFromPages:
         assert abstract_from_page_text("") == ""
 
 
+class TestSectionBodyAndPages:
+    """章节必须给出**真实正文**与**真实页码**。
+
+    实测缺陷：``sections[].body`` 与 ``summary`` 完全相同（都是断言拼接），
+    且 ``page`` 恒为 1 —— 前端"阅读该章节正文"因此永远跳到第 1 页。
+    canonical 的 ``SectionRecord.source_block_ids`` 本来就有真实块与页码。
+    """
+
+    def _block(self, bid, page_id, text):
+        return SimpleNamespace(id=bid, page_id=page_id, text=text)
+
+    def test_body_joins_real_blocks_not_summary(self):
+        from app.modules.papers.legacy import section_body_and_pages
+
+        section = SimpleNamespace(source_block_ids=["b1", "b2"],
+                                  summary=SimpleNamespace(text="这是摘要，不是正文"))
+        blocks = [
+            self._block("b1", "pg1", "第一段真实正文。"),
+            self._block("b2", "pg1", "第二段真实正文。"),
+        ]
+
+        body, start, end = section_body_and_pages(section, blocks, {"pg1": 3})
+
+        assert "第一段真实正文" in body and "第二段真实正文" in body
+        assert "这是摘要" not in body, "正文不得再拿 summary 充数"
+        assert (start, end) == (3, 3)
+
+    def test_pages_span_min_and_max_of_blocks(self):
+        from app.modules.papers.legacy import section_body_and_pages
+
+        section = SimpleNamespace(source_block_ids=["b1", "b2", "b3"], summary=None)
+        blocks = [
+            self._block("b1", "pg5", "起"),
+            self._block("b2", "pg6", "中"),
+            self._block("b3", "pg5", "末"),
+        ]
+
+        _, start, end = section_body_and_pages(section, blocks, {"pg5": 5, "pg6": 6})
+
+        assert (start, end) == (5, 6), "应给出本节的**页范围**，前端据此定位"
+
+    def test_empty_section_returns_zero_not_fabricated(self):
+        from app.modules.papers.legacy import section_body_and_pages
+
+        body, start, end = section_body_and_pages(
+            SimpleNamespace(source_block_ids=[], summary=None), [], {}
+        )
+        assert (body, start, end) == ("", 0, 0)
+
+    def test_unknown_page_mapping_keeps_body_without_pages(self):
+        """块在库里但页码映射缺失 → 仍给正文，页码为 0（不猜）。"""
+        from app.modules.papers.legacy import section_body_and_pages
+
+        section = SimpleNamespace(source_block_ids=["b1"], summary=None)
+        body, start, end = section_body_and_pages(
+            section, [self._block("b1", "pgX", "正文仍在")], {}
+        )
+        assert body == "正文仍在"
+        assert (start, end) == (0, 0)
+
+
+class TestTextMarkupCleanup:
+    """解析器留下的 markdown/LaTeX 转义符必须清掉。
+
+    实测 ``pages[0].text`` 里是 ``…的 JPEG 隐写\\*``、``黄炜 $^{1}$ ，赵险峰`` ——
+    反斜杠转义在页面上就是"一堆没转义的字符"。
+    注意**不能动 ``$...$``**：前端 ``MathText`` 用 KaTeX 渲染它，清了反而丢公式。
+    """
+
+    def test_star_escape_is_removed(self):
+        from app.modules.papers.legacy import clean_text_markup
+
+        assert clean_text_markup("JPEG 隐写\\*") == "JPEG 隐写"
+
+    def test_underscore_and_hash_escapes_unwrapped(self):
+        from app.modules.papers.legacy import clean_text_markup
+
+        assert clean_text_markup("a\\_b 与 c\\#d") == "a_b 与 c#d"
+
+    def test_inline_math_is_preserved_for_katex(self):
+        """``$...$`` 必须原样保留（前端 KaTeX 渲染），否则公式全丢。"""
+        from app.modules.papers.legacy import clean_text_markup
+
+        src = "其中 $8\\times8$ 分块与 $^{1}$ 表示单位阵"
+        out = clean_text_markup(src)
+        assert "$8\\times8$" in out
+        assert "$^{1}$" in out
+
+    def test_nbsp_and_whitespace_normalised(self):
+        from app.modules.papers.legacy import clean_text_markup
+
+        assert clean_text_markup("甲\u00a0\u00a0乙   丙") == "甲 乙 丙"
+
+    def test_empty_is_safe(self):
+        from app.modules.papers.legacy import clean_text_markup
+
+        assert clean_text_markup("") == ""
+        assert clean_text_markup(None) == ""
+
+
 class TestFigureImageUrl:
     def test_figure_carries_asset_url_when_media_has_asset(self):
         """``figures[]`` 必须给出可访问的图片 URL —— 前端不再只认内联 b64。"""

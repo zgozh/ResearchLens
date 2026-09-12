@@ -9,6 +9,7 @@ import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { FigureImage } from '@/components/FigureImage';
 import { cn } from '@/lib/cn';
+import { MathText } from '@/components/MathText';
 
 const KIND_LABEL: Record<string, string> = {
   intro: '引言', method: '方法', experiment: '实验', result: '结果',
@@ -85,7 +86,7 @@ export function MapView({ detail, accent, onOpenSection }: {
               <div key={s.heading}>
                 <button onClick={() => setOpenSec(open ? undefined : i)}
                   className="group flex w-full items-center gap-3 px-5 py-3.5 text-left hover:bg-white/[0.03]">
-                  <span className="grid h-7 w-7 place-items-center rounded-lg bg-white/[0.04] font-mono text-[11px] text-slate-400">{s.page}</span>
+                  <span className="grid h-7 w-7 place-items-center rounded-lg bg-white/[0.04] font-mono text-[11px] text-slate-400">{s.page_end && s.page_end !== s.page_start ? `${s.page_start}–${s.page_end}` : s.page}</span>
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-slate-100">{s.heading}</div>
                     <div className="mt-0.5 line-clamp-1 text-[12px] text-slate-500">{s.summary}</div>
@@ -97,7 +98,7 @@ export function MapView({ detail, accent, onOpenSection }: {
                   <div className="space-y-3 px-5 pb-4 pl-14">
                     {open && (
                       <>
-                        <p className="text-[13px] leading-relaxed text-slate-300">{s.body}</p>
+                        <MathText text={s.body} className="text-[13px] leading-relaxed text-slate-300" />
                         {(s.key_points?.length ?? 0) > 0 && (
                           <ul className="space-y-1">
                             {s.key_points.map((kp, j) => (

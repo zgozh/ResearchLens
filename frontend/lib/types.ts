@@ -29,6 +29,9 @@ export interface SectionOut {
   summary: string;
   body: string;
   key_points: string[];
+  /** 本节覆盖的物理页范围（canonical）；`page` = page_start，用于跳转到对应正文页。 */
+  page_start?: number;
+  page_end?: number;
 }
 
 export interface FigureOut {

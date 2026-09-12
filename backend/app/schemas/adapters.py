@@ -189,6 +189,8 @@ def _section_out(raw: Any, warnings: List[str]) -> SectionOut:
         summary=str(d.get("summary") or ""),
         body=str(d.get("body") or ""),
         key_points=[str(x) for x in (d.get("key_points") or [])],
+        page_start=int(d.get("page_start") or 0),
+        page_end=int(d.get("page_end") or 0),
     )
 
 

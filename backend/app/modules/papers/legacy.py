@@ -91,6 +91,52 @@ def abstract_from_page_text(text: str, *, limit: int = 1200) -> str:
     return re.sub(r"\s+", " ", body)[:limit]
 
 
+#: markdown/LaTeX **转义符**：解析器会把 `*` `_` `#` 等转义成 `\*` `\_` `\#`，
+#: 直接渲染就是"一堆没转义的字符"。只解转义，**不碰 `$...$`**（前端 KaTeX 要它）。
+_MARKDOWN_ESCAPE_RE = re.compile(r"\\([*_#`\[\]()~>+\-.!])")
+
+
+def clean_text_markup(text: Any) -> str:
+    """清掉解析器留下的 markdown 转义与 NBSP；``$...$`` 公式**原样保留**。
+
+    策略分两种（实测中文期刊 PDF 的表现）：
+    - ``\\*`` **整段去掉**：它几乎总是标题/术语上的强调或脚注星号（如
+      "…的 JPEG 隐写\\*"），留成 ``*`` 反而像乱码；
+    - 其余转义 ``\\_ \\# \\&`` 等**解转义**（下划线在 ``W_{u,v}`` 这类标识里是有义的）。
+    """
+    raw = text if isinstance(text, str) else ("" if text is None else str(text))
+    if not raw:
+        return ""
+    out = raw.replace("\\*", "")
+    out = _MARKDOWN_ESCAPE_RE.sub(r"\1", out).replace("\u00a0", " ")
+    return re.sub(r"[ \t]{2,}", " ", out).strip()
+
+
+def section_body_and_pages(section: Any, blocks: Any, page_no_by_id: Dict[str, int]):
+    """章节 → ``(正文, 起始页, 结束页)``。
+
+    - **正文**取该节 ``source_block_ids`` 覆盖的原文块文本；此前直接复用 ``summary``，
+      于是"章节正文"与"章节摘要"是同一段断言拼接，读者看不到真正的正文。
+    - **页码**取这些块所在物理页的最小/最大，供前端"阅读该章节正文"跳转；
+      此前恒为 ``1``，所以永远跳到第 1 页。
+    - 没有块/没有页码映射时分别返回空串与 ``0``（**不猜**）。
+    """
+    wanted = {b for b in (getattr(section, "source_block_ids", None) or []) if b}
+    texts: List[str] = []
+    pages: List[int] = []
+    for block in (blocks or []):
+        if wanted and getattr(block, "id", None) not in wanted:
+            continue
+        text = (getattr(block, "text", "") or "").strip()
+        if text:
+            texts.append(text)
+        page_no = (page_no_by_id or {}).get(getattr(block, "page_id", "") or "")
+        if isinstance(page_no, int) and page_no > 0:
+            pages.append(page_no)
+    body = "\n".join(texts)
+    return body, (min(pages) if pages else 0), (max(pages) if pages else 0)
+
+
 def figure_image_url(media: Any) -> str:
     """媒体 → 可访问的图片 URL（第一个真实图资产）；**无资产则空串**。
 
@@ -149,7 +195,7 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
         if m.kind == "figure":
             figures.append({
                 "fig_no": m.legacy_no or (len(figures) + 1),
-                "caption": m.caption or "",
+                "caption": clean_text_markup(m.caption or ""),
                 "page": page_of_media.get(m.id, 0),
                 "glyph_svg": "",
                 "image_b64": "",
@@ -166,7 +212,7 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
             extracted = m.extracted
             tables.append({
                 "table_no": m.legacy_no or (len(tables) + 1),
-                "caption": m.caption or "",
+                "caption": clean_text_markup(m.caption or ""),
                 "page": page_of_media.get(m.id, 0),
                 "content": [],
                 "table_html": (getattr(extracted, "table_html", "") or ""),
@@ -174,17 +220,31 @@ def get_detail(db: Session, paper_id: int) -> Optional[Any]:
                 "media_id": m.id,
             })
 
-    section_dicts = [
-        {
+    page_no_by_id = {
+        getattr(p, "id", ""): int(getattr(p, "pdf_page_no", 0) or 0) for p in page_items
+    }
+    section_dicts: List[Dict[str, Any]] = []
+    for s in sections:
+        ids = [b for b in (getattr(s, "source_block_ids", None) or []) if b]
+        try:
+            blocks = parse_mod.get_blocks(scope, ids) if ids else []
+        except Exception:  # noqa: BLE001 - 兼容层不得因取块失败而 500
+            blocks = []
+        body, page_start, page_end = section_body_and_pages(s, blocks, page_no_by_id)
+        section_dicts.append({
             "heading": s.heading or "",
             "kind": s.kind or "body",
-            "page": 1,
-            "summary": _text(s.summary),
-            "body": _text(s.summary),
+            # 兼容字段：前端章节在 badge 里显示它，并据此跳转
+            "page": page_start or 1,
+            "page_start": page_start,
+            "page_end": page_end,
+            "summary": clean_text_markup(_text(s.summary)),
+            # 真实正文（该节 source_block_ids 覆盖的原文块）。
+            # 没有块可取时退回 summary：那是**已验证断言拼接**，不是编造，
+            # 且空正文会让章节看起来坏掉。
+            "body": clean_text_markup(body) or clean_text_markup(_text(s.summary)),
             "key_points": [_text(k) for k in (s.key_points or [])],
-        }
-        for s in sections
-    ]
+        })
     page_dicts = [
         {"page_no": int(getattr(p, "pdf_page_no", 0) or 0), "text": _page_text(scope, p)}
         for p in page_items
@@ -243,10 +303,13 @@ def _text(value: Any) -> str:
 
 
 def _page_text(scope: Scope, page: Any) -> str:
-    """旧详情只给页级正文预览（截断由契约方决定，这里限量避免超大响应）。"""
+    """旧详情只给页级正文预览（截断由契约方决定，这里限量避免超大响应）。
+
+    先清 markdown 转义再截断，避免截出半个转义符。
+    """
     text = getattr(page, "text", None)
     if isinstance(text, str):
-        return text[:4000]
+        return clean_text_markup(text)[:4000]
     return ""
 
 

@@ -75,6 +75,10 @@ class SectionOut(LegacyModel):
     summary: str = ""
     body: str = ""
     key_points: List[str] = Field(default_factory=list)
+    #: 本节覆盖的**物理页范围**（1-based）。``page`` 是兼容字段 = ``page_start``；
+    #: 前端"阅读该章节正文"据此跳到对应页（此前 ``page`` 恒为 1，永远跳第 1 页）。
+    page_start: int = 0
+    page_end: int = 0
 
 
 class FigureOut(LegacyModel):

@@ -241,7 +241,16 @@
   - `dataset`/`experiment` 两键 canonical map 里没有（canonical 只有 problem/method/result/limitation）→ 用**章节 kind/标题**兜底；仍无来源就**不给键**（前端显示 "—"），不编造。
   - 摘要标记**必须带冒号**：初版用 `摘\s*要`（无冒号）把正文普通词"没有**摘要**标记"误判成摘要头，单测抓到后已修。
 - **结论**：实测 `/api/papers/1`：**9/9 图有 `image_url`**，绝对地址取图 **200 `image/jpeg` 4975B**；`map_summary` 得到 method/result/limitation/experiment 四键真实内容；`abstract` 329 字、正确切在"关键词"前。前端重建通过，`/`、`/paper/1`、`/paper/3` 均 200，bundle 已含新逻辑。回归测试 `test_legacy_detail_projection.py`（8 条）；全量 **346 passed**。
-- **路线 A 剩余（未做）**：`sections[].body` 仍是 `summary` 的复制、`page` 恒为 1（未用 `source_block_ids`/anchors → "点章节跳不到正文页"）；`method_steps[].detail` 为空、`figure_ref` 为 null（源头在 structure builder 未填 detail）；`pages[].text` 仍是带 `$…$`/`\*` 的原始 MinerU 文本（"乱码"）；`authors`/`tags`/`year`/`domain` 未从首页派生；图谱 evidence 边（claim→evidence `supports` 绑定）未生成。
+- **路线 A 剩余（未做）**：`method_steps[].detail` 为空、`figure_ref` 为 null（源头在 structure builder 未填 detail）；`authors`/`tags`/`year`/`domain` 未从首页派生；图谱 evidence 边（claim→evidence `supports` 绑定）未生成；**章节"跳到对应正文页"仍需给 PaperView 加页码定位**（现有导航是锚点制 `NavigationTarget = scope + anchor_id`，而真实论文的 `section_records.anchor_ids` 实测为空，所以只能走页码）。
+
+## D-28 路线 A 第二批：章节真实正文 + 页范围 + 解析器转义清理
+- **决策**：① `sections[]` 的 `body` 改为该节 `source_block_ids` 覆盖的**原文块文本**，`page` 改为真实起始页并新增 `page_start`/`page_end`；② 新增 `papers.legacy.clean_text_markup()` 清解析器留下的 markdown 转义与 NBSP，用于 `pages[].text`、章节 `body`/`summary`、图/表 caption；③ 前端 `MapView` 的章节正文改用 `MathText`（KaTeX）渲染，页码 badge 显示页范围。
+- **背景**：实测 `sections[0].body === summary`（都是断言拼接）、7 个章节 `page` **全部是 1** → 前端"阅读该章节正文"永远跳到第 1 页；`pages[0].text` 里是 `…的 JPEG 隐写\*`、`黄牛 $^{1}$` 这类**未解转义**的原文，而 `MathText` 只处理 `$...$`，`\*` 会原样显示成"一堆没转义的字符"。另有 `page.tsx:388` 的 `onOpenSection={() => changeView('paper')}` **丢掉了 section 参数**，只切视图不跳页。
+- **取舍**：
+  - **不动 `$...$`**（关键）：前端 `MathText` 用 KaTeX 渲染行内/块级公式，若顺手把 `$` 清掉会**丢公式**；只解 markdown 转义。
+  - `\*` **整段去掉**、其余转义**解转义**（`\_`→`_`）：星号在这些中文期刊里是标题/术语的强调或脚注标记，留成 `*` 反而像乱码；下划线在 `W_{u,v}` 这类标识里有义。首版把两者一律解转义，被单测断言抓出不一致后改成上述策略。
+  - 章节无块可取时 `body` 退回 `summary`（否决"空正文"）：summary 是**已验证断言拼接**不是编造，而空正文会让章节看起来是坏的。
+- **结论**：实测 `/api/papers/1`：7 个章节页范围分别为 `[1-3] [3-3] [3-5] [5-6] [6-9] [9-9] [9-10]`（此前恒为 1），`body` 与 `summary` **全部不同**（最长 6647 字真实正文）；`pages[0].text` 不再含 `\*`/NBSP 且 `$^{1}$` 保留。前端重建通过、`/`、`/paper/1` 均 200。回归测试 `test_legacy_detail_projection.py` 增至 **17 条**；全量 **355 passed**。
 
 
 
