@@ -74,6 +74,27 @@ export function EvalView({
   const notEvaluated = Array.isArray(metrics.not_evaluated)
     ? (metrics.not_evaluated as unknown[]).map(String)
     : [];
+  // M10：未评测的**原因码**（`MetricValue.reason` 经后端投影下发）。
+  // 只有名单时界面只能说"未评测"，说不清"为什么测不了"——用户此前的疑问正是这个。
+  const notEvaluatedReasons: Record<string, string> =
+    metrics.not_evaluated_reasons && typeof metrics.not_evaluated_reasons === 'object'
+      ? (metrics.not_evaluated_reasons as Record<string, string>)
+      : {};
+  const REASON_TEXT: Record<string, string> = {
+    source_pdf_has_no_coordinate_rects: '原文没有坐标矩形，无法算区域命中（不编造 IoU）',
+    usage_missing_in_answer_rows: '作答记录里没有 token/时延用量',
+    no_golden_truth: '缺少人工确认的参考断言',
+    no_prediction_samples: '本次没有可对比的预测样本',
+    no_quote_spans: '没有可核对的引文跨度',
+    no_navigation_checks: '没有导航校验样本',
+    no_media_samples: '没有媒体样本',
+    no_degradation_events: '没有发生降级事件',
+    no_evaluation_report: '该 revision 尚无评测报告',
+    metric_absent_in_report: '报告里没有这一项',
+    metric_entry_unparsable: '指标条目不可解析',
+    metric_input_missing: '本次输入未提供该指标所需数据',
+    unspecified: '原因未归类',
+  };
   // proxy 指标：值算出来了、但口径是"间接测量"，必须**标着 proxy 显示**而不是当未评测藏起来。
   const proxyNames = Array.isArray(metrics.proxy)
     ? (metrics.proxy as unknown[]).map(String)
@@ -274,11 +295,20 @@ export function EvalView({
               未评测指标（{notEvaluated.length} 项）——不是 0 分，是尚无真值：
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {notEvaluated.map((name) => (
-                <span key={name} className="rounded-md bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
-                  {name}
-                </span>
-              ))}
+              {notEvaluated.map((name) => {
+                const code = notEvaluatedReasons[name];
+                const why = code ? REASON_TEXT[code] ?? code : '';
+                return (
+                  <span
+                    key={name}
+                    title={why ? `为什么未评测：${why}（${code}）` : '为什么未评测：后端未给出原因码'}
+                    className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-slate-500"
+                  >
+                    {name}
+                    {why && <span className="text-slate-600">· {why}</span>}
+                  </span>
+                );
+              })}
             </div>
           </div>
         )}

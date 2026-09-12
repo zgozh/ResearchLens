@@ -1508,3 +1508,24 @@ In this work, we presented the Transformer, the first sequence … ↔ 同句所
 - **一处两侧约定差异（记录，不是缺陷）**：未知标签在**后端 `plain`** 里写作实体
   `&lt;mark&gt;`（转义可逆 + 保证二次规范化幂等，见 D-75），在**前端渲染**里保留字面量、
   输出 HTML 时才转义。两侧都满足"不静默吞掉用户可见字符"。
+
+## D-82 M10 收尾：未评测的**原因码**一路透到界面，并加一条双读一致性契约测试
+
+- **背景**：D-10 已给 `MetricValue` 加了 `reason`，但前端读的是 legacy 投影
+  （`metrics` 是 `name → number|null` 的 dict），里面**只有 `not_evaluated` 名单**，
+  没有原因 —— 界面仍然只能说"未评测"，说不清"为什么测不了"。
+- **修法**：
+  - 兼容投影新增 `metrics["not_evaluated_reasons"] = {指标名: 原因码}`（**加法**，不破坏既有字段）；
+    **两处投影都加**：`schemas/adapters.to_legacy_evaluation` 与
+    `modules/evaluation/legacy.to_legacy_evaluation`；
+  - 前端 `EvalView` 的"未评测指标"区把原因码翻译成人话显示（如
+    `source_pdf_has_no_coordinate_rects → "原文没有坐标矩形，无法算区域命中（不编造 IoU）"`），
+    并保留 hover 里带原因码的完整说明；未知码原样显示（不吞）。
+- **实测（live）**：`GET /api/papers/7/evaluation` →
+  `not_evaluated: ["anchor_region_hit_rate"]`、
+  `not_evaluated_reasons: {"anchor_region_hit_rate": "source_pdf_has_no_coordinate_rects"}`，
+  `overall_score=null` 且 `ai_overall_score=86.67`（人工真值口径与 AI 口径并存、互不冒充）。
+- **测试**：新增 `test_eval_reason_exposure.py`（4 条）：适配器投影带原因码、legacy 投影带原因码、
+  **两处投影的名单与原因表逐项相等**（这是 M9"双读一致性"契约测试的第一片，
+  专门防"只修一处"——本仓库已经因为两处投影分叉出过事故）、原因表不得夹带数值。
+  后端全量 **811 passed / 0 failed**。

@@ -507,12 +507,15 @@ def to_legacy_evaluation(report: EvaluationReport) -> EvaluationOut:
     """
     metrics: Dict[str, Any] = {}
     not_evaluated_names: List[str] = []
+    not_evaluated_reasons: Dict[str, str] = {}
     proxy_names: List[str] = []
     for entry in report.metrics:
         value = entry.value
         if value.value is None or value.status == "not_evaluated":
             metrics[entry.name] = None
             not_evaluated_names.append(entry.name)
+            # M10：把"为什么没测出来"一并给前端（此前只有名单，界面只能说"未评测"）
+            not_evaluated_reasons[entry.name] = value.reason or "unspecified"
         elif value.status == "proxy":
             metrics[entry.name] = value.value
             proxy_names.append(entry.name)
@@ -527,6 +530,7 @@ def to_legacy_evaluation(report: EvaluationReport) -> EvaluationOut:
         else ("ai_judge" if report.ai_overall_score is not None else None)
     )
     metrics["not_evaluated"] = not_evaluated_names
+    metrics["not_evaluated_reasons"] = not_evaluated_reasons
     metrics["proxy"] = proxy_names
     metrics["golden_id"] = report.golden_id
     metrics["version"] = report.version
