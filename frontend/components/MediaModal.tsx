@@ -5,6 +5,7 @@ import { X, Table2, Image as ImageIcon, Quote, FileText } from 'lucide-react';
 import type { FigureOut, TableOut } from '@/lib/types';
 import { Kicker } from '@/components/ui';
 import { FigureImage } from '@/components/FigureImage';
+import { MediaViewer } from '@/components/media/MediaViewer';
 import { TableRender } from '@/components/TableRender';
 
 export type MediaItem =
@@ -37,7 +38,10 @@ export function MediaModal({ item, onClose, accent }: { item: MediaItem | null; 
             {item.type === 'figure' ? (
               <>
                 <div className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[#0F172A] p-3">
-                  <FigureImage image_url={item.figure.image_url} image_b64={item.figure.image_b64} glyph_svg={item.figure.glyph_svg} caption={item.figure.caption} className="mx-auto max-w-3xl" />
+                  {/* M4：图片方向有反的（MinerU/PDF 产物），查看器给旋转/缩放/复位 */}
+                  <MediaViewer label="可旋转 / 缩放，仅影响本次查看">
+                    <FigureImage image_url={item.figure.image_url} image_b64={item.figure.image_b64} glyph_svg={item.figure.glyph_svg} caption={item.figure.caption} className="mx-auto max-w-3xl" />
+                  </MediaViewer>
                 </div>
                 <p className="mt-4 text-[13px] leading-relaxed text-slate-300">{item.figure.caption}</p>
                 {item.figure.description && (

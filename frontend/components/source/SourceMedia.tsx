@@ -12,6 +12,7 @@ import { SourceBadge } from './SourceBadge';
 import { ExtractedTable } from './ExtractedTable';
 import { ExtractedFormula } from './ExtractedFormula';
 import { MathText } from '@/components/MathText';
+import { MediaViewer } from '@/components/media/MediaViewer';
 import { cn } from '@/lib/cn';
 import { absoluteApiUrl } from '@/lib/api';
 
@@ -94,11 +95,9 @@ export function SourceMedia({
             <ExtractedTable media={media} onShowOriginal={onOpen} />
           )
         ) : displayAsset ? (
-          <button
-            onClick={() => onOpen(media.id)}
-            className="relative block w-full overflow-hidden rounded-lg bg-slate-50"
-            title={isPageFallback ? '整页预览' : media.caption}
-          >
+          // M4：原件图方向有反的 → 查看器提供旋转/缩放/复位（仅视图层，不改资产）；
+          // 点图仍然打开大图（工具栏按钮在图片之外，不会误触发打开）
+          <MediaViewer tone="light" label={isPageFallback ? '整页预览 · 可旋转' : media.caption || undefined}>
             {imgState === 'failed' ? (
               <span className="flex items-center justify-center gap-2 p-8 text-sm text-slate-400">
                 <ImageOff className="h-4 w-4" /> 原件加载失败
@@ -107,23 +106,14 @@ export function SourceMedia({
               <img
                 src={absoluteApiUrl(displayAsset.url)}
                 alt={media.caption || media.original_label || 'media'}
-                className="h-auto w-full object-contain"
+                className="mx-auto h-auto w-full max-w-full cursor-zoom-in object-contain"
                 loading="lazy"
+                onClick={() => onOpen(media.id)}
                 onLoad={() => setImgState('ready')}
                 onError={() => setImgState('failed')}
               />
             )}
-            {imgState === 'loading' && (
-              <span className="absolute inset-0 grid place-items-center text-xs text-slate-400">
-                加载中…
-              </span>
-            )}
-            {isPageFallback && imgState === 'ready' && (
-              <span className="absolute right-2 top-2 rounded bg-slate-900/70 px-1.5 py-0.5 text-[10px] text-white">
-                整页
-              </span>
-            )}
-          </button>
+          </MediaViewer>
         ) : (
           <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-slate-200 p-8 text-sm text-slate-400">
             <ExternalLink className="h-4 w-4" />

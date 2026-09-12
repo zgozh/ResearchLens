@@ -12,7 +12,8 @@
     "lint": "next lint",
     "test:rich": "tsc lib/richtext.ts tests/richtext.spec.ts --outDir .tmp/richtext-test --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck && node .tmp/richtext-test/tests/richtext.spec.js",
     "test:graph": "tsc lib/graphLayout.ts tests/graphLayout.spec.ts --outDir .tmp/graph-test --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck && node .tmp/graph-test/tests/graphLayout.spec.js",
-    "test:lib": "npm run test:rich && npm run test:graph"
+    "test:media": "tsc lib/mediaView.ts tests/mediaView.spec.ts --outDir .tmp/media-test --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck && node .tmp/media-test/tests/mediaView.spec.js",
+    "test:lib": "npm run test:rich && npm run test:graph && npm run test:media"
   },
   "dependencies": {
     "@xyflow/react": "^12.3.5",
