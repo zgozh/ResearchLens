@@ -130,14 +130,31 @@ def build_candidates(
     """把一条 CitationCandidate 解成候选证据（定位层，不含支持判定）。"""
     reasons: List[ValidationReason] = []
     block = gate.blocks.get(citation.block_id)
-    if block is None:
+    match: Optional[QuoteMatch] = (
+        locator.match_quote(block, citation.proposed_quote) if block is not None else None
+    )
+
+    # ---- 引用重定位（D-78 修法）----
+    # 实测（paper 7）：非 supports 记录的 reasons 稳定是 quote_mismatch +
+    # coordinate_missing +「证据原文为空」——证据为空说明语义判定根本没跑。
+    # 直查 DB 后确认：陈述与 proposed_quote 逐字一致，只是 citations 的 block_id
+    # 指到了**另一段原文**（甚至有个块的内容就是 "2"）。引用是真的，只是挂错了块，
+    # 而这里以前只在那一个块里找 → 找不到就判"无证据"。
+    # 纪律：只接受 precise（精确子串 / 规范化可回溯），**绝不接受模糊**，
+    # 也绝不把 origin=generated 的 AI 摘要块当证据。
+    relocated = False
+    if match is None or not match.is_precise:
+        alt_block, alt_match = _relocate_quote(citation.proposed_quote, gate)
+        if alt_block is not None and alt_match is not None and alt_match.is_precise:
+            block, match, relocated = alt_block, alt_match, True
+
+    if block is None or match is None:
         reasons.append(
             _reason("missing_source", "引用指向的 block 不在本 revision 原文中",
                     [citation.block_id])
         )
         return [], reasons
 
-    match: QuoteMatch = locator.match_quote(block, citation.proposed_quote)
     page_ref = gate.page_of_block.get(block.id)
     if page_ref is None:
         reasons.append(_reason("ambiguous_page", "该 block 没有确定的物理页", [block.id]))
@@ -160,6 +177,15 @@ def build_candidates(
             rect=None,
             quads=[],
         )
+        if relocated:
+            reasons.append(
+                _reason(
+                    "quote_mismatch",
+                    f"模型给出的引用块不含该引用，已按全文逐字重新定位到块 "
+                    f"{block.id[:8]}（匹配方式 {match.kind}）",
+                    [block.id],
+                )
+            )
         if candidate_media_is_untrusted(citation, gate):
             reasons.append(
                 _reason("coordinate_missing", "引用的 media 不在本 scope 内，已忽略", [block.id])
@@ -177,6 +203,31 @@ def build_candidates(
         _reason("quote_mismatch", "引用的原文片段在该 block 中找不到", [block.id])
     )
     return [], reasons
+
+
+def _relocate_quote(
+    proposed_quote: str, gate: GateInput
+) -> Tuple[Optional[Block], Optional[QuoteMatch]]:
+    """在**本 revision 的全部块**里为引用找真身（D-78）。
+
+    只返回 **precise** 命中：精确子串优先，其次是 locator 的规范化回溯匹配
+    （MinerU 的排版空白/全角差异）。模糊相似一律不返回 —— 那是"拿指标换好看"。
+    """
+    quote = (proposed_quote or "").strip()
+    if not quote:
+        return None, None
+    best: Tuple[Optional[Block], Optional[QuoteMatch]] = (None, None)
+    for candidate in gate.blocks.values():
+        if (getattr(candidate, "origin", "") or "") == "generated":
+            continue  # AI 摘要块永远不能成为一级证据
+        m = locator.match_quote(candidate, quote)
+        if not m.is_precise:
+            continue
+        if m.kind == "exact":
+            return candidate, m  # 精确命中直接返回，不再看别的块
+        if best[1] is None or (m.score or 0) > (best[1].score or 0):
+            best = (candidate, m)
+    return best
 
 
 def candidate_media_is_untrusted(citation: CitationCandidate, gate: GateInput) -> bool:

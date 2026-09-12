@@ -333,15 +333,31 @@ class TestLocatorVersusSupport:
         assert report.evidence == []
 
     def test_same_page_unrelated_content_not_supported(self, world):
-        """同页不相关内容：引用另一段的句子 → 定位失败，不构成支持。"""
+        """同页不相关内容：引用另一段的句子 → 定位失败，不构成支持。
+
+        D-78 更新：原用例引用的是 **p2 里真实存在**的句子，按新的"引用重定位"
+        语义那是**应该**被重新定位并验证的（引用是真的，只是挂错了块）。
+        这里改用一段**全篇都不存在**的内容来守住原来的意图：
+        引用了原文里根本没有的句子 → 定位失败、不得 verified。
+        """
         from app.modules import evidence
 
         # 拿 p2 的句子去引用 p1 的块 → 不匹配
         draft = _draft(world, "模型在长文本任务上的 F1 为 88.5。",
-                       citations=[_cite(world, "blk1", "模型在长文本任务上的 F1 为 88.5")])
+                       citations=[_cite(world, "blk1", "模型在长文本任务上的 F1 为 99.7")])
         report = evidence.validate(draft, new_ctx(world["scope"]))
         assert report.decision != "verified"
         assert report.quote_valid is False
+
+    def test_quote_cited_wrong_block_is_relocated_not_rejected(self, world):
+        """D-78：引用逐字存在、只是 block 挂错了 → 重新定位后仍可 verified。"""
+        from app.modules import evidence
+
+        draft = _draft(world, "模型在长文本任务上的 F1 为 88.5。",
+                       citations=[_cite(world, "blk1", "模型在长文本任务上的 F1 为 88.5")])
+        report = evidence.validate(draft, new_ctx(world["scope"]))
+        assert report.quote_valid is True, report.reasons
+        assert report.decision == "verified", report.reasons
 
     def test_locator_success_does_not_imply_support(self, world):
         """定位成功 ≠ 支持成立：引用正确但陈述与证据语义无关 → 不得 verified。"""
@@ -937,3 +953,89 @@ class TestBoundaryRules:
         with pytest.raises(DomainError) as exc:
             evidence.validate(draft, new_ctx(world["scope"]))
         assert exc.value.code == ErrorCode.INVALID_INPUT
+
+
+# =============================================================== 引用重定位（D-78）
+
+
+class TestQuoteRelocation:
+    """模型给错 block 时，引用要能按**全文逐字**重新定位。
+
+    实测根因（D-78，paper 7）：非 supports 记录的 reasons 稳定是
+    ``quote_mismatch`` + ``coordinate_missing`` + 「证据原文为空」——**证据切片为空**
+    说明语义判定根本没跑。直查 DB 后确认：陈述与 proposed_quote **逐字一致**，
+    但 citations 里的 ``block_id`` 指向了**另一段原文**（甚至有个 block 的内容就是 "2"）。
+    也就是说：引用是真的、只是被挂到了错误的块上，而 gate 只在**那一个块**里找，
+    找不到就判"证据原文为空"。
+
+    修法纪律：只接受 **precise**（精确子串 / 规范化可回溯）命中，**绝不接受模糊**；
+    重新定位后仍从**原文切片**取 source_text（不伪造 quote）。
+    """
+
+    def test_quote_cited_against_wrong_block_is_relocated(self, world):
+        from app.modules import evidence
+
+        quote = "在 ImageNet 上达到 91.2% 的准确率"  # 真身在 blk1
+        draft = _draft(world, f"本文方法{quote}。", citations=[_cite(world, "blk2", quote)])
+        report = evidence.validate(draft, new_ctx(world["scope"]))
+
+        assert report.quote_valid is True, f"引用真的在文中，不该判找不到：{report.reasons}"
+        assert report.locator_valid is True
+        assert report.decision == "verified", report.reasons
+        msgs = " ".join(r.message for r in report.reasons)
+        assert "重新定位" in msgs, f"重定位必须有可审计的理由：{msgs}"
+
+    def test_relocation_points_at_the_real_block(self, world):
+        """重定位后必须挂到**引用真正所在的块**（blk1），而不是模型给的块（blk2）。"""
+        from app.modules import evidence
+
+        quote = "在 ImageNet 上达到 91.2% 的准确率"
+        draft = _draft(world, f"本文方法{quote}。", citations=[_cite(world, "blk2", quote)])
+        report = evidence.validate(draft, new_ctx(world["scope"]))
+        relocated = [r for r in report.reasons if "重新定位" in r.message]
+        assert relocated, f"缺少重定位理由：{[r.message for r in report.reasons]}"
+        assert world["blk1"] in (relocated[0].block_ids or []), (
+            f"应指向真身块 blk1，实际 {relocated[0].block_ids}"
+        )
+
+    def test_fuzzy_only_is_never_relocated(self, world):
+        """**纪律**：只是"字面相似"的引用绝不能被重定位放行（那是拿指标换好看）。"""
+        from app.modules import evidence
+
+        draft = _draft(
+            world, "本文方法在 ImageNet 上达到 99.9% 的准确率。",
+            citations=[_cite(world, "blk2", "在 ImageNet 上达到 99.9% 的准确率")],
+        )
+        report = evidence.validate(draft, new_ctx(world["scope"]))
+        assert report.decision != "verified", report.reasons
+        assert report.quote_valid is False
+
+    def test_quote_absent_everywhere_still_rejected(self, world):
+        from app.modules import evidence
+
+        draft = _draft(
+            world, "本文方法在月球上达到 91.2% 的准确率。",
+            citations=[_cite(world, "blk2", "本文方法在月球上达到 91.2% 的准确率")],
+        )
+        report = evidence.validate(draft, new_ctx(world["scope"]))
+        assert report.decision != "verified", report.reasons
+
+    def test_correct_block_is_not_relocated(self, world):
+        """本来就在对的块里 → 不触发重定位，reason 里不该出现"重新定位"。"""
+        from app.modules import evidence
+
+        quote = "在 ImageNet 上达到 91.2% 的准确率"
+        draft = _draft(world, f"本文方法{quote}。", citations=[_cite(world, "blk1", quote)])
+        report = evidence.validate(draft, new_ctx(world["scope"]))
+        assert report.decision == "verified"
+        msgs = " ".join(r.message for r in report.reasons)
+        assert "重新定位" not in msgs, msgs
+
+    def test_generated_block_is_never_used_for_relocation(self, world):
+        """AI 摘要块（origin=generated）**绝不能**成为重定位目标。"""
+        from app.modules import evidence
+
+        quote = "本文提出了一个极佳的模型"
+        draft = _draft(world, f"（AI 摘要）{quote}。", citations=[_cite(world, "blk2", quote)])
+        report = evidence.validate(draft, new_ctx(world["scope"]))
+        assert report.decision != "verified", f"生成块不得当证据：{report.reasons}"

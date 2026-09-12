@@ -1356,3 +1356,45 @@ A/B 对照（同一批陈述、同一段原文、同一个模型，只差输入�
   2. 样本里出现了 `[15] Rafal Jozefowicz…` 这种**参考文献条目被当成陈述**的记录：
      claims 起草阶段的产出质量本身可能就是"未支持"的大头（垃圾进 → 定位失败 → 未支持）。
 - **纪律**：在上述两条查清之前，**不修改判定阈值、不放松 quote 校验**（那是拿指标换好看）。
+
+### D-78 结案：真因是"引用挂错块"，修法是**全文逐字重定位**（不是放松校验）
+
+**直查 DB 后的真因**（`.scratch/diag_quote.py`，paper 7）：每条 quote_mismatch 记录里，
+**陈述文本与 proposed_quote 逐字一致**，但 `citations[].block_id` 指向的是**另一段原文**
+（4 条样本里 3 条指到同页别的句子、1 条指到一个内容就是 `"2"` 的块）。
+也就是说：**引用是真的、逐字存在于论文里，只是被挂到了错误的块上**，
+而 `gate.build_candidates` **只在那一个块里找** → 找不到 → 「证据原文为空」→
+语义判定根本没跑 → insufficient。`locator.locate_anywhere` 其实早就写好了，
+**但全代码库没有一处调用它**（死代码）。
+
+**修法**（`gate.build_candidates` + 新增 `gate._relocate_quote`）：引用在指定块里
+定位不到时，在**本 revision 的全部块**里找真身。硬纪律：
+
+- **只接受 precise**（精确子串优先，其次 locator 的规范化回溯匹配）；
+  **模糊相似一律不返回** —— 那是拿指标换好看；
+- `origin="generated"` 的 AI 摘要块**永远不能**成为重定位目标；
+- 重定位后仍从**原文切片**取 `source_text`（不伪造 quote），并在 `reasons` 里留下
+  可审计的一条：「模型给出的引用块不含该引用，已按全文逐字重新定位到块 X（匹配方式 exact）」；
+- 只改**归因**，不改判定阈值、不放松 quote 校验。
+
+**现场效果（真实数据、不调 LLM，`.scratch/verify_relocation.py`）**：
+paper 7 里**全部 18 条**此前被判非 supports 的陈述，现在**都拿得到条目候选**，
+其中 **17 条是靠重定位救回的**（此前它们的证据切片为空）。样例（陈述 ↔ 重定位到的块）：
+
+```
+Recurrent neural networks, long short-term memory [13] and gated … ↔ 同句所在的块
+Attention mechanisms have become an integral part of compelling … ↔ 同句所在的块
+In this work, we presented the Transformer, the first sequence … ↔ 同句所在的块
+```
+
+**如实说明**：这一步证明的是"**证据不再为空、能定位到逐字原文**"。
+"最终 verdict 变成 supports/verified"还要走一遍语义 gate（需重跑 verify 阶段，LLM 调用量大），
+那是下一轮的第一件事 —— 本节**不声称** supports 率已经提升。
+
+**测试**：`test_evidence.py::TestQuoteRelocation`（6 条）—— 挂错块被重定位且指向真身块、
+重定位理由是「重新定位」且带真身块 id、**只有模糊相似时绝不放行**、
+全篇都没有的引用仍然失败、本来就在对的块里则不触发重定位、
+`origin=generated` 的块绝不能被当证据。另更新一条旧用例
+（`test_same_page_unrelated_content_not_supported`）：它原先把"引用挂了别的块"当成
+必须失败的场景，与 D-78 的新语义冲突，已改用**全篇都不存在**的引用来守原意图，
+并补一条"挂错块应当被重定位"的正向用例。全量 **716 passed / 0 failed**。
