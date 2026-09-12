@@ -7,7 +7,7 @@
 import { useState } from 'react';
 import { ExternalLink, ImageOff, Maximize2, MapPin } from 'lucide-react';
 import type { Asset, Media, MediaViewMode, NavigationTarget } from '@/lib/contracts';
-import { findAsset, resolveMediaPolicy } from '@/lib/sourcePolicy';
+import { findAsset, hasExtractedRepresentation, latexFromCaption, resolveMediaPolicy } from '@/lib/sourcePolicy';
 import { SourceBadge } from './SourceBadge';
 import { ExtractedTable } from './ExtractedTable';
 import { ExtractedFormula } from './ExtractedFormula';
@@ -42,9 +42,12 @@ export function SourceMedia({
     policy.default_mode === 'original' && !originalAsset && !!pagePreviewAsset;
 
   const effectiveMode: MediaViewMode =
-    mode === 'extracted' && (media.extracted?.table_html || media.extracted?.latex)
+    mode === 'extracted' && hasExtractedRepresentation(media)
       ? 'extracted'
       : policy.default_mode;
+  // 公式的 caption 就是公式本体：上面已按它渲染，下面不要再当题注重复显示一遍（D-80）
+  const captionIsFormula =
+    effectiveMode === 'extracted' && !!latexFromCaption(media.caption);
 
   const displayAsset = originalAsset ?? (isPageFallback ? pagePreviewAsset : undefined);
   const badgeMode: MediaViewMode =
@@ -122,7 +125,7 @@ export function SourceMedia({
         )}
       </div>
 
-      {media.caption && (
+      {media.caption && !captionIsFormula && (
         // 题注同样夹 LaTeX/`<sup>`（实测用户看到的 `$$…\tag{1}$$` 就在这里）：
         // 与正文、表格共用同一内核渲染，浅色底用 tone="light"
         <div className="px-3 pb-3">

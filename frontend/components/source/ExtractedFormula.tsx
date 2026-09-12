@@ -11,12 +11,15 @@
 import { Sigma } from 'lucide-react';
 import type { Media } from '@/lib/contracts';
 import { compactLatex, katexToHtml } from '@/lib/richtext';
+import { latexFromCaption } from '@/lib/sourcePolicy';
 
 export function ExtractedFormula({ media, onShowOriginal }: {
   media: Media;
   onShowOriginal: (mediaId: string) => void;
 }) {
-  const latex = media.extracted?.latex ?? '';
+  // D-80：实测有 5 条公式的 `extracted.latex` 是 null，公式本体在 caption 里 ——
+  // 那种情况下必须用 caption 渲染，否则用户看到的是"不可用"外加未转义的 LaTeX 源码。
+  const latex = media.extracted?.latex || latexFromCaption(media.caption);
   const { body, tagNo } = compactLatex(latex);
   const label = media.extracted?.equation_label || media.original_label || (tagNo ? `(${tagNo})` : null);
   const html = katexToHtml(body, true);

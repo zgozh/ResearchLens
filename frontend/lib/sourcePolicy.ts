@@ -46,6 +46,32 @@ function warn(code: string, message: string): Warning {
 }
 
 /**
+ * caption 里**确实是公式**时，把它当作一份可渲染的"提取表示"（M4 / D-80）。
+ *
+ * 实测（paper 7 的 5 条公式 media）：`extracted.latex` 是 `null`，公式本体却完整地
+ * 躺在 `caption` 里（`$$…\tag{1}$$`）。旧策略只认 `extracted.table_html/latex`，
+ * 于是它们被判"不可用"；同时正文又把 caption 当普通题注渲染 → 用户同时看到
+ * "不可用的标签"和"未转义的 LaTeX 源码"。
+ *
+ * 判据从严：必须含 `$$…$$`、`$…$` 或至少一个 LaTeX 命令；普通题注一律返回空串
+ * （不得无中生有地把描述当公式）。
+ */
+export function latexFromCaption(caption?: string | null): string {
+  const text = (caption || '').trim();
+  if (!text) return '';
+  const looksLikeMath =
+    /\$\$[\s\S]+\$\$/.test(text) || /\$[^$\n]+\$/.test(text) || /\\[a-zA-Z]{2,}/.test(text);
+  return looksLikeMath ? text : '';
+}
+
+/** 该媒体有没有**任何**可渲染的提取表示（表格 HTML / 公式 LaTeX / caption 里的公式）。 */
+export function hasExtractedRepresentation(media: Media): boolean {
+  const ex = media.extracted;
+  if (ex && (ex.table_html || ex.latex)) return true;
+  return latexFromCaption(media.caption).length > 0;
+}
+
+/**
  * 计算某个 Media 的统一来源策略。
  * - original：存在 source_bound 的裁剪资产（pdf_crop 或可验证 mineru_crop）。
  * - 真实 source 缺原图：退回整页预览（fallback_page_ids，标"整页"），default_mode 仍为 original。
@@ -128,7 +154,7 @@ export function resolveMediaPolicy(media: Media, assets: Asset[]): MediaViewPoli
     // 有就给"再排版 / 提取"，而不是"不可用"。
     // 为什么（实测）：表格与公式媒体本来就没有原图资产，旧逻辑直接判 unavailable，
     // 用户在图表节点上看到的就是"不可用的标签 + 未找到任何可展示原件资产"。
-    if (media.extracted && (media.extracted.table_html || media.extracted.latex)) {
+    if (hasExtractedRepresentation(media)) {
       warnings.push(warn('no_original_asset', '没有原件裁剪，改为展示解析提取的再排版表示。'));
       return {
         default_mode: 'extracted',
@@ -149,7 +175,7 @@ export function resolveMediaPolicy(media: Media, assets: Asset[]): MediaViewPoli
   }
 
   // 4) 无源（synthetic 之外的提取媒体，理论上不常见）→ 提取
-  if (media.extracted && (media.extracted.table_html || media.extracted.latex)) {
+  if (hasExtractedRepresentation(media)) {
     return {
       default_mode: 'extracted',
       original_asset_ids: [],

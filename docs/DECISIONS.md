@@ -1430,3 +1430,28 @@ In this work, we presented the Transformer, the first sequence … ↔ 同句所
 - **测试**：`test_evidence.py::TestNonClaimStatementFilter`（3 条）：参考文献条目不得 verified
   且理由含"参考文献"、许可声明不得 verified、普通研究句不被误伤（含 `arXiv:` 页脚判正例）。
   全量 **727 passed / 0 failed**。
+
+## D-80 「原件媒体不可用」的真因：公式本体在 caption 里，不在 extracted.latex
+
+- **用户实测（问题③）**："原件媒体里很多『不可用的标签 / 未找到任何可展示原件资产』，
+  下面介绍还是 `$$ \operatorname{Attention}…\tag{1} $$` 未转义。"
+- **实测数据（paper 7 的 14 条 media，`.scratch/verify_media_policy.cjs`）**：
+  `('equation', extracted='-', asset='-') × 5` —— **5 条公式既无资产、`extracted.latex`
+  也是 `null`**；而公式本体完整地躺在 **`caption`** 里（`$$…\tag{1}$$`）。
+  旧策略只看 `extracted.table_html/latex` → 判 `unavailable`；同时正文又把 caption 当普通
+  题注渲染 → 用户**同时**看到"不可用"和"未转义的 LaTeX 源码"。两半其实是同一个根因。
+- **修法**：新增 `sourcePolicy.latexFromCaption()`（从严：必须含 `$$…$$`、`$…$` 或 LaTeX 命令，
+  普通题注一律返回空串）与 `hasExtractedRepresentation()`；策略在"无原件裁剪/无页锚点"时
+  把 **caption 里的公式**也算作一份"再排版/提取"表示；`ExtractedFormula` 在
+  `extracted.latex` 为空时用 caption 渲染；`SourceMedia` 在这种情形下**不再把同一段公式
+  当题注重复显示**。
+- **实测（真实数据、真实资产）**：paper 7 前端策略分布从「9 extracted + 5 unavailable」
+  变成 **「9 extracted + 5 original + 0 unavailable」**；5 条公式全部拿到提取表示。
+  （上一版探针传了空资产清单，把图片误判成不可用 —— 已改成逐条取详情，避免得出假结论。）
+- **如实说明（未做完）**：**后端 `visual/policy.py` 与前端 `resolveMediaPolicy` 仍然分叉** ——
+  同一批数据上 **10/14 条判定不一致**（公式：前端 `extracted` / 后端 `unavailable`；
+  图片：前端 `original` / 后端 `extracted`）。本次只修了**前端**（用户实际看到的那条路径）；
+  按 REFACTOR_PLAN M4 把策略收敛成"后端一次判定、前端纯渲染"是**下一步**，本节不声称已完成。
+- **测试**：`npm run test:policy`（`frontend/tests/sourcePolicy.spec.ts`，6 条）：
+  caption 公式被识别、公式不再判不可用、普通题注仍如实判不可用（不许无中生有）、
+  表格提取不受影响、真实 source 上的 synthetic 仍拒绝展示、有原件资产仍优先原件。
