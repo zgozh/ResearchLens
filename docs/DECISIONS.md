@@ -1529,3 +1529,33 @@ In this work, we presented the Transformer, the first sequence … ↔ 同句所
   **两处投影的名单与原因表逐项相等**（这是 M9"双读一致性"契约测试的第一片，
   专门防"只修一处"——本仓库已经因为两处投影分叉出过事故）、原因表不得夹带数值。
   后端全量 **811 passed / 0 failed**。
+
+## D-83 本轮验收记录（REFACTOR_PLAN M1–M8、M10、M11 全部落地）
+
+**代码与测试（在 commit `0405292` 上实测）**
+
+| 层 | 命令 | 结果 |
+|---|---|---|
+| 后端单测 | `python -m pytest backend/app/tests -q` | **811 passed / 0 failed** |
+| 前端零依赖单测 | `npm run test:lib` | **47 passed**（rich 25 / graph 9 / media 6 / policy 7） |
+| 前端真实语料门禁 | `npm run test:hygiene` | paper 7/10：多余 `$` 0、被转义标签 0、残留 `\tag` 0 |
+
+**端到端验收（对着**运行中的四容器**跑，全部 0 失败）**
+
+| 套件 | 覆盖 | 结果 |
+|---|---|---|
+| `.scratch/verify_route_a.py` | 论文 manifest/sections/exhibits/页码锚点/作者/年份 等路由与字段 | 失败 0 |
+| `.scratch/verify_graph.py` | 图谱节点/边/无断裂图/断点证据可达 | 失败 0 |
+| `.scratch/verify_e2e_extra.py` | `/claims` 详情、statement/evidence 字段、SSE 事件序列与 final 非空、前端 bundle 关键路径 | 失败 0 |
+| `.scratch/verify_metrics_live.py` | 评测指标口径（proxy 有值、not_evaluated 不冒充 0、overall 未盖章） | 失败 0 |
+| `.scratch/verify_qa_stability.py`（额外） | 论文 2/3 各 3 轮问答的稳定性 | 空答案 **0/9** |
+
+**交付物清单（对应任务书章节）**：M1 `modules/textnorm/`；M2/M3 `lib/richtext.ts` + 六处消费方；
+M4 `MediaViewer` + 前后端策略收敛；M5 `semantic.normalize_evidence_text` + 引用重定位 + 证据理由；
+M6 SSE 终结事件保证 + 断流恢复端点；M7 判据加宽 + 拒答非空；M8 `lib/graphLayout.ts`；
+M10 `MetricValue.reason` + 投影透出 + 双读一致性测试；M11 两层卫生门禁。
+决策记在 D-71 … D-83。
+
+**未纳入本轮（REFACTOR_PLAN 的优化项，留给后续版本）**：
+M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` 的重复投影合并成一处——
+本轮只补了"双读一致性"测试作为安全网）、M12 阶段进度与断点续跑。
