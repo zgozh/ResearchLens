@@ -12,6 +12,7 @@ from .service import (  # noqa: F401
     get_structure,
     get_verified_statements,
     list_claims,
+    reextract,
     register_statement,
     verify_and_store,
 )
@@ -37,6 +38,7 @@ from .legacy import get_claims  # noqa: E402,F401
 __all__ = [
     "extract",
     "verify_and_store",
+    "reextract",
     "build_structure",
     "list_claims",
     "get_claim",

@@ -13,7 +13,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.contracts.common import Scope
@@ -31,11 +31,14 @@ from app.contracts.evidence import (
 )
 from app.models.artifacts import BlockORM, PageORM
 from app.models.evidence import (
+    BindingORM,
     ClaimRecordORM,
+    EvidenceRowORM,
     MapItemORM,
     MethodStepORM,
     SectionRecordORM,
     StatementORM,
+    ValidationORM,
 )
 
 
@@ -193,6 +196,33 @@ def list_claim_ids(db: Session, revision_id: str) -> List[str]:
 
 
 # --------------------------------------------------------------- 写入
+
+
+def delete_claim_artifacts(db: Session, revision_id: str) -> Dict[str, int]:
+    """删除该 revision 的**断言派生数据**，返回每张表的删除行数。
+
+    用途：**重抽取前清理**（ADR-0022）。``upsert_claim`` 以 ``(revision_id, claim_id)``
+    为键、``upsert_statement`` 以 statement id 为键，而 claim_id 由模型输出决定——
+    换一份语料必然产生一批新 id，旧行不会被覆盖而是残留成孤儿。
+
+    清理范围**精确**：只删断言派生行，不碰解析产物（pages/blocks/media/anchors）；
+    结构产物（section_records/map_items/method_steps）由 ``replace_structure``
+    整版覆盖，无需在此删除。
+
+    这些表之间没有互相 FK（全部只 FK 到 ``papers``），故删除顺序无约束；
+    仍放在调用方的同一事务内，保证「清空 + 重写」原子。
+    """
+    counts: Dict[str, int] = {}
+    for table, model in (
+        ("bindings", BindingORM),
+        ("evidence_records", EvidenceRowORM),
+        ("validations", ValidationORM),
+        ("statements", StatementORM),
+        ("claim_records", ClaimRecordORM),
+    ):
+        result = db.execute(delete(model).where(model.revision_id == revision_id))
+        counts[table] = int(result.rowcount or 0)
+    return counts
 
 
 def upsert_statement(

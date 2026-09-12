@@ -11,11 +11,26 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
-#: 单次抽取的原文预算（按章节分配，不只读头尾）
+#: **单节**的原文预算。``_build_corpus`` 按章节公平分配，保证每节都有内容
+#: （不只读头部），节内超份额时均匀取样。
 PER_SECTION_CHAR_BUDGET = 6000
-#: 单次 LLM 抽取的原文总预算。实测 qwen-plus 在 48000 字符（约 150 块）时
-#: 会省略 quotes 字段（即使 min_length=1），导致 citations 空、全部 claim 被拒；
-#: 降到 ~16000 字符（约 50 块）后 quotes 稳定输出。覆盖范围受限由 warnings 报告。
+#: **单次调用**的原文总预算。
+#:
+#: 为什么是 16000 而不是更大（ADR-0022 实测，2026-09-12）：
+#:
+#: | 总预算 | 语料字符 | 产出 claim | 带 quote | quote 真正匹配原文 | 耗时 |
+#: |---|---|---|---|---|---|
+#: | 16000 | 16070 | 7 | 7 | **7（100%）** | 31.7s |
+#: | 48000 | 48243 | 5 | 5 | **1（20%）** | 112.5s |
+#:
+#: 48000 下模型**仍然给 quote**，但绝大多数是**改写/幻觉**，无法在原文块中逐字命中，
+#: 被 ``_draft_batch_from_raw`` 的 ``quote_not_in_block`` 丢弃 → citations 空 →
+#: gate 全拒。即"长上下文让引用不可靠"，而不是早期注释猜测的"省略 quotes 字段"
+#: （那一项已由 ``_Quote`` 的 ``min_length=1`` 修掉）。同时耗时是 3.5 倍。
+#:
+#: 因此**不靠加大预算来覆盖全文**，而是把这 16000 字符**按章节公平分配**
+#: （见 ``TOTAL_CHAR_BUDGET`` 的使用点 ``service._build_corpus``）。
+#: 若要进一步覆盖到"每节完整"，需要改成分块多次调用（尚未实现）。
 TOTAL_CHAR_BUDGET = 16000
 #: 展项规模上限（超出保留候选、不发布，并在 warnings 报告覆盖范围）
 MAX_EXHIBIT_CLAIMS = 40

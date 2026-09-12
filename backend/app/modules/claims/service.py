@@ -190,34 +190,159 @@ def extract(
     return ClaimDraftBatch(scope=scope, drafts=drafts, warnings=warnings)
 
 
+#: 没有可识别标题时，整篇作为一个"章节"处理时的标签
+_PREAMBLE_LABEL = "题名与摘要"
+
+#: 每条语料条目的固定开销（"[B123] "）
+_ENTRY_OVERHEAD = 12
+
+#: 不进入语料的章节：参考文献/致谢产生不了断言，占份额纯属浪费预算，
+#: 还会诱发模型去引用文献而非正文。实测 paper 1/2/3 的 ``References:``
+#: 各占走 12/16/9 块（约 10% 预算）。
+_SKIPPABLE_SECTION_RE = re.compile(
+    r"^\s*(references?|bibliography|参考文献|引用文献|致谢|"
+    r"acknowledge?ments?|funding)\s*[:：]?\s*$",
+    re.I,
+)
+
+
+def _is_skippable_section(heading: str) -> bool:
+    return bool(_SKIPPABLE_SECTION_RE.match((heading or "").strip()))
+
+
+def _heading_groups(rows) -> List[Tuple[str, List]]:
+    """按原文**一级标题**把文档序块切成章节；标题前的块并入第一节。
+
+    复用与结构分节相同的 ``heading_body``（确定性、不调模型），
+    保证「语料怎么分节」与「结构怎么分节」是同一套判据。
+    参考文献/致谢类章节被剔除（见 ``_SKIPPABLE_SECTION_RE``）；若整篇都被
+    剔除（异常输入），则保留原文，避免静默产出空语料。
+    """
+    groups: List[Tuple[str, List]] = []
+    for row in rows:
+        head = heading_body(row.text or "")
+        if head:
+            groups.append((head, [row]))
+        else:
+            if not groups:
+                groups.append((_PREAMBLE_LABEL, []))
+            groups[-1][1].append(row)
+    non_empty = [(head, group) for head, group in groups if group]
+    kept = [(head, group) for head, group in non_empty if not _is_skippable_section(head)]
+    return kept or non_empty
+
+
+def _nonblank(rows) -> List[Tuple[object, str]]:
+    """(row, 去空白文本) 列表，跳过空白块。"""
+    out: List[Tuple[object, str]] = []
+    for row in rows:
+        text = (row.text or "").strip()
+        if text:
+            out.append((row, text))
+    return out
+
+
+def _sample_group(group_rows, share: int) -> List[Tuple[object, str]]:
+    """在 ``share`` 字符内挑块：够放则全取；超份额则**均匀取样**。
+
+    - 标题块**优先保留**（给模型章节上下文，本身几乎不产生断言）；
+    - 正文块**均匀取样**（首块与末块必取）——长章节的关键断言可能在中间或末尾，
+      "每节只看到开头"会重演"只读头部"那类覆盖缺口（ADR-0022）。
+    """
+    items = _nonblank(group_rows)
+    if not items:
+        return []
+    total = sum(len(text) + _ENTRY_OVERHEAD for _, text in items)
+    if total <= share:
+        return items
+
+    head = items[0] if heading_body(items[0][1]) else None
+    body = items[1:] if head else items
+    if not body:
+        return [head] if head else []
+
+    body_share = max(0, share - ((len(head[1]) + _ENTRY_OVERHEAD) if head else 0))
+    body_total = sum(len(text) + _ENTRY_OVERHEAD for _, text in body)
+
+    if body_total <= body_share:
+        picked_body = body
+    else:
+        n = len(body)
+        average = body_total / n
+        keep = max(2, min(int(body_share // max(1.0, average)), n))
+        if keep >= n:
+            picked_body = body
+        else:
+            idxs = sorted({int(round(i * (n - 1) / (keep - 1))) for i in range(keep)})
+            picked_body = [body[i] for i in idxs]
+
+    return ([head] if head else []) + picked_body
+
+
 def _build_corpus(rows, warnings: List[Warning]) -> Tuple[str, Dict[str, Tuple[str, str]]]:
-    """按块拼正文并返回短编号索引；受总预算限制（超出报告覆盖）。
+    """按**章节公平分配预算**拼正文，并返回短编号索引（ADR-0022）。
 
     返回 ``block_index``：短编号（如 ``B1``）→ ``(uuid, text)``。
     用短编号而非 36 字符 UUID，避免 LLM 拒绝复制长 UUID 导致 quotes 为空。
+
+    分配规则（确定性，不调模型）：
+
+    - 用 ``heading_body`` 按原文一级标题分章节（标题前的块并入第一节）；
+    - 每节份额 = ``min(PER_SECTION_CHAR_BUDGET, 剩余预算 / 剩余节数)``，
+      保证**每一节都有内容**、总量不超 ``TOTAL_CHAR_BUDGET``；
+    - 节内容超过份额时**均匀取样**（首块与末块必取）；
+    - 被截断的章节**逐一点名**（``section_truncated``），否则覆盖缺口不可见。
+
+    修复背景：原实现按文档顺序累加到 ``TOTAL_CHAR_BUDGET`` 就 ``break``，
+    等于"只读头部"——实测 paper 3 只有前 29% 正文（页 0..6 / 共 25 页）进入模型，
+    方法章与实验章完全缺席，直接导致 ``method_steps=0`` 与场景只剩 1 个。
     """
+    groups = _heading_groups(rows)
+    if not groups:
+        return "", {}
+
     parts: List[str] = []
     block_index: Dict[str, Tuple[str, str]] = {}
-    used = 0
-    truncated = False
+    remaining = prompts.TOTAL_CHAR_BUDGET
     ordinal = 0
-    for row in rows:
-        text = (row.text or "").strip()
-        if not text:
+    truncated: List[str] = []
+    budget_limited = False
+
+    for idx, (heading, group_rows) in enumerate(groups):
+        sections_left = len(groups) - idx
+        share = min(prompts.PER_SECTION_CHAR_BUDGET, remaining // max(1, sections_left))
+        if share <= 0:
+            truncated.append(heading)
             continue
-        ordinal += 1
-        short = f"B{ordinal}"
-        entry = f"[{short}] {text}"
-        if used + len(entry) > prompts.TOTAL_CHAR_BUDGET:
-            truncated = True
-            break
-        parts.append(entry)
-        block_index[short] = (row.id, text)
-        used += len(entry)
+        if share < prompts.PER_SECTION_CHAR_BUDGET:
+            budget_limited = True
+
+        picked = _sample_group(group_rows, share)
+        used = 0
+        for row, text in picked:
+            candidate = f"[B{ordinal + 1}] {text}"
+            if used + len(candidate) > share:
+                break
+            ordinal += 1
+            parts.append(candidate)
+            block_index[f"B{ordinal}"] = (row.id, text)
+            used += len(candidate)
+        if len(picked) < len(_nonblank(group_rows)):
+            truncated.append(heading)
+        remaining = max(0, remaining - used)
+
     if truncated:
         warnings.append(Warning(
+            code="section_truncated",
+            message=("以下章节内容超出分配份额，已按均匀取样截断（覆盖受限）："
+                     + "、".join(truncated)),
+            stage="claims",
+        ))
+    if budget_limited:
+        warnings.append(Warning(
             code="budget_truncated",
-            message=f"正文超出预算（{prompts.TOTAL_CHAR_BUDGET} 字符），已截断；覆盖范围受限",
+            message=(f"总预算 {prompts.TOTAL_CHAR_BUDGET} 字符不足以让每节都拿到 "
+                     f"{prompts.PER_SECTION_CHAR_BUDGET} 字符，已按剩余量公平分配"),
             stage="claims",
         ))
     return "\n".join(parts), block_index
@@ -320,6 +445,37 @@ def _draft_batch_from_raw(
 
 
 # =============================================================== register
+
+
+def reextract(scope: Scope, ctx: CallContext) -> ClaimBuildResult:
+    """**重新抽取**：先清掉该 revision 的断言派生数据，再按当前语料重跑抽取与落库。
+
+    为什么需要它（ADR-0022）：``upsert_claim`` 以 ``(revision_id, claim_id)`` 为键、
+    ``upsert_statement`` 以 statement id 为键，而 claim_id 由**模型输出**决定——
+    换一份语料（例如把"只读头部"改成"按章节分配"）必然产生一批新 id，
+    旧行不会被覆盖，而是**残留成孤儿**：新旧 claim 同时挂在同一 revision 上，
+    图谱与讲解会看到两套。所以重抽取必须显式清理。
+
+    审计：清理行数写进 ``reextract_reset`` 警告，避免"悄悄清库"。
+    仅用于运维/重建路径，**不接入正常 ingest 流水线**。
+    """
+    _require_scope(scope)
+    with session_scope() as db:
+        removed = repo.delete_claim_artifacts(db, scope.revision_id)
+
+    batch = extract(scope, [], ctx)
+    built = verify_and_store(batch, ctx)
+
+    detail = "、".join(f"{k}={v}" for k, v in removed.items())
+    return built.model_copy(update={
+        "warnings": [
+            Warning(
+                code="reextract_reset",
+                message=f"重抽取前已清理该 revision 的断言派生数据（{detail}）",
+                stage="claims",
+            )
+        ] + list(built.warnings or []),
+    })
 
 
 def register_statement(
