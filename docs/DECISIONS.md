@@ -639,6 +639,55 @@
 - **口径说明**：`observed.json_schema is not False` 而非 `is not None`——`None` 表示"尚未观测"，必须照常尝试（首次仍要试，试过才知道）。
 - 回归测试 `test_ai_capability_reuse.py`（2 条：首次仍尝试 schema / 第二次记下 False 后 schema 0 次尝试且仍有 json_object 调用）。
 
+## D-54 章节通道：问句点名了章节，检索就必须召回该章节
+
+- **背景（D-52 修正 4 顺带查出来的真实缺陷）**：评测的题库（`qa.build_bank` / golden builder）用
+  **章节标题**造问题——"论文中「2 相关背景」这一部分主要讲了什么？"。这类问题的答案就在该章节里，
+  但实测 paper 3 的 **4 道可答章节题被拒答 2 道**（`answerable_false_refusal_rate=0.5`）。
+- **根因（插桩定位，不是猜）**：`_retrieve` 正常返回 5 条、零告警，但 hybrid 排序把**别的章节**排到了前面。
+  逐条打印 RRF 后看到确切机制：
+  - 该章节的块在**词法**里其实是第 1（`lex=34.7`），但只有**单通道**贡献 → RRF≈**0.0164**；
+  - 向量+词法**双通道**的无关块 RRF≈**0.026–0.030**；
+  - 于是目标块排第 **6**，被 `top_k=5` 截掉 → 模型拿到的是别的章节 → 判"证据不足"→ 返回空 claims
+    → 按设计（尊重拒答）返回 `abstained`，且 `ms=0` 级别地"什么都没做"。
+  - 排除项：**不是**检索坏了（`mode_used=hybrid`、向量分 ~0.55、无告警）、**不是**重排挤掉的
+    （`rerank=False/True` 两种跑法 top-5 完全一致）、**不是**模型能力问题。
+  - **验证实验先于实现**：只把该章节自己的 2 个块喂给 `_draft`，两道题都产出了**带证据的验证句**。
+- **决策**：在 `retrieval.service` 增加**章节通道**——问句里出现索引中存在的章节标题时，把该章节自己的块
+  作为一路候选加入 `rrf_fuse`，权重 `SECTION_WEIGHT=2.5`（`2.5/61≈0.041`，足以压过双通道陌生块）。
+  - 判据**只有**"问句出现了索引中存在的章节标题"（去掉引号/书名号/空白后比对，标题长度 ≥2 字）；
+    命中多个标题取**最具体**（最长）的那个——「方法」不该抢走「方法实现流程」。
+  - 章节归属看两处：块的结构化 `section_path`，以及块文本里的 `【章节：X】` 标记
+    （分块会跨节合并，合并块靠标记仍能认出来）。最多带进 `SECTION_CHANNEL_LIMIT=8` 块，长章节不挤满候选。
+  - 它是**功能不是降级**：不产生任何 warning（不会污染 `recovery_success_rate`）。
+  - `ALGORITHM_VERSION` 从 `rl.retrieval/2` **bump 到 `/3`**（规格要求影响检索结果的改动必须进版本）。
+- **顺带修掉两个"过期数据掩盖改进"的缺陷**（否则这次修复根本量不出来）：
+  1. **评测读最旧的答案**：`list_answers` 是 `order_by(created_at)` **升序**，而 `refusal_metrics`
+     用 `seen` 去重、先到先得 → **旧答案赢**；重跑题库后拒答率仍按旧记录算。
+     现改为 `metrics.latest_answers()`：同一问题只保留**最新**一条（`refusal_metrics`/`timing_metrics`/
+     `token_metrics` 都用它）。注意这不是"只挑好看的"——先答对后拒答会被**如实**记成误拒（有测试）。
+  2. **QA 缓存键不含检索版本**：`cache_key` 只有 source/model/prompt/gate，检索变了旧答案照样命中缓存。
+     现加 `retrieval_version`（由 `qa.service._retrieval_version()` 传 `retrieval.ALGORITHM_VERSION`）。
+     实测中正是它让我第一次"重问"拿回来的还是索引未建好时那条拒答记录。
+- **实测效果（重跑三篇题库后，均为 measured）**：
+
+  | 指标 | 修复前 | 修复后 |
+  |---|---|---|
+  | `answerable_false_refusal_rate`（paper 1/2/3） | 0.5 / 0.25 / 0.75（口径错误时的虚报） | **0.0 / 0.0 / 0.0** |
+  | `unanswerable_refusal_rate` | 1.0 / 1.0 / 1.0 | **1.0 / 1.0 / 1.0**（仍全拒答，未因修复而放过不可答题） |
+  | `quote_exact_rate` | 1.0 / 0.75 / 1.0 | 0.9375 / 1.0 / 1.0 |
+  | 可答章节题实际作答数 | paper 3 为 2/4 | **4/4**（三篇全部 4/4） |
+  | `recovery_success_rate` | not_evaluated | 1.0（分母 5 / 4 / 4，真实） |
+
+  注意最后两行是**独立**的：`unanswerable_refusal_rate` 保持 1.0 说明没有"为了少拒答而乱答"，
+  不可答的 4 道题仍然全部正确拒答——这两条必须一起看才有意义。
+- **仍然 null 的（不假装完成）**：`support_precision/recall`（金标集是机器草案、未人工确认）、
+  `anchor_region_hit_rate`（无矩形可判）、`overall_score`（依赖前者）。
+- 回归测试 `test_retrieval_section_channel.py`（11 条：章节通道单元 6 / 检索集成 3 / **hybrid 排序复现 2**）
+  与 `test_eval_answer_freshness.py`（10 条：最新答案赢 5 / 缓存键 3 / upsert 与键一致性 2）。
+  其中 `TestHybridRankingRegression` 用纯融合层**确定性地复现**了 live 的排序失败
+  （单通道目标块排第 6 → 注入章节通道后回到 top-5），不依赖 embedding。
+
 ## D-47 附（措辞修正）
 
 原文写"Compose 的 `.env` 是按当前工作目录查找的"，实测更精确的说法是：**Compose 先看当前工作目录的 `.env`、再看项目目录（compose 文件所在目录）的 `.env`，前者优先**。证据：`backend/.env` 存在时（以 `backend/` 为 CWD）端口/CORS 被它覆盖成 8001/3001；把它改名后，同样的工作目录又能正确读到根 `.env`（8002/4002、`DEMO_MODE=false`）。

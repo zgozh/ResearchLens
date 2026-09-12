@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -34,7 +35,24 @@ from app.core.errors import invalid_input, not_found, revision_mismatch
 from . import chunking, fusion, lexical, repository as repo, vector
 
 #: 索引算法版本：任何影响检索结果的改动都必须 bump（进入评测版本）
-ALGORITHM_VERSION = "rl.retrieval/2"
+#: ``/3``：新增**章节通道**（问句点名章节时召回该章节的块，ADR-0054）
+ALGORITHM_VERSION = "rl.retrieval/3"
+
+#: 问句点名章节时的通道权重（>1 才可能压过"双通道的无关块"）。
+#: 为什么必须 >1（live 实测，paper 3 问「2 相关背景」）：该章节的块在**词法**里排第 1
+#: （lex=34.7），但只有单通道贡献 → RRF≈0.0164；向量+词法双通道的无关块 RRF≈0.026–0.030。
+#: 于是目标块排第 **6**，被 ``top_k=5`` 截掉 → 模型判"证据不足"→ 拒答
+#: （实测 4 道可答章节题被拒 2 道）。2.5/61≈0.041 足以让它回到第 1。
+SECTION_WEIGHT = 2.5
+
+#: 章节通道最多带进来的块数：长章节不该挤满候选
+SECTION_CHANNEL_LIMIT = 8
+
+#: 章节标题比对前去掉引号/书名号/空白（问句里标题常被「」包着）
+_SECTION_NOISE_RE = re.compile(r"[\s「」『』【】\[\]（）()“”\"'《》]+")
+
+#: 少于此长度的标题太泛（如 "1"），不参与章节匹配
+_SECTION_MIN_CHARS = 2
 
 
 # =============================================================== 索引
@@ -206,7 +224,14 @@ def retrieve(request: RetrievalRequest, ctx: Optional[CallContext] = None) -> Re
                 lists.append(("vector", channel.hits))
                 mode_used = "hybrid"
 
-    candidates = fusion.rrf_fuse(lists)
+    # ---- 章节通道：问句**点名了章节**时，保该章节自己的块进候选（ADR-0054）
+    section_hits = _section_channel(query, chunks)
+    if section_hits:
+        lists.append(("section", section_hits))
+
+    candidates = fusion.rrf_fuse(
+        lists, weights={**fusion.DEFAULT_WEIGHTS, "section": SECTION_WEIGHT},
+    )
     if not candidates:
         return RetrievalResult(
             scope=scope, hits=[], mode_used=mode_used, warnings=warnings,
@@ -262,6 +287,53 @@ def retrieve(request: RetrievalRequest, ctx: Optional[CallContext] = None) -> Re
 
 def _chunk_id(scope: Scope, draft: chunking.ChunkDraft) -> str:
     return repo.new_id(f"{scope.revision_id}:{draft.content_hash}")
+
+
+def _normalize_section(text: str) -> str:
+    return _SECTION_NOISE_RE.sub("", text or "")
+
+
+def _section_titles(chunks: Sequence[repo.ChunkRow]) -> List[str]:
+    """索引里出现过的章节标题（保序去重）。"""
+    out: List[str] = []
+    for row in chunks:
+        for title in (row.section_path or []):
+            clean = (title or "").strip()
+            if len(_normalize_section(clean)) >= _SECTION_MIN_CHARS and clean not in out:
+                out.append(clean)
+    return out
+
+
+def _section_channel(
+    query: str, chunks: Sequence[repo.ChunkRow]
+) -> List[Tuple[str, float]]:
+    """问句点名了某章节 → 把**该章节自己的块**作为一路候选（ADR-0054）。
+
+    为什么需要（live 实测的失败）：``build_bank`` 用**章节标题**造问题
+    （"论文中「2 相关背景」这一部分主要讲了什么？"）。这类问句的答案就在该章节里，
+    但混合检索里该章节的块只有**词法单通道**贡献（RRF≈0.0164），而双通道的无关块
+    RRF≈0.026–0.030 → 目标块排第 6 被 ``top_k=5`` 截掉 → 模型判"证据不足"→ 拒答。
+    实测 paper 3 的 4 道可答章节题被拒 2 道（``answerable_false_refusal_rate=0.5``）。
+
+    这是**确定性**通道，不依赖向量/重排；判据只有"问句里出现了索引中存在的章节标题"。
+    命中多个标题时取**最具体**（最长）的那个——「方法」不该抢走「方法实现流程」。
+    """
+    if not chunks:
+        return []
+    normalized_query = _normalize_section(query)
+    matched = [t for t in _section_titles(chunks) if _normalize_section(t) in normalized_query]
+    if not matched:
+        return []
+    title = max(matched, key=lambda t: len(_normalize_section(t)))
+    # 章节归属看两处：块的结构化 ``section_path``，以及块文本里的 ``【章节：X】`` 标记
+    # （分块会跨节合并，合并块靠标记仍能被认出来）
+    marker = f"【章节：{title}"
+    picked = [
+        row for row in chunks
+        if title in (row.section_path or []) or marker in (row.text or "")
+    ][:SECTION_CHANNEL_LIMIT]
+    total = len(picked)
+    return [(row.id, float(total - idx)) for idx, row in enumerate(picked)]
 
 
 def _clamp_top_k(value: int, warnings: List[Warning]) -> int:

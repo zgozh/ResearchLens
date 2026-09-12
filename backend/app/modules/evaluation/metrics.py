@@ -317,7 +317,7 @@ def refusal_metrics(answers: Sequence, golden_questions: Sequence[GoldenQuestion
     ans_false_refused = 0
     seen: set = set()
 
-    for answer in answers:
+    for answer in latest_answers(answers):
         qid = _question_id_of(answer)
         meta = by_id.get(qid) if qid else None
         if meta is None:
@@ -360,12 +360,32 @@ def _question_id_of(answer) -> Optional[str]:
     return str(question) if question else None
 
 
+def latest_answers(answers: Sequence) -> List:
+    """同一问题只保留**最新**一条（``answers`` 由 ``list_answers`` 按时间升序给出）。
+
+    为什么必须做（真实缺陷）：``list_answers`` 是 ``order_by(created_at)`` **升序**，
+    而 ``refusal_metrics`` 用 ``seen`` 去重、先到先得 → **旧答案赢**。后果是"过期数据掩盖改进"：
+    检索修好后重跑题库，拒答率仍按旧的拒答记录算（实测正是卡在这里）。
+    反过来也成立——先答对、后拒答会被如实记成误拒，不是只挑好看的那条。
+
+    保持原有顺序（首次出现的次序），便于结果可复现。
+    """
+    picked: Dict[str, object] = {}
+    order: List[str] = []
+    for index, answer in enumerate(answers):
+        key = _question_id_of(answer) or f"#{index}"
+        if key not in picked:
+            order.append(key)
+        picked[key] = answer
+    return [picked[key] for key in order]
+
+
 def timing_metrics(
     answers: Sequence, ingest_ms: Optional[float] = None,
 ) -> List[MetricEntry]:
     totals: List[float] = []
     delivered: List[float] = []
-    for answer in answers:
+    for answer in latest_answers(answers):
         usage = getattr(answer, "usage", None)
         if usage is None:
             continue
@@ -395,7 +415,7 @@ def token_metrics(answers: Sequence) -> List[MetricEntry]:
     tin = 0
     tout = 0
     seen = False
-    for answer in answers:
+    for answer in latest_answers(answers):
         usage = getattr(answer, "usage", None)
         if usage is None:
             continue

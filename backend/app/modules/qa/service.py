@@ -83,6 +83,7 @@ def answer(
             revision_id=scope.revision_id, question=question,
             model_snapshot_id=_snapshot_id(ctx), top_k=top_k,
             source_digest=source_digest,
+            retrieval_version=_retrieval_version(),
         )
         cached = repo.find_cached(db, scope.revision_id, key)
 
@@ -106,7 +107,7 @@ def answer(
 
     if not decision.grounded and not sentences:
         record = _abstained(scope, question, warnings)
-        _persist(scope, record, source_digest)
+        _persist(scope, record, source_digest, key)
         return record
 
     evidence = _evidence_records(scope, sentences)
@@ -132,7 +133,7 @@ def answer(
         usage=usage,
         warnings=warnings,
     )
-    _persist(scope, record, source_digest)
+    _persist(scope, record, source_digest, key)
     return record
 
 
@@ -152,6 +153,21 @@ def build_bank(
 
 
 # =============================================================== 检索/生成
+
+
+def _retrieval_version() -> str:
+    """检索算法版本，参与 QA 缓存键（ADR-0054）。
+
+    检索是答案的上游：它变了，旧答案就不能再命中缓存——否则"改了没生效"，
+    实测正是卡在这里（索引未建好时那条拒答记录一直被返回）。
+    取不到时返回空串（宁可少一个分量，也不要因为导入问题让问答整体失败）。
+    """
+    try:
+        from app.modules import retrieval as retrieval_svc
+
+        return str(getattr(retrieval_svc, "ALGORITHM_VERSION", "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _retrieve(
@@ -583,13 +599,13 @@ def _artifact_text(text: str, sentences: Sequence[VerifiedStatement]) -> Artifac
     return ArtifactText(text=body, spans=spans)
 
 
-def _persist(scope: Scope, record: AnswerRecord, source_digest: str) -> None:
-    """短事务写；写失败不阻断返回（结果仍然可信，只是不缓存）。"""
-    key = repo.cache_key(
-        revision_id=scope.revision_id, question=record.question,
-        model_snapshot_id=record.model_snapshot_id, top_k=5,
-        source_digest=source_digest,
-    )
+def _persist(scope: Scope, record: AnswerRecord, source_digest: str,
+             cache_key_value: str) -> None:
+    """短事务写；写失败不阻断返回（结果仍然可信，只是不缓存）。
+
+    ``cache_key_value`` 由调用方（``answer()``）传入，**这里绝不再自己算一遍**：
+    实测就是"读路径的键含检索版本、写路径的键不含"导致重算结果写不进去（ADR-0054）。
+    """
     payload = record.model_dump(mode="json")
     try:
         with session_scope() as db:
@@ -600,7 +616,7 @@ def _persist(scope: Scope, record: AnswerRecord, source_digest: str) -> None:
                 revision_id=scope.revision_id,
                 question=record.question,
                 payload=payload,
-                cache_key_value=key,
+                cache_key_value=cache_key_value,
             )
     except Exception:  # noqa: BLE001  持久化失败不影响本次回答
         pass

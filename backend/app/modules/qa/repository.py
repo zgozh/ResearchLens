@@ -29,8 +29,15 @@ def cache_key(
     source_digest: str = "",
     prompt_version: str = PROMPT_VERSION,
     gate_version: str = GATE_VERSION,
+    retrieval_version: str = "",
 ) -> str:
-    """确定性缓存键：任一版本变化都会得到新键，旧缓存自然不再命中。"""
+    """确定性缓存键：任一版本变化都会得到新键，旧缓存自然不再命中。
+
+    ``retrieval_version``（ADR-0054）为什么必须有：检索是答案的上游，
+    改了检索（例如新增章节通道）却不在键里，旧答案会照样命中缓存返回——
+    "改了没生效"的经典成因。实测就是卡在这里：修好章节召回后重新问题，
+    拿回来的还是索引未建好时那条拒答记录。
+    """
     raw = json.dumps(
         {
             "revision_id": revision_id,
@@ -40,6 +47,7 @@ def cache_key(
             "source": source_digest or "",
             "prompt": prompt_version,
             "gate": gate_version,
+            "retrieval": retrieval_version or "",
         },
         sort_keys=True, ensure_ascii=False,
     )
@@ -70,23 +78,31 @@ def insert_answer(
     payload: dict,
     cache_key_value: Optional[str],
 ) -> None:
-    db.add(AnswerORM(
-        id=answer_id,
-        paper_id=paper_id,
-        revision_id=revision_id,
-        question=question,
-        text=payload.get("text", {}),
-        statements=payload.get("statements", []),
-        evidence=payload.get("evidence", []),
-        grounded=bool(payload.get("grounded", False)),
-        confidence=payload.get("confidence", "Low"),
-        note=payload.get("note", ""),
-        mode=payload.get("mode", "generated"),
-        model_snapshot_id=payload.get("model_snapshot_id"),
-        usage=payload.get("usage", {}),
-        warnings=payload.get("warnings", []),
-        cache_key=cache_key_value,
-    ))
+    """写入**或更新**该问题的答案（upsert）。
+
+    为什么必须是 upsert（真实缺陷，ADR-0054）：``answer_id`` 由 (revision, question)
+    确定性派生，重问同一问题时 ``db.add`` 会撞主键 → ``IntegrityError`` →
+    被 ``_persist`` 的 ``except Exception: pass`` **静默吞掉**。
+    后果：检索/门禁修好后**重算出来的新答案永远进不了库**，评测与前端一直读到旧答案
+    （"改了没生效"的直接成因）。实测：重跑题库后 paper 3 的「2 相关背景」明明答出了 4 句，
+    库里仍是旧的 ``abstained`` 行。
+    """
+    row = db.get(AnswerORM, answer_id)
+    if row is None:
+        row = AnswerORM(id=answer_id, paper_id=paper_id,
+                        revision_id=revision_id, question=question)
+        db.add(row)
+    row.text = payload.get("text", {})
+    row.statements = payload.get("statements", [])
+    row.evidence = payload.get("evidence", [])
+    row.grounded = bool(payload.get("grounded", False))
+    row.confidence = payload.get("confidence", "Low")
+    row.note = payload.get("note", "")
+    row.mode = payload.get("mode", "generated")
+    row.model_snapshot_id = payload.get("model_snapshot_id")
+    row.usage = payload.get("usage", {})
+    row.warnings = payload.get("warnings", [])
+    row.cache_key = cache_key_value
     db.flush()
 
 

@@ -17,7 +17,9 @@ TOTAL_CANDIDATES = 60
 MAX_RERANK = 12
 
 #: 各路的相对权重；词法在无向量时是唯一依赖，故权重更高。
-DEFAULT_WEIGHTS = {"lexical": 1.0, "vector": 1.0, "rerank": 1.0}
+#: ``section``（问句点名章节时的章节通道）权重由调用方给
+#: （``service.SECTION_WEIGHT``，ADR-0054），这里只登记它是一路。
+DEFAULT_WEIGHTS = {"lexical": 1.0, "vector": 1.0, "rerank": 1.0, "section": 1.0}
 
 
 @dataclass
