@@ -1480,3 +1480,31 @@ In this work, we presented the Transformer, the first sequence … ↔ 同句所
   行内 `$…$` 也算、普通题注不算、空 caption 仍不可用、`extracted.latex` 有值行为不变）；
   前端 policy 测试加到 7 条（新增"未验证裁剪 → extracted + 如实标签 + 资产仍返回"）。
   后端全量 **732 passed / 0 failed**；前端 `npm run test:lib` 45 条全绿。
+
+## D-81 M11 文本卫生门禁：把"不乱"变成**可复跑的门禁**（而不是靠人眼看）
+
+- **背景**：D-71 修好了渲染，但"以后别再乱"只能靠人眼截图验证，无法防回归。
+- **做了什么**（两层，语料同一批、全部取自实测的 paper 7 / paper 10）：
+  1. **离线门禁（CI 常绿、无外部依赖）**
+     - 后端 `backend/app/tests/unit/test_text_hygiene_gate.py`：12 条真实脏样本 ×
+       6 类不变量 = 72 条参数化断言（`plain` 无落单 `$`、无 `$$` 残留、
+       `rich` 叶子无定界符/`\tag`、issue code 在枚举内、二次规范化不冒新 issue 种类、
+       无控制符残留）；
+     - 前端 `tests/richtext.spec.ts` 新增语料整批扫描（同一批样本渲染后：
+       无多余 `$`、无被转义标签字面量、无 `\tag`）。
+  2. **真实语料门禁（需要 backend 在跑）**：`frontend/scripts/verify-render-hygiene.cjs`
+     + `npm run test:hygiene` —— 把线上 API 返回的论文文本整批喂给内核，
+     发现"固定语料里还没有的新脏模式"。
+- **门禁必须能红（自验证）**：两侧各有一条"故意喂未归类脏模式"的测试 ——
+  后端断言 `<mark>` 被报成 `UNKNOWN_TAG`、前端断言同一样本也会被报出来。
+  一个永远不会失败的门禁等于没有门禁。
+- **踩到并修正的一个判定口径**：前端门禁第一版写成"输出里不许出现任何 `$`"，
+  于是把 `the rf\$importance`（**字面美元**，渲染成 `$` 是**正确**的）判成违规。
+  已改成"渲染出的 `$` 数量 ≤ 源串里 `\$` 的数量"，只有**多出来的**才算残留。
+- **实测**：
+  - `npm run test:hygiene`：paper 7（文本段 70，KaTeX 1302）、
+    paper 10（文本段 106，KaTeX 1287）→ **多余 `$` 0 / 被转义标签 0 / 残留 `\tag` 0**；
+  - 后端全量 **807 passed / 0 failed**；前端 `test:rich` **25 passed**。
+- **一处两侧约定差异（记录，不是缺陷）**：未知标签在**后端 `plain`** 里写作实体
+  `&lt;mark&gt;`（转义可逆 + 保证二次规范化幂等，见 D-75），在**前端渲染**里保留字面量、
+  输出 HTML 时才转义。两侧都满足"不静默吞掉用户可见字符"。

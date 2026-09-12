@@ -212,6 +212,54 @@ check('7.3 表格 HTML 无 $ 时原样返回（零开销）', () => {
   assert.strictEqual(renderMathInHtmlString(src), src);
 });
 
+// ── 8. M11 文本卫生门禁：真实脏语料整批扫描 ─────────────────────────
+//
+// 语料与后端门禁 `backend/app/tests/unit/test_text_hygiene_gate.py` **同一批**
+// （全部取自实测的 paper 7 / paper 10 解析产物）。判定标准（REFACTOR_PLAN §2.1-1）：
+// 渲染结果里不得出现 `$`、不得出现被转义的标签字面量、不得出现 `\tag`。
+const HYGIENE_CORPUS = [
+  'Ashish Vaswani<sup>∗</sup> Google Brain avaswani@google.com',
+  'Aidan N. Gomez<sup>∗</sup> <sup>†</sup> University of Toronto aidan@cs.toronto.edu',
+  'For the base model, we use a rate of $P _ { d r o p } = 0 . 1$',
+  'We call our particular attention "Scaled Dot-Product Attention" (Figure 2).',
+  '$$\n \\operatorname{Attention} (Q, K, V) = \\operatorname{softmax} (\\frac {Q K ^ {T}}{\\sqrt {d _ {k}}}) V\\tag{1}\n$$',
+  '$$ l r a t e = d _ {\\mathrm{model}} ^ {- 0. 5} \\cdot \\min (s t e p \\_ n u m ^ {- 0. 5})\\tag{3} $$',
+  'Table 2 summarizes our results and compares our translation quality and training costs.',
+  'The model costs $10 only.',
+  'the rf\\$importance is high',
+  '<unk> and <table> appear here',
+];
+
+check('8.1 语料整批渲染后：无 $ 残留、无被转义标签、无 \\tag', () => {
+  for (const sample of HYGIENE_CORPUS) {
+    const { html } = renderRichHtml(sample);
+    // `\$` 是**字面美元**，渲染成 `$` 是正确的 —— 只有"多出来的" `$` 才算残留。
+    const literalDollars = (sample.match(/\\\$/g) || []).length;
+    const renderedDollars = (html.match(/\$/g) || []).length;
+    assert.ok(
+      renderedDollars <= literalDollars,
+      `残留 $（渲染 ${renderedDollars} 个 > 字面 ${literalDollars} 个）：${sample.slice(0, 40)}`,
+    );
+    assert.ok(
+      !/&lt;\/?(sup|sub|i|b|br)&gt;/i.test(html),
+      `标签被转义成字面量：${html.slice(0, 120)}`,
+    );
+    assert.ok(!html.includes('\\tag'), `残留 \\tag：${html.slice(0, 120)}`);
+  }
+});
+
+check('8.2 门禁能红：未知标签必须被报出来（否则门禁是装饰）', () => {
+  const r = parseRichText('text with <mark>highlight</mark> inside');
+  assert.ok(
+    r.issues.some((i) => i.code === 'UNKNOWN_TAG'),
+    `未归类标签没被报出来：${JSON.stringify(r.issues)}`,
+  );
+  // 前端内核保留字面量（在 HTML 输出时才转义），后端 plain 用实体转义 —— 两侧约定不同，
+  // 但都必须"不静默吞掉用户可见字符"。
+  assert.ok(r.plain.includes('<mark>'), r.plain);
+  assert.ok(!/<mark>/i.test(renderRichHtml('text with <mark>x</mark>').html), 'HTML 里不得出现真标签');
+});
+
 // ── 结果 ────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {
