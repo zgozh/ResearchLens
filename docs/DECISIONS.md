@@ -1777,3 +1777,30 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
   adapters 版本多收 media/evidence/statements —— 合并前要先定哪份权威）、
   `qa`、`evaluation` 三域的合并；以及把实现真正迁到 `app/projection/` 并收白名单。
   本轮只完成了"安全网 + 一个域"，**不声称 M10 完成**。
+
+## D-94 M12 现状核实（**先查再动手**）：后端阶段进度其实已经可用
+
+- **做法**：按"先看现有实现再决定做什么"，直接查库里最近一次导入 job 的事件流
+  （`select ... from job_events where job_id=(select max(id) from jobs)`）。
+- **实测结果（job 7）**：事件流**已经是完整的 11 阶段时间线**，且 progress 单调不减：
+  ```
+  stage_started acquire 0.00 → stage_finished acquire 0.05
+  → parse 0.05/0.25 → normalize 0.25/0.30 → media 0.30/0.45 → index 0.45/0.55
+  → claims 0.55/0.70（含 degraded）→ verify 0.70/0.80 → exhibits 0.80/0.90（含 degraded）
+  → qa_bank → evaluate → publish → completed
+  ```
+  基础设施也已在位：`job_events` 表、`job_stage_keys`（唯一键
+  `revision_id+stage+input_digest+algorithm_version` + status）、`stage_finished/skipped`
+  复用（`service.py` 里"直接复用产物 digest 返回 skipped"）。
+- **结论**：M12 的**后端一半已经工作**（进度事件 + 幂等键表 + skipped 复用），
+  不是"没做"。剩下的缺口按实测是：
+  1. **`stage_started` 会重复发**（实测 job 7：`acquire` 发了 2 次、`claims` 发了 2 次）——
+     根因是**两处语义不同的 emit 共用了同一个事件类型**：`create_job` 入队时发
+     `stage_started acquire`（"任务已入队"），`claim_next` 领取时又发
+     `stage_started <stage>`（"worker 已领取"）。界面上时间线会显示两次"开始"，像 bug；
+  2. `POST /papers/{id}/process { from_stage }` 的**显式起点**未见实现（默认从第一个未完成阶段起；
+     需要核实 canonical ingest 路径的入口参数）；
+  3. **前端导入页的阶段时间线**（消费既有 `useJobEvents` 渲染 skipped/running 百分比）未做。
+- **本轮为什么只核实不改造**：上面第 1 条要改的是**事件类型语义**，而事件流正被导入页消费；
+  在上下文预算即将耗尽时改动它，改完无法完成"重建 + 真实导入一次 + 看界面"的验证闭环 ——
+  按本项目一贯纪律（**不交付未经验证的改动**），本轮留作下一轮的第一件事，并已把根因写清楚。
