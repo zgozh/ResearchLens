@@ -22,6 +22,24 @@ const STAGES: { key: Stage; label: string }[] = [
 
 const TERMINAL: JobEvent['type'][] = ['completed', 'failed', 'cancelled'];
 
+/** 该阶段的最终事件（用于判断"已跳过/失败"以及给出原因）。 */
+function stageOutcome(events: JobEvent[], key: Stage): { skipped: boolean; message: string } {
+  let skipped = false;
+  let message = '';
+  for (const e of events) {
+    if (e.data?.stage !== key) continue;
+    const text = e.data.message || '';
+    if (e.type === 'stage_finished' || e.type === 'degraded') {
+      message = text || message;
+      // 后端把"复用既有产物、不重复执行"表达为 status=skipped，落到消息文案里
+      // （R3-M12：AI 类阶段跳过即不重复计费，界面必须说清是"已跳过"而不是"已完成"）
+      if (/跳过|skip/i.test(text)) skipped = true;
+    }
+    if (e.type === 'failed') message = text || message;
+  }
+  return { skipped, message };
+}
+
 export function JobProgress({ events }: { events: JobEvent[] }) {
   const latest = events[events.length - 1];
   const currentStage = latest?.data.stage ?? null;
@@ -36,7 +54,10 @@ export function JobProgress({ events }: { events: JobEvent[] }) {
     <div className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="mb-3 flex items-center justify-between">
         <span className="text-sm font-medium text-slate-700">处理进度</span>
-        <span className="font-mono text-xs text-slate-500">{Math.round(progress * 100)}%</span>
+        <span className="font-mono text-xs text-slate-500">
+          {currentStage ? `${STAGES.find((s) => s.key === currentStage)?.label ?? currentStage} · ` : ''}
+          {Math.round(progress * 100)}%
+        </span>
       </div>
       <div className="mb-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
         <div
@@ -48,9 +69,11 @@ export function JobProgress({ events }: { events: JobEvent[] }) {
         {STAGES.map((s, i) => {
           const isActive = i === currentIndex && !done;
           const isDone = i < currentIndex || (i === currentIndex && done);
+          const outcome = stageOutcome(events, s.key);
           return (
             <li
               key={s.key}
+              title={outcome.message || undefined}
               className={cn(
                 'flex items-center gap-2 rounded-md px-2 py-1 text-xs',
                 isActive ? 'bg-indigo-50 text-indigo-700' : isDone ? 'text-slate-500' : 'text-slate-400',
@@ -64,6 +87,11 @@ export function JobProgress({ events }: { events: JobEvent[] }) {
                 <span className="h-3.5 w-3.5 rounded-full border border-slate-200" />
               )}
               {s.label}
+              {outcome.skipped && (
+                <span className="ml-auto rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
+                  已跳过
+                </span>
+              )}
             </li>
           );
         })}
