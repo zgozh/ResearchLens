@@ -33,7 +33,7 @@ from app.modules import claims as claims_svc, evaluation as eval_svc
 from app.modules import graph as graph_svc, scene as pres_svc
 from app.modules import parse as parser_mod, pipeline
 from app.modules import qa as qa_svc
-from app.modules.pipeline.ingest import ingest_paper_from_pdf, ingest_pdf_for_paper
+from app.modules.pipeline.ingest import ingest_pdf_for_paper
 from app.core import runtime
 
 router = APIRouter(prefix="/api")
@@ -199,15 +199,20 @@ def paper_from_url(body: FromUrlBody, background_tasks: BackgroundTasks, db: Ses
     pid = p.id
 
     def _work():
-        from app.core.db import SessionLocal as _SL
-        s = _SL()
         try:
             data = pdf_path.read_bytes() if pdf_path and pdf_path.exists() else b""
-            ingest_paper_from_pdf(s, data, body.url, title)
+            # **必须**用 ingest_pdf_for_paper（为**已存在**的 paper 跑 ingest）：
+            # 上面刚插入的那一行 `p`（pid）就是本接口要返回、界面要轮询的那一篇。
+            #
+            # 别改回 ingest_paper_from_pdf：它会按 title 再找一次论文
+            # （`_find_paper_by_slug` → `make_slug(title)`），而 `make_slug` 会把
+            # 非 ASCII 字符全部剥掉 —— 中文标题一律退化成 `paper`，找不到 →
+            # **再建一篇**。实测（2026-09-13，POST 6106 带中文标题）：30ms 内出现两行，
+            # 空壳那行永远不会被处理，而接口返回的正是它 → 界面永远停在"处理中"。
+            # 回归锁：`test_from_url_slug.py::TestFromUrlOwnsExactlyOnePaper`。
+            ingest_pdf_for_paper(pid, data, url=body.url, title=title)
         except Exception:  # noqa: BLE001
             import traceback; traceback.print_exc()
-        finally:
-            s.close()
 
     background_tasks.add_task(_work)
     return {"paper_id": pid, "status": "processing", "slug": slug}

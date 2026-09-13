@@ -2815,5 +2815,66 @@ canonical 的数据模型要求**原文页 + 块 + 逐字引文**，而 demo IR 
 **建议**：demo 论文若还要当"零依赖演示"用 → **D**；若只当摆设 → **C**；
 **B** 是最快的止血（当天就能让 8 个视图全亮），代价是接受第二条读路径。
 
+## D-119 网址导入建**两篇**论文：接口返回的那篇永远停在"处理中"
+
+### 怎么发现的（被"能不能确认一下"逼出来的）
+
+用户问"导入真实论文也正常了是吧"。**没有凭印象回答**，而是真跑了一次导入
+（`POST /api/papers/from-url`，带中文标题）。结果 30ms 内库里出现**两行**：
+
+| id | slug | status | job | revision | source |
+|---|---|---|---|---|---|
+| 21 | `数据驱动的移动应用用户接受度建模与预测` | `pending` | 0 | 0 | 0 |
+| 22 | `ingest-e2648c6f57a1e737d05afb40` | `ready` | 1 | 1 | 1 |
+
+而**接口返回的是 21** —— 也就是返回了一篇**永远不会被处理**的论文：21 没有任何 job，
+界面会永远停在"处理中"，同时库里多一个空壳（首页"真实公开论文"区会多一张点不开的卡片）。
+
+### 根因：两个入口都在"建论文"，能不能对上全看 title 是不是 ASCII
+
+1. `paper_from_url` 先自己插一行 `Paper`（slug 来自 `slug_for_import`）；
+2. 然后把活儿交给 `ingest_paper_from_pdf`，它内部又用 `_find_paper_by_slug(title)` →
+   `make_slug(title)` 找一遍；`make_slug` 会把**非 ASCII 字符全部剥掉** ——
+   中文标题一律退化成 `paper` → 找不到 → `create_paper` **再建一篇**（slug 用幂等键）。
+
+| 调用方 | title | 端点 slug | `make_slug(title)` | 结果 |
+|---|---|---|---|---|
+| 前端粘贴网址 | 空 → `title = slug` | `jos-6106` | `jos-6106` | ✅ 复用同一篇 |
+| **API 带中文标题** | `数据驱动的…` | `数据驱动的…` | `paper` | ❌ **建两篇** |
+
+前端 `api.paperFromUrl(url)` 从不传 title，所以用户点"粘贴网址"没暴露；
+但 API 明确支持 `title`，属真缺陷（我这次实测正是踩到它）。
+
+### 修法
+
+端点把活儿交给 **`ingest_pdf_for_paper(pid, ...)`**（为**已存在**的 paper 跑 ingest）——
+"哪一篇"从此只有一个答案；并把不再使用的 `ingest_paper_from_pdf` 从 `routes.py`
+的 import 里删掉（防止有人接回来）。
+
+### 测试（`test_from_url_slug.py::TestFromUrlOwnsExactlyOnePaper`，2 条）
+
+- 观测一：**一次导入 = 论文行数 +1**；
+- 观测二：**被处理的 `paper_id` == 接口返回的 `paper_id`**。
+
+修前两条都红，修后全绿。**一处自我更正**：这两条的第一版把
+`ingest_paper_from_pdf` 也一起打了桩 —— 而"建了两篇"这件事恰好发生在它内部，
+桩掉它断言恒真（修前也通过）。现在只打桩流水线本身（`_enqueue_and_run`），
+让行数成为真实观测。另外那 3 条既有端点测试的夹具也同步改到新入口。
+
+### 实测（修后重跑同一次导入）
+
+| | 修前 | 修后 |
+|---|---|---|
+| 一次导入建几行 | **2**（21 空壳 + 22 真货） | **1**（id 23，1 job / 1 revision） |
+| 接口返回的 paper_id 会被处理吗 | ❌ 不会（永远 pending） | ✅ 就是它 |
+| 全链路耗时 | — | **201s**（`state=partial`，与 D-116 记录的一致） |
+| 各视图 | — | `/exhibits` claims=28 statements=15 sections=5；`/graph` **51 节点/40 边**；`/presentation` **3 场景**；`/pages` 16；`/evaluation` `not_evaluated=1`、`overall=65.33`、`basis=ai_generated`；`/qa` `mode=generated` 1296 字 7 条证据 |
+| 不带标题（前端真实路径） | ✅ | ✅ 同样只建 1 行（id 24 / slug `jos-6550`），返回的就是它 |
+
+**一处测量教训（如实记）**：第一次探视图时我在 `t+92s` 就下了结论，看到
+`graph=0 / scenes=0` —— 那只是**阻塞域就绪 ≠ 作业结束**（此时 job 还在 `claims` 阶段）。
+在作业真正跑到 `publish` 之后再探，图谱/场景才是有内容的。
+
+
 
 
