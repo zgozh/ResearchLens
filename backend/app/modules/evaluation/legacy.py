@@ -122,52 +122,21 @@ def _cached_ai_judge(row) -> Optional[AiJudgeResult]:
 
 
 def to_legacy_evaluation(report: EvaluationReport) -> Dict[str, Any]:
-    """``EvaluationReport → EvaluationOut`` 兼容 dict（含 not_evaluated 标记）。
+    """``EvaluationReport → EvaluationOut`` 兼容 dict。
 
-    **proxy 也要如实呈现**：规格允许报告 proxy（只是必须标明），而旧实现把
-    非 ``measured`` 一律丢成 null → 前端看到"未评测"，实际上值算出来了
-    （实测 ``unsupported_fact_escape_rate`` 就是这样被藏起来的）。
-    这里额外给出 ``proxy`` 名单，前端据此标"（proxy）"而不是"未评测"。
+    **M10 收敛**：这里原本是 `schemas/adapters.to_legacy_evaluation` 的一份**逐字段相同的副本**
+    （实测两份输出的键集合与取值完全一致，既无超集也无差异）。两份并存只会重演
+    D-48/D-60 那类"改了一处、另一处没改"的事故，因此改为**委托唯一实现**，
+    本函数只负责把 Pydantic 结果摊平成旧调用方要的 dict。
+
+    （历史上这两处确实分叉过：本模块漏了 `not_evaluated_reasons`、
+    adapters 侧少了 `overall_score_canonical` —— 都是被双读一致性测试抓出来的。）
     """
-    metrics: Dict[str, Any] = {}
-    not_evaluated_names = []
-    not_evaluated_reasons: Dict[str, str] = {}
-    proxy_names = []
-    for entry in report.metrics:
-        value = entry.value
-        if value.value is None or value.status == "not_evaluated":
-            # 未评估：**不写 0**，写入 None 并登记名字 + 机器可读原因码（M10）
-            metrics[entry.name] = None
-            not_evaluated_names.append(entry.name)
-            not_evaluated_reasons[entry.name] = value.reason or "unspecified"
-        elif value.status == "proxy":
-            metrics[entry.name] = value.value
-            proxy_names.append(entry.name)
-        else:
-            metrics[entry.name] = value.value
+    from app.schemas.adapters import to_legacy_evaluation as _project
 
-    canonical = report.overall_score
-    metrics["overall_score_available"] = canonical is not None
-    # AI 裁判口径的综合分（ADR-0056）：与 canonical 并存，**语义不同**，永不互相冒充。
-    metrics["ai_overall_score"] = report.ai_overall_score
-    metrics["ai_overall_score_available"] = report.ai_overall_score is not None
-    metrics["overall_score_basis"] = (
-        "human_annotated" if canonical is not None
-        else ("ai_judge" if report.ai_overall_score is not None else None)
-    )
-    metrics["not_evaluated"] = not_evaluated_names
-    metrics["not_evaluated_reasons"] = not_evaluated_reasons
-    metrics["proxy"] = proxy_names
-    metrics["golden_id"] = report.golden_id
-    metrics["version"] = report.version
-    metrics["warnings"] = [{"code": w.code, "message": w.message} for w in report.warnings]
-
-    # 旧契约原先把"未评估"投影成 0.0（列是 NOT NULL），实测 curl 顶层就是
-    # ``"overall_score": 0.0`` → 容易被读成"评了 0 分"。列已放宽为可空（迁移 0008），
-    # 这里如实给 None；``overall_score_available`` 仍保留，供只认旧字段的消费者判断。
-    legacy_overall = float(canonical) if canonical is not None else None
-    metrics["overall_score_canonical"] = canonical
-    return {"metrics": metrics, "overall_score": legacy_overall}
+    out = _project(report)
+    data = out.model_dump() if hasattr(out, "model_dump") else dict(out)
+    return data
 
 
 def _navigation_checks(scope: Scope):

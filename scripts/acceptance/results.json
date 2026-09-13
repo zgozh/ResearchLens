@@ -9,21 +9,21 @@
       "script": "verify_route_a.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 1132,
+      "elapsed_ms": 1018,
       "tail": "  [OK  ] 前端首页 200 — 13702 bytes\n\n总计失败断言：0"
     },
     {
       "script": "verify_graph.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 553,
+      "elapsed_ms": 480,
       "tail": "  [OK  ] exhibits.graph 里图谱告警可见 — ['evidence_bindings_derived']\n\n总计失败断言：0"
     },
     {
       "script": "verify_metrics_live.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 738,
+      "elapsed_ms": 676,
       "tail": "  [OK  ] overall_score 未假装可用（金标集未人工确认 → available=false） — available=False score=None\n\n总失败断言：0"
     }
   ]

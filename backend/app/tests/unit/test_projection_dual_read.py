@@ -109,10 +109,13 @@ class TestDualReadConsistency:
         b = module_proj(rep)
         # 两处返回类型不同（Pydantic vs dict），比 metrics 与 overall 两项
         am, bm = a.metrics, b["metrics"]
-        for key in ("not_evaluated", "not_evaluated_reasons", "proxy"):
-            assert am[key] == bm[key], f"{key} 分叉：{am.get(key)} != {bm.get(key)}"
-        for name in ("quote_exact_rate", "support_recall"):
-            assert am[name] == bm[name], f"{name} 分叉：{am.get(name)} != {bm.get(name)}"
+        # 顶层键也要对齐（只比 metrics 会漏掉"一边多/少一个顶层字段"这类分叉）
+        assert set(a.model_dump().keys()) == set(b.keys()), (
+            f"顶层键分叉：{sorted(a.model_dump())} != {sorted(b)}"
+        )
+        assert set(am.keys()) == set(bm.keys()), "metrics 键集合分叉"
+        for key, value in am.items():
+            assert value == bm[key], f"{key} 分叉：{value} != {bm[key]}"
 
 
 class TestProjectionStaticGate:

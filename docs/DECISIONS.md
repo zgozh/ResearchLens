@@ -1912,3 +1912,21 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
   `job.stage`、默认仍是 `acquire`）。后端全量 **898 passed / 0 failed**。
 - **M12 至此闭环**（进度事件 + 去重 + 时间线 + 续跑决策 + 真正起跑），
   **唯一与方案文本的差异是路径名**：`/resume` 而非 `/process`（原因见上，已写进端点 docstring）。
+
+## D-100 M10 收敛②：评测域投影合并（`qa` 域核实为**早已收敛**）
+
+- **先核实再动手的结果**：
+  - **`qa` 域本来就已经收敛**：`modules/qa/legacy.to_legacy_answer` 早在 ADR-0060 就改成了
+    委托 `schemas/adapters.to_legacy_answer`，注释里写着"只保留一处实现"。**无需再动**。
+  - **`evaluation` 域是真重复**：拿同一份 `EvaluationReport` 跑两处投影做**字段级比对**，
+    结论是**键集合与取值完全一致**（既没有超集也没有差异）—— 也就是一份纯副本。
+- **收敛**：`modules/evaluation/legacy.to_legacy_evaluation` 改为委托
+  `schemas/adapters.to_legacy_evaluation`，自己只把 Pydantic 结果摊平成旧调用方要的 dict。
+  两份并存只会重演 D-48/D-60 那类"改了一处、另一处没改"，而这次是**实测确认无差异**后才合的。
+- **顺手把双读测试加强**：原来评测域只比 `not_evaluated / not_evaluated_reasons / proxy`
+  三项 + 两个指标名 —— 这**漏得掉**"一边多/少一个顶层字段"这类分叉。现在改成
+  **顶层键集合相等 + metrics 键集合相等 + 逐字段相等**。
+- **实测**：双读一致性 5 条全绿（含加强后的评测域）；后端全量 **898 passed / 0 failed**；
+  重建后端后 `verify_metrics_live / verify_route_a / verify_graph` **0 失败**。
+- **M10 只剩 `scene`**：两侧**签名不同**（`adapters` 多收 `media/evidence/statements`），
+  合并前必须先定哪份权威 —— 这一条**我需要用户拍板**，不自行决定（涉及产品语义，不是机械迁移）。
