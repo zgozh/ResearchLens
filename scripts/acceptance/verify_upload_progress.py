@@ -63,7 +63,11 @@ if not papers:
     sys.exit(2)
 
 deep = os.environ.get("RL_ACCEPT_DEEP") == "1"
-target_id = int(os.environ.get("RL_PAPER_ID") or papers[0]["id"])
+# 优先真实论文：干净克隆上 papers[0] 可能是 demo 论文（没有 revision，
+# 阻塞域与 revision 断言会全部失败 —— 那是选错对象，不是产品坏了）。
+from _papers import pick_one_paper_id  # noqa: E402 - 同目录共用工具（见 _papers.py）
+
+target_id = int(os.environ.get("RL_PAPER_ID") or pick_one_paper_id(BASE) or papers[0]["id"])
 
 print(f"核对论文 paper_id={target_id}（deep={deep}）")
 manifest = _get(f"/api/papers/{target_id}/manifest")

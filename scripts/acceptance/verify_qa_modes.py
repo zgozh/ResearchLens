@@ -76,10 +76,14 @@ except Exception as exc:  # noqa: BLE001
 import pathlib  # noqa: E402
 import urllib.request as _u  # noqa: E402
 
-# 复用 route_a 的选论文方式：直接问 papers 列表里的第一篇
+from _papers import real_paper_ids  # noqa: E402 - 同目录共用工具（见 _papers.py）
+
+# 优先真实论文（启动自举只自动导入 1 篇，干净克隆上前两篇可能是 demo 论文）；
+# 万一库里还没有真实论文，退回前两篇 —— 至少 mode 契约仍然被验到。
 with _u.urlopen(f"{BASE}/api/papers", timeout=30) as r:
     papers = json.loads(r.read().decode("utf-8"))
-paper_ids = [p["id"] for p in papers[:2]] or [1]
+paper_ids = real_paper_ids(BASE, limit=2) or [p["id"] for p in papers[:2]] or [1]
+print(f"待核对论文：{paper_ids}")
 
 for pid in paper_ids:
     for question in QUESTIONS:

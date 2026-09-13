@@ -5,6 +5,8 @@ import json
 import sys
 import urllib.request
 
+from _papers import real_paper_ids  # 同目录共用工具（见 _papers.py）
+
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8002"
 QUESTION = "这篇论文提出的方法是什么？"
 ROUNDS = 3
@@ -38,7 +40,15 @@ def ask(pid: int):
 
 
 failures = 0
-for pid in (1, 2, 3):
+# 动态挑真实论文（理由见 _papers.py）：启动自举只自动导入 1 篇，干净克隆上
+# id 2/3 可能是 demo 论文 —— 真跑起来才发现问的是示例而不是真实抽取结果。
+pids = real_paper_ids(BASE)
+if not pids:
+    print("  [FAIL] 库里没有真实论文（source_mode=real）—— 无法验收问答稳定性")
+    print("\n空答案次数：1/1")
+    sys.exit(1)
+print(f"待核对真实论文：{pids}")
+for pid in pids:
     for i in range(ROUNDS):
         kinds, answer, mode, grounded = ask(pid)
         ok = bool(answer.strip())
@@ -52,5 +62,5 @@ for pid in (1, 2, 3):
             failures += 1
             print(f"    kinds={kinds}")
 
-print(f"\n空答案次数：{failures}/{3 * ROUNDS}")
+print(f"\n空答案次数：{failures}/{len(pids) * ROUNDS}")
 sys.exit(1 if failures else 0)

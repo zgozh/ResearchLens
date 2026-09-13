@@ -50,8 +50,14 @@ docker compose up --build     # 等价命令 docker-compose up --build 亦可
 
 | 来源 | 数量 | 需要 Key 吗 | 说明 |
 |---|---|---|---|
-| **内置示例论文**（`source_mode=demo`） | 3 篇 | **完全不需要** | 项目**自绘原创**并预置结构化 IR（章节/断言/证据/图谱/分镜/问答题库全部齐备），入库即可点。首次访问 `GET /api/papers` 时幂等写入，8 个视图立刻可演示 |
-| **真实中文论文自举**（`source_mode=real`） | 3 篇 | 建议配 | 后端启动时后台线程自动**入队**《软件学报》（开放获取）3 篇；由 `worker` 真实下载 PDF → 解析 → 抽取。**没有 LLM Key 也能入队**，只是内容质量按降级路径产出 |
+| **内置示例论文**（`source_mode=demo`） | 3 篇 | **完全不需要** | 项目**自绘原创**并预置结构化 IR（章节 / 方法步骤 / 断言 / 证据 / 章节树 / 程序化图），首次访问 `GET /api/papers` 时幂等写入；论文地图 / 方法动画 / 证据链 / 论文阅读立刻可点 |
+| **真实中文论文自举**（`source_mode=real`） | **1 篇** | 建议配 | 后端启动时后台线程自动**入队**《软件学报》（开放获取）的 **Haar 小波 JPEG 隐写**那一篇；由 `worker` 真实下载 PDF → 解析 → 抽取。**没有 LLM Key 也能入队**，只是内容质量按降级路径产出 |
+
+> **另外两篇中文论文不自动导入**（`.../pdf/6106` 移动应用用户接受度建模与预测、
+> `.../pdf/6550` Solidity 智能合约缺陷预测）：它们留在导入页的示例列表里，
+> 在「放入你的论文 → 粘贴网址」点一下即可，结果与自举**完全相同**。
+> 这样每个克隆者不必先为你可能不看的两篇论文等上几分钟解析、也不用先花掉模型配额。
+> 判断依据有测试锁着：`backend/app/tests/unit/test_seed_real_auto_policy.py`。
 
 3 篇内置示例（自绘原创，非真实论文，版权自有）：
 
@@ -61,34 +67,40 @@ docker compose up --build     # 等价命令 docker-compose up --build 亦可
 | `netguard` | 网络空间安全 | NetGuard: Graph Contrastive Detection of Zero-Day Lateral Movement from Host Telemetry |
 | `learnflow` | 教育 AI | LearnFlow: A Knowledge-Graph Tutor that Personalizes Adaptive Practice from Mistake Patterns |
 
-3 篇自举真实论文（《软件学报》正式出版、开放获取）：
+1 篇自举真实论文 + 2 篇导入页示例（均为《软件学报》正式出版、开放获取）：
 
-| 论文 | 链接 |
-|---|---|
-| 基于 Haar 小波域指标自适应选择载体的 JPEG 隐写 | <https://www.jos.org.cn/josen/article/pdf/5281> |
-| 数据驱动的移动应用用户接受度建模与预测 | <https://www.jos.org.cn/josen/article/pdf/6106> |
-| 基于软件度量的 Solidity 智能合约缺陷预测方法 | <https://www.jos.org.cn/josen/article/pdf/6550> |
+| 论文 | 链接 | 启动时自动导入？ |
+|---|---|---|
+| 基于 Haar 小波域指标自适应选择载体的 JPEG 隐写 | <https://www.jos.org.cn/josen/article/pdf/5281> | ✅ 自动 |
+| 数据驱动的移动应用用户接受度建模与预测 | <https://www.jos.org.cn/josen/article/pdf/6106> | ❌ 导入页手动 |
+| 基于软件度量的 Solidity 智能合约缺陷预测方法 | <https://www.jos.org.cn/josen/article/pdf/6550> | ❌ 导入页手动 |
 
 ### 所以：**别的真实论文要你自己导入**
 
-自举的只有上面这 3 篇。除此之外的任何论文（arXiv / 期刊 / 你自己的稿子）都需要你自己导入，
+自举的只有 Haar 那一篇。除此之外的任何论文（arXiv / 期刊 / 你自己的稿子）都需要你自己导入，
 两种方式，都在界面上：
 
-1. **粘贴公开 PDF 网址** → 上传页把上述 3 个《软件学报》链接做成了示例，点一下就能测；
+1. **粘贴公开 PDF 网址** → 上传页把上述 3 个《软件学报》链接都做成了示例，点一下就能测（含那两篇未自动导入的）；
 2. **上传本地 PDF**（默认上限 40MB，`MAX_UPLOAD_MB` 可调）。
 
 导入是**真跑完整链路**（不是查缓存）：下载 PDF → MinerU/PDF 解析 → 归一化 → 图表裁剪 →
 向量索引 → LLM 抽取断言 → 证据校验 → 问答题库 → 自动评测 → 发布。
 实测 **1～4 分钟/篇**（本机实测：未配 MinerU 走 PyMuPDF 约 1 分钟；配 MinerU 后约 3～4 分钟），
 期间进度**实时**显示在论文页上，完成后图谱 / 讲解 / 评测 / 图表**自动上屏，无需手动刷新**；
-`worker` 是**单进程串行**处理，所以 3 篇自举论文是排队依次跑完的。
+`worker` 是**单进程串行**处理，同时导入多篇是排队依次跑完的。
 
-**自举论文的产出边界（如实说明）**：这 3 篇真实论文的任务会以 `partial` 收尾 ——
+**真实论文的产出边界（如实说明）**：真实论文的任务会以 `partial` 收尾 ——
 不是失败，而是每一处降级都写进了阶段结果里：章节超出上下文预算会被均匀取样截断
 （`section_truncated` / `budget_truncated`，断言覆盖不全）、没有已验证陈述的章节
 只呈现空场景而不编内容（`scene_without_verified_statement`）、协议校验发现数值对不上
 会走修复（`supervisor_decision: repair`）。另外**真实论文没有预置题库**
 （`qa_bank: skipped`，理由是"不生成假问答"），所以证据问答页没有预置问题 —— 自己提问照常可用。
+
+**内置示例的边界（如实说明）**：这 3 篇 demo 是自绘的**结构化 IR**、不是走流水线导入的，
+所以它们**没有 canonical revision** —— 研究图谱 / 讲解 / 自动评测这三个接口对它们返回空
+（`modules/graph/legacy.py` 的既定行为：找不到 revision 就**不猜、不伪造**），图表也是
+程序化绘制（`glyph_svg`）而非论文原图。**要看完整的 8 个视图，请用真实论文**
+（自举的那篇，或你自己导入的任意一篇）。
 
 > 这也是为什么项目里**没有「演示模式」开关**：产品只有一条链路。
 > 没配 Key 时是**运行期降级**（`has_llm=False` → 抽取式作答），不是另一种模式。
@@ -118,7 +130,7 @@ docker compose up --build     # 等价命令 docker-compose up --build 亦可
 |---|---|
 | 缺 `LLM_API_KEY` | 抽取/问答走抽取式路径；界面**不冒充**有 AI 结论，评测里相关项标 `not_evaluated`（**`not_evaluated` ≠ 0 分**） |
 | 缺 `MINERU_TOKEN` | 解析降级 PyMuPDF，仍是真实解析，但版式/表格/图片质量下降 |
-| 缺网络 | 只有 3 篇内置示例可完整演示；网址导入会因为下载失败而报错（错误信息会指到具体环节） |
+| 缺网络 | 只有 3 篇内置示例可看（它们不走流水线、不需要 Key；但**图谱 / 讲解 / 自动评测是空的**，见上文「内置示例的边界」）；网址导入会因为下载失败而报错，错误信息会指到具体环节 |
 
 ---
 

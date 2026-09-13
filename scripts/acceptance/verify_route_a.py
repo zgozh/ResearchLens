@@ -9,6 +9,8 @@ import sys
 import urllib.error
 import urllib.request
 
+from _papers import real_paper_ids  # 同目录共用工具（见 _papers.py）
+
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8002"
 FRONT = sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:4002"
 
@@ -33,7 +35,17 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
 
 def main() -> int:
     failures = 0
-    for pid in (1, 2, 3):
+    # 动态挑真实论文（理由见 _papers.py）：启动自举只自动导入 1 篇，
+    # 干净克隆上 id 2/3 可能是 demo 论文 —— 它们没有 revision，/exhibits 会 409。
+    pids = real_paper_ids(BASE)
+    if not pids:
+        check("库里有真实论文（/api/papers 中 source_mode=real）", False,
+              "一篇都没有 —— 启动自举没跑或还没建论文")
+        failures += 1
+        print(f"\n总计失败断言：{failures}")
+        return 1
+    print(f"待核对真实论文：{pids}")
+    for pid in pids:
         print(f"\n=== paper {pid} ===")
         status, d = get(f"/api/papers/{pid}")
         if not isinstance(d, dict):

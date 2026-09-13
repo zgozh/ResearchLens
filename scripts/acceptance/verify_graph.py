@@ -6,6 +6,8 @@ import sys
 import urllib.error
 import urllib.request
 
+from _papers import real_paper_ids  # 同目录共用工具（见 _papers.py）
+
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8002"
 failures = 0
 
@@ -25,7 +27,14 @@ def get(path: str):
         return exc.code, None
 
 
-for pid in (1, 2, 3):
+# 动态挑真实论文 —— **不许写死 (1, 2, 3)**：启动自举只自动导入 1 篇，
+# 干净克隆上 id 2/3 可能是 demo 论文（无 revision → /graph 按设计返回空图），
+# 写死 id 会让这套验收在新机器上假红。理由与实现见 `_papers.py`。
+pids = real_paper_ids(BASE)
+check("库里有真实论文（/api/papers 中 source_mode=real）", bool(pids),
+      "一篇都没有 —— 启动自举没跑或还没建论文")
+
+for pid in pids:
     print(f"\n=== paper {pid} ===")
     st, g = get(f"/api/papers/{pid}/graph")
     if not isinstance(g, dict):

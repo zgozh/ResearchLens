@@ -9,49 +9,49 @@
       "script": "verify_route_a.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 1314,
+      "elapsed_ms": 1486,
       "tail": "  [OK  ] 前端首页 200 — 13710 bytes\n\n总计失败断言：0"
     },
     {
       "script": "verify_graph.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 576,
+      "elapsed_ms": 604,
       "tail": "  [OK  ] exhibits.graph 里图谱告警可见 — ['evidence_bindings_derived']\n\n总计失败断言：0"
     },
     {
       "script": "verify_e2e_extra.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 15280,
+      "elapsed_ms": 16313,
       "tail": "  [OK  ] bundle 含「另有」（PresenterView 未解析引用提示） — /app/.next/server/app/paper/[slug]/page.js\n\n总计失败断言：0"
     },
     {
       "script": "verify_qa_modes.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 74233,
+      "elapsed_ms": 80323,
       "tail": "  [OK  ] paper 2 「论文用了什么数据集？」 mode=extractive conf=High len=907\n\n总失败断言：0（共检查 6 条回答）"
     },
     {
       "script": "verify_upload_progress.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 460,
+      "elapsed_ms": 452,
       "tail": "  [OK  ] 标题长度合理（不是单字标签） — 25\n\n总计失败断言：0"
     },
     {
       "script": "verify_metrics_live.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 867,
+      "elapsed_ms": 872,
       "tail": "  [OK  ] overall_score 可用时必须标明来源为 AI 口径（不许谎称人工评审） — available=True basis='ai_generated'\n\n总失败断言：0"
     },
     {
       "script": "verify_qa_stability.py",
       "status": "pass",
       "failures": null,
-      "elapsed_ms": 139236,
+      "elapsed_ms": 134164,
       "tail": "paper 3 round 3: answer_len=423 mode=generated grounded=True citation=7 sentence=7 OK\n\n空答案次数：0/9"
     }
   ]

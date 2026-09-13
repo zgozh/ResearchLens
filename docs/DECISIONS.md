@@ -2634,3 +2634,66 @@ tick → status='loading' → notReady=true  → 进度卡出现（把下方内�
 
 导入过程中进度卡**不闪**、内容不被上下顶动；解析完成后**不刷新**图谱/讲解/评测/图表依次出现；
 解析期间切视图阶段列表不丢。
+
+## D-116 启动自举从 3 篇收敛为 **1 篇**：其余两篇改为导入页手动触发
+
+### 用户原话
+
+> "改成只有基于 Haar 小波域指标自适应选择载体的 JPEG 隐写这一篇会进入解析，另外两篇不自动，
+>  别人可以在导入那里进行测试而不是直接开启项目就自动导入。"
+
+### 改法（不动目录，只收敛自动子集）
+
+| | 之前 | 现在 |
+|---|---|---|
+| `REAL_PAPERS`（目录） | 3 篇 | **仍是 3 篇**（导入页示例要用） |
+| `AUTO_SEED_PAPERS`（启动自举） | —— | **新增，= 第一篇**（5281 Haar） |
+| `seed_catalog("real")` 入队 | 遍历 `REAL_PAPERS` | 遍历 `AUTO_SEED_PAPERS` |
+| 导入页示例（前端 `EXAMPLE_PAPERS`） | 3 条中文链接 | **不变**（未自动导入的两篇仍可点着测） |
+
+**为什么是"收敛自动子集"而不是"从目录删掉两篇"**：目录被删 = 导入页示例跟着没得列，
+需求后半句（别人能在导入处测试）就落空了。所以拆成**目录 vs 自动子集**两个概念，
+而不是删数据。
+
+### 为什么值得改
+
+自举的代价落在**每个克隆者**身上：首次启动就要串行跑完 3 篇（实测未配 MinerU 约 4 分钟、
+配 MinerU 约 10 分钟；worker 是单进程串行），占着队列与模型配额，而另外两篇往往不是
+他想看的那一篇。留一篇真实的打底（不是空库、也不只剩自绘示例），其余按需触发。
+
+### 改动面（小，但要一起改完）
+
+1. `backend/app/modules/pipeline/seed_real.py`：新增 `AUTO_SEED_PAPERS`，`seed_catalog` 遍历它；
+2. **验收脚本 4 套原本写死 `for pid in (1, 2, 3)`** —— 这是本次真正的**回归风险**：
+   干净克隆上 id 2/3 会变成 **demo** 论文，而 demo 论文没有 revision
+   （`/exhibits` 409、`/graph` 返回空图），写死 id 会让验收在**别人的机器上假红**。
+   新增 `scripts/acceptance/_papers.py`（按 `source_mode=real` 挑论文）并改
+   `verify_route_a.py` / `verify_graph.py` / `verify_qa_stability.py` / `verify_qa_modes.py` /
+   `verify_upload_progress.py` 共用它。本机仍跑 3 篇真实论文，干净克隆只跑 1 篇 ——
+   两种情况的结果都反映真实状态；
+
+### 验收（实测，不是推演）
+
+- 新增 `backend/app/tests/unit/test_seed_real_auto_policy.py`（5 条）：自动子集恰 1 篇且是 Haar、
+  目录仍 3 篇、**行为级**断言 `provision_real_papers()` 只入队 1 个 job（用真实 5281 URL）、
+  导入页源码仍列着三条链接（需求后半句）；
+- **真实空库实测**（容器内对全新 SQLite 跑一次自举，`.scratch/probe_fresh_seed.py`）：
+  `papers = 1 [(1, 'haar-jpeg', 'real', 'pending')]`、`jobs = 1 [(1, 1, 'ingest', 'queued')]`
+  —— 只自动导入 1 篇，且就是 Haar 那篇；
+- 后端全量 pytest **1028 passed / 0 failed**（较上轮 +5，全部来自新增模块）；
+  前端 `test:lib` 全绿（含 11 个展示点的文本路径门禁）；`run_all.py` **7/7**：
+  `verify_route_a` / `verify_graph` / `verify_e2e_extra` / `verify_qa_modes`（6 条回答）/
+  `verify_upload_progress` / `verify_metrics_live` / `verify_qa_stability`（空答案 0/9）
+  —— 全部改成按 `source_mode=real` 挑论文后仍然全绿（本机 3 篇真实论文都被覆盖到）。
+
+### 顺带更正 README 的两处不实陈述（查证后改的）
+
+1. 原写"3 篇自举真实论文"，已改为 1 篇自动 + 2 篇导入页示例，并给出"是否自动导入"列；
+2. 原写内置示例"8 个视图立刻可演示"——**实测不成立**：demo 论文没有 canonical revision，
+   `GET /api/papers/4/{graph,presentation,evaluation}` 分别返回
+   `{"nodes":[],"edges":[]}` / `{"scenes":[]}` / `not_evaluated:["*"]`，`/exhibits` 返回 409
+   「尚无可读 revision，展项不可用」。已改为如实说明：示例可用的是
+   论文地图 / 方法动画 / 证据链 / 论文阅读，**图谱 / 讲解 / 自动评测为空**。
+   （demo seed 是否要接入 canonical 流水线以获得完整 8 视图，是**待用户决策**的独立议题，
+   本次不做。）
+
