@@ -1838,3 +1838,21 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
 - **一处如实说明**：图谱视图（`GraphView` 证据节点）目前只有 `support_status`
   （supports/insufficient），**没有** `reasons`，所以那里仍用原有的文字标注 ——
   要把四分类徽标也接上去，需要后端在图谱节点 props 里带上 reasons（属后续小改动）。
+
+## D-97 M12 收尾①：抑制**连续重复**的 `stage_started`
+
+- **问题（实测 job 7）**：`stage_started acquire` 与 `stage_started claims` 各出现两次。
+  根因是**两处语义不同的 emit 共用同一事件类型**：`create_job` 入队时发一次
+  （"任务已入队"），`claim_next` / 上一阶段完成推进时又发一次（"worker 已领取"/"开始 X"）。
+  界面上时间线会显示两次"开始"，看起来像 bug。
+- **修法（不改事件词汇表，避免动到前端与既有存储格式）**：`pipeline/service._emit()` 加
+  **幂等抑制** —— 若该 job 的**上一条事件**已经是同一 stage 的 `stage_started`，则跳过本次写入
+  （新增 `repository.last_event()` 助手）。规则只压"连续重复"，
+  **不会误伤**"阶段跑完再重跑"这种合法序列（那时上一条是 `stage_finished`）。
+- **测试**：`test_pipeline_stage_events.py`（4 条）—— 连续重复被抑制（acquire 两次只留一条）、
+  **跑完再重跑的新 started 必须保留**、不同 stage 的 started 都保留、progress 单调不减。
+- **实测**：后端全量 **887 passed / 0 failed**（+4）；重建后端后
+  `verify_route_a / verify_graph / verify_metrics_live` **0 失败**。
+- **如实说明（未做的验证）**：本次**没有**再跑一次完整导入（约 4 分钟 LLM 时间）来现场看
+  新 job 的事件序列 —— 重复抑制由 4 条单元测试覆盖，但"真实导入一次、确认新 job 里
+  acquire/claims 只出现一次"这一步留待下次真实导入时顺带确认。

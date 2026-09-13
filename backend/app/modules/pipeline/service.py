@@ -582,6 +582,19 @@ def _emit(
     usage: Optional[Usage] = None,
     error: Optional[dict] = None,
 ) -> None:
+    # M12：抑制**连续重复**的 stage_started。
+    # 实测 job 7 的 acquire / claims 各出现两次"开始"：一次来自入队（create_job），
+    # 一次来自领取/阶段推进（claim_next / 上一阶段完成）。两处语义不同却共用同一事件类型，
+    # 时间线上就像 bug。这里只抑制"上一条已经是同 stage 的 started"的情况，
+    # 阶段跑完再重跑时上一条是 finished，不会被误伤。
+    if type == "stage_started":
+        last = repo.last_event(db, job_id)
+        if (
+            last is not None
+            and last.type == "stage_started"
+            and (last.data or {}).get("stage") == stage
+        ):
+            return
     data = JobEventData(
         stage=stage, progress=float(progress), message=message,
         tool=None, artifact_ids=list(artifact_ids or []),

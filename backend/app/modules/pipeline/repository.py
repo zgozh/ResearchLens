@@ -387,6 +387,16 @@ def append_event(
     return row
 
 
+def last_event(db: Session, job_id: int) -> Optional[JobEventORM]:
+    """该 job 的**最后一条**事件（用于事件幂等抑制，M12）。"""
+    return db.execute(
+        select(JobEventORM)
+        .where(JobEventORM.job_id == job_id)
+        .order_by(JobEventORM.event_id.desc())
+        .limit(1)
+    ).scalars().first()
+
+
 def events_after(db: Session, job_id: int, after: int, limit: int = 500) -> List[JobEventORM]:
     return list(
         db.execute(
