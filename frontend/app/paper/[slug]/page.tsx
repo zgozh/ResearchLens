@@ -51,7 +51,11 @@ const NAV: { view: ViewMode; label: string; icon: any }[] = [
  * 断言正文在 ``statements`` 表里，由调用方用 ``statement_id → text`` 映射回填
  * （见 ``statementsById``）；这里只保留"确实拿不到"时的诚实占位。
  */
-function claimSummaryOf(c: ClaimRecord, statementsById?: Map<string, string>): ClaimSummary {
+function claimSummaryOf(
+  c: ClaimRecord,
+  statementsById?: Map<string, string>,
+  validationsById?: Map<string, unknown>,
+): ClaimSummary {
   const fromStatement = c.statement_id ? statementsById?.get(c.statement_id) : undefined;
   return {
     claim_id: c.claim_id,
@@ -60,6 +64,8 @@ function claimSummaryOf(c: ClaimRecord, statementsById?: Map<string, string>): C
     confidence: c.confidence ?? 0,
     status: c.status === 'verified' ? 'SUPPORTED' : 'UNSUPPORTED',
     evidence_count: c.evidence_ids.length,
+    // M2：把 validation 一起带上，证据链列表才能显示"为什么未支持"的四分类
+    validation: c.statement_id ? validationsById?.get(c.statement_id) : undefined,
   };
 }
 
@@ -233,12 +239,21 @@ export default function Workspace() {
     }
     return map;
   }, [exhibits]);
+  // M2：statement_id → validation（四分类徽标的数据来源）
+  const validationsByStatement = useMemo(() => {
+    const map = new Map<string, unknown>();
+    for (const s of exhibits?.statements ?? []) {
+      const v = (s as { validation?: unknown }).validation;
+      if (s?.id && v) map.set(s.id, v);
+    }
+    return map;
+  }, [exhibits]);
   const claims: ClaimSummary[] = useMemo(() => {
     if (canonicalClaims.length > 0) {
-      return canonicalClaims.map((c) => claimSummaryOf(c, statementsById));
+      return canonicalClaims.map((c) => claimSummaryOf(c, statementsById, validationsByStatement));
     }
     return [];
-  }, [canonicalClaims, statementsById]);
+  }, [canonicalClaims, statementsById, validationsByStatement]);
 
   // 实时模式：canonical 无断言且存在 job → 轮询旧 claims（降级）
   useEffect(() => {

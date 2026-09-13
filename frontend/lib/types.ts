@@ -110,6 +110,8 @@ export interface ClaimSummary {
   confidence: number;
   status: string;
   evidence_count: number;
+  /** canonical statement 的 validation（M2：用于"为什么未支持"的四分类徽标）。 */
+  validation?: unknown;
 }
 
 export interface ClaimOut {

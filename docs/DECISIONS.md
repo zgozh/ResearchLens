@@ -1819,3 +1819,22 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
 - **实测**：`tsc --noEmit` 通过；`npm run test:lib` 六套全绿；前端重建后 200。
 - **M12 仍然剩余（如实登记）**：`stage_started` 重复发（根因见 D-94：入队 emit 与领取 emit
   共用同一事件类型）、`POST /papers/{id}/process { from_stage }` 显式起点。
+
+## D-96 M2 深接线：四分类徽标接到证据链列表（断言视图）
+
+- **背景**：D-88 做完了四分类的**库与徽标**并接进 `PresenterView`，但用户最常看的是
+  **断言列表（证据链）** —— 那里仍然只显示"未支持"，看不到"为什么"。
+- **数据通路（一段都不少）**：
+  `exhibits.statements[].validation`
+  → `validationsByStatement`（statement_id → validation 映射）
+  → `claimSummaryOf(c, statementsById, validationsByStatement)` 产出
+  `ClaimSummary.validation`
+  → `<ClaimView>` 里 `<VerdictBadge validation={c.validation} />`。
+- **改了哪些文件**：`lib/types.ts`（`ClaimSummary` 加可选 `validation`）、
+  `app/paper/[slug]/page.tsx`（映射 + 透传）、`components/views/ClaimView.tsx`（渲染徽标）。
+- **实测**：`tsc --noEmit` 通过；`npm run test:lib` 六套全绿；前端重建后
+  验收 `verify_route_a`（含 exhibits/claims 字段）与 `verify_e2e_extra`（含 bundle 关键路径）
+  **均 0 失败**。
+- **一处如实说明**：图谱视图（`GraphView` 证据节点）目前只有 `support_status`
+  （supports/insufficient），**没有** `reasons`，所以那里仍用原有的文字标注 ——
+  要把四分类徽标也接上去，需要后端在图谱节点 props 里带上 reasons（属后续小改动）。

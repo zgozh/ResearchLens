@@ -8,6 +8,7 @@ import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { FigureImage } from '@/components/FigureImage';
 import { TableRender } from '@/components/TableRender';
 import { MathText } from '@/components/MathText';
+import { VerdictBadge } from '@/components/evidence/VerdictBadge';
 import { cn } from '@/lib/cn';
 import { useState } from 'react';
 
@@ -63,6 +64,8 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
                           <span className="font-mono text-[11px] text-slate-500">置信 {c.confidence.toFixed(2)}</span>
                         </div>
                         <MathText text={c.statement} className="mt-2.5 block text-sm leading-relaxed text-slate-100" />
+                        {/* M2：这条断言为什么没进事实层（四分类，可展开看后端理由） */}
+                        <VerdictBadge validation={c.validation} className="mt-1.5" />
                         {!c.statement && (
                           <p className="mt-2.5 text-sm text-slate-500">该断言暂无可显示的陈述正文。</p>
                         )}
