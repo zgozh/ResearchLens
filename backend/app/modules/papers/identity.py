@@ -57,21 +57,65 @@ _NOT_TITLE_RE = re.compile(
 )
 
 
-def is_placeholder_title(title: Optional[str]) -> bool:
+def is_placeholder_title(title: Optional[str], slug: Optional[str] = None) -> bool:
     """当前标题是不是**占位值**（可以安全覆盖）。
 
-    两类都算占位：
+    三类都算占位：
 
     1. 已知脏默认值（`Real Paper` / `Uploaded Paper` / `Untitled` / 空）；
     2. **文件名当标题**（`xxx.pdf`）—— 上传路径在没有更好的来源时就用 `file.filename`，
-       那描述的是"这个文件叫什么"，不是"这篇论文叫什么"（实测 `upload-test.pdf`）。
+       那描述的是"这个文件叫什么"，不是"这篇论文叫什么"（实测 `upload-test.pdf`）；
+    3. **标题就是自己的 slug**（`jos-5281`）—— 网址导入在解析出真标题之前拿 slug 顶着，
+       它同样不是"论文叫什么"（实测：不识别这一条时，回填会把真标题漏掉）。
     """
     text = (title or "").strip()
     if not text:
         return True
     if text.lower() in PLACEHOLDER_TITLES:
         return True
-    return bool(re.fullmatch(r".+\.pdf", text, flags=re.I))
+    if re.fullmatch(r".+\.pdf", text, flags=re.I):
+        return True
+    if slug and text == slug.strip():
+        return True
+    return False
+
+
+#: 摘要段的起头标记（中英文）。实测中文期刊是 `摘 要:`（"摘"与"要"之间有空格）。
+_ABSTRACT_MARKER_RE = re.compile(
+    r"^\s*(?:摘\s*要|abstract)\s*[:：]?\s*", re.I,
+)
+
+
+def abstract_from_blocks(blocks: Iterable[Any]) -> Optional[str]:
+    """从**第一页的块**里兜底提取摘要段（当结构产物里没有 ``Abstract`` 章节时）。
+
+    为什么需要（实测）：中文期刊（软件学报）的 `structure.sections` 从"1 载体选择问题模型"
+    开始，**没有 Abstract 章节** —— 只走 `abstract_from_sections` 会拿不到摘要，
+    界面就永远停在占位值「真实公开论文 · {url}」。
+    而**摘要段落本身就在第一页的块里**（实测 ordinal=6，`摘 要: 为了解决…`）。
+
+    取的是**块的原文**（逐字），只剥掉行首的字段标记（`摘 要:` / `Abstract:`）——
+    那是字段标签不是内容。
+    """
+    ordered = sorted(
+        (b for b in (blocks or [])),
+        key=lambda b: int(getattr(b, "ordinal", 0) or 0),
+    )
+    for block in ordered:
+        if (getattr(block, "kind", "") or "") != "paragraph":
+            continue
+        text = (getattr(block, "text", "") or "").strip()
+        if not text:
+            continue
+        m = _ABSTRACT_MARKER_RE.match(text)
+        if not m:
+            continue
+        body = text[m.end():].strip()
+        # 太短的不像摘要（避免把"摘要：见正文"这类占位当摘要）
+        if len(body) < 40:
+            continue
+        return body[:MAX_ABSTRACT_CHARS]
+    return None
 
 
 def is_placeholder_abstract(abstract: Optional[str]) -> bool:
@@ -90,13 +134,24 @@ def is_placeholder_identity(*, title: Optional[str], abstract: Optional[str]) ->
     return is_placeholder_title(title) or is_placeholder_abstract(abstract)
 
 
+#: 标题里要剥掉的**脚注/星号标记**（PDF 排版产物，不是标题的一部分）。
+#: 实测：`基于 Haar 小波域指标自适应选择载体的 JPEG 隐写\*` —— 尾部 `\*` 是脚注引用符号。
+_TITLE_FOOTNOTE_RE = re.compile(r"[\s\\*†‡§¶]+$")
+
+
+def _clean_title(text: str) -> str:
+    """去掉标题首尾的脚注标记与多余空白（**不改写正文**）。"""
+    return _TITLE_FOOTNOTE_RE.sub("", (text or "").strip())
+
+
 def title_from_blocks(blocks: Iterable[Any]) -> Optional[str]:
     """从**第一页的块**里取标题：第一个像标题的正文块。
 
     判据（确定性，不猜）：
     - 只取 ``kind == "paragraph"``（``heading`` 可能是 "Abstract"）；
     - 长度落在 ``[MIN_TITLE_CHARS, MAX_TITLE_CHARS]``；
-    - 不匹配作者/机构/邮箱/页眉模式（``_NOT_TITLE_RE``）。
+    - 不匹配作者/机构/邮箱/页眉模式（``_NOT_TITLE_RE``）；
+    - 首尾脚注标记（``\\*`` / ``†``）会被剥掉 —— 那是排版产物，不是标题内容。
 
     全部不满足 → ``None``（宁缺勿造：这个 PDF 大概率没有独立标题行）。
     """
@@ -107,7 +162,7 @@ def title_from_blocks(blocks: Iterable[Any]) -> Optional[str]:
     for block in ordered:
         if (getattr(block, "kind", "") or "") != "paragraph":
             continue
-        text = " ".join((getattr(block, "text", "") or "").split())
+        text = _clean_title(" ".join((getattr(block, "text", "") or "").split()))
         if not (MIN_TITLE_CHARS <= len(text) <= MAX_TITLE_CHARS):
             continue
         if _NOT_TITLE_RE.search(text):
@@ -146,13 +201,14 @@ def plan_identity_backfill(
     current_abstract: Optional[str],
     parsed_title: Optional[str],
     parsed_abstract: Optional[str],
+    current_slug: Optional[str] = None,
 ) -> dict:
     """算出**需要更新哪些字段**；返回空 dict 表示什么都不用动。
 
     这是整个回填的**唯一决策点**，与"I/O 怎么写"分开，便于单测。
     """
     plan: dict = {}
-    if parsed_title and is_placeholder_title(current_title):
+    if parsed_title and is_placeholder_title(current_title, current_slug):
         plan["title"] = parsed_title
     if parsed_abstract and is_placeholder_abstract(current_abstract):
         plan["abstract"] = parsed_abstract
@@ -180,6 +236,7 @@ def backfill_identity(scope) -> dict:
                 current_abstract=getattr(paper, "abstract", "") or "",
                 parsed_title=parsed_title,
                 parsed_abstract=parsed_abstract,
+                current_slug=getattr(paper, "slug", None),
             )
             if not plan:
                 return {}
@@ -224,22 +281,27 @@ def _read_parsed_identity(scope):
             ).all()
             from types import SimpleNamespace
 
-            parsed_title = title_from_blocks([
+            first_page_blocks = [
                 SimpleNamespace(ordinal=r[0], kind=r[1], text=r[2]) for r in rows
-            ])
+            ]
+            parsed_title = title_from_blocks(first_page_blocks)
+            # 兜底：结构产物里没有 `Abstract` 章节时，摘要段落往往仍在第一页的块里
+            parsed_abstract = abstract_from_blocks(first_page_blocks)
 
-    # 摘要走 structure 产物（章节正文由"已验证断言拼接"而来，是既有的口径）。
-    # 读取入口与 `papers/legacy.py` 一致：`claims.get_structure(scope)`。
+    # 摘要优先走 structure 产物（章节正文由"已验证断言拼接"而来，是既有的口径）；
+    # 拿不到才用上面的块兜底（实测中文期刊的 sections 从"1 …"开始，没有 Abstract 章节）。
     try:
         from app.modules import claims as claims_mod
 
         structure = claims_mod.get_structure(scope)
         if structure is not None:
-            parsed_abstract = abstract_from_sections(
+            from_sections = abstract_from_sections(
                 list(getattr(structure, "sections", []) or [])
             )
+            if from_sections:
+                parsed_abstract = from_sections
     except Exception as exc:  # noqa: BLE001  结构产物不可读时不回填摘要
-        log.info("读取 structure 失败，跳过摘要回填：%s", exc)
+        log.info("读取 structure 失败，改用第一页块兜底：%s", exc)
     return parsed_title, parsed_abstract
 
 
@@ -247,6 +309,7 @@ __all__ = [
     "MAX_ABSTRACT_CHARS",
     "PLACEHOLDER_ABSTRACT_PREFIX",
     "PLACEHOLDER_TITLES",
+    "abstract_from_blocks",
     "abstract_from_sections",
     "backfill_identity",
     "is_placeholder_abstract",

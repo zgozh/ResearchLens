@@ -2500,3 +2500,67 @@ R4-M8 的规划里写了"迁移前 grep 每个待搬符号的引用点"——我
 
 后端 `pytest` **1005 passed / 0 failed**；前端 `tsc` 干净、`test:lib` 全绿；
 `run_all.py` **7/7 pass**；`/api/health` 与 `/` 实测已无 `demo_mode`；上传实测 200。
+
+---
+
+## D-114 **网址导入从第二篇起必然 500** —— "真实导入处理失败"的真根因
+
+### 实测到的 bug
+
+`POST /api/papers/from-url` 在请求没带 `title` 时写死 `title = "Real Paper"`，
+于是 slug 是个**常量** `"real-paper"`；而 `papers.slug` 上有唯一索引 `ix_papers_slug`。
+
+**后果**：只要库里已有一篇 `real-paper`，之后**每一次不带标题的网址导入**都
+`IntegrityError: duplicate key value violates unique constraint "ix_papers_slug"` → HTTP 500。
+
+实测日志：
+
+```
+sqlalchemy.exc.IntegrityError: (psycopg.errors.UniqueViolation)
+duplicate key value violates unique constraint "ix_papers_slug"
+DETAIL:  Key (slug)=(real-paper) already exists.
+[parameters: {'slug': 'real-paper', 'title': 'Real Paper',
+              'abstract': '真实公开论文 · https://www.jos.org.cn/josen/article/pdf/5281', ...}]
+```
+
+**为什么一直没暴露**：库里第一篇无标题导入（paper 11）成功占了 `real-paper`，
+此后所有无标题导入都在 500；而前端 `api.paperFromUrl(url)` **从不传 title** ——
+所以"粘贴网址"这条路**从第二篇起就是坏的**。
+
+### 修法
+
+1. **`slug_for_import(url, title)`**：显式标题优先；否则从 URL 路径段派生
+   （`.../pdf/5281` → `jos-5281`，`arxiv.org/pdf/1810.04805` → `arxiv-1810-04805`）；
+   取不到信息时退化为 URL 摘要哈希。**同 URL 必得同 slug**。
+2. **幂等**：同 slug 已存在 → 直接复用那篇（省掉重复下载与重复 LLM 开销），不再插入。
+3. 标题不再写死 `Real Paper`：留空时先用 slug 顶着，由 publish 阶段的
+   **身份回填**换成真标题（D-110）。
+
+### 现场验证（真实端到端，不是单测）
+
+用软件学报的中文论文跑了一次**完整导入**：
+
+```
+from-url -> {"paper_id":18,"status":"processing","slug":"jos-5281"}   ← 不再是 500
+[14:48:16] pdf=ready text=ready media=ready claims=pending ...
+[14:50:47] pdf=ready text=ready media=ready claims=ready graph=ready presentation=ready
+[14:51:47] job 结束，阻塞域全部 ready（历时约 4 分钟）
+title   : 基于 Haar 小波域指标自适应选择载体的 JPEG 隐写\*
+abstract: 为了解决目前图像纹理复杂度建模的隐写载体选择指标难以有效适用于 JPEG 隐写的问题,…
+```
+
+验证完删除（它与 paper 1 是同一篇）。新增 10 条测试覆盖 slug 派生与端点幂等。
+
+### 顺带修掉的两个回填缺陷（都来自这次现场验证）
+
+1. **标题等于 slug 时不算占位**：新默认标题是 `jos-5281`，旧判据不认它 →
+   真标题永远不会被回填（现场就是卡在这里）。`is_placeholder_title` 增加
+   `title == slug` 判据。
+2. **中文期刊的 structure 里没有 `Abstract` 章节**：软件学报的 sections 直接从
+   "1 载体选择问题模型"开始，摘要**只在第一页的块里**（`摘 要: 为了解决…`）。
+   新增 `abstract_from_blocks` 作为兜底（只剥行首字段标记，正文逐字保留）。
+3. 顺带剥掉标题尾部的**脚注标记**（`\*`、`†`）—— 排版产物不是标题内容。
+
+### 验收
+
+后端 `pytest` **1023 passed / 0 failed**；`run_all.py` 见报告。

@@ -80,6 +80,20 @@ class TestPlaceholderDetection:
         assert self._is_placeholder("5281.pdf", "")
         assert self._is_placeholder("PAPER.PDF", "")
 
+    def test_title_equal_to_slug_is_placeholder(self):
+        """**标题就是自己的 slug** 也是占位（网址导入在解析出真标题前拿 slug 顶着）。
+
+        实测：`paper_from_url` 现在把 title 设为 slug（`jos-5281`）。
+        不识别这一条时，回填会把真标题漏掉 —— 界面永远显示 `jos-5281`。
+        """
+        from app.modules.papers.identity import is_placeholder_title
+
+        assert is_placeholder_title("jos-5281", "jos-5281")
+        assert not is_placeholder_title("jos-5281", "other-slug"), (
+            "标题与 slug 不同 → 不是这种占位（可能是真标题恰好等于别的 slug，不覆盖）"
+        )
+
+
     def test_real_title_containing_pdf_word_is_not_placeholder(self):
         """标题里出现 'pdf' 但不是以 `.pdf` 结尾 → 是真标题，不许覆盖。"""
         assert not self._is_placeholder("A Survey of PDF Malware Detection", "真实摘要")
@@ -103,6 +117,67 @@ class TestPlaceholderDetection:
 
 # ------------------------------------------------------------------ 2
 
+
+class TestTitleSlugPlaceholderIsUsed:
+    def test_plan_fills_title_when_title_equals_slug(self):
+        from app.modules.papers.identity import plan_identity_backfill
+
+        plan = plan_identity_backfill(
+            current_title="jos-5281", current_abstract="",
+            parsed_title="基于 Haar 小波域指标自适应选择载体的 JPEG 隐写",
+            parsed_abstract="为了解决目前图像纹理复杂度建模的…",
+            current_slug="jos-5281",
+        )
+        assert plan["title"] == "基于 Haar 小波域指标自适应选择载体的 JPEG 隐写"
+        assert plan["abstract"].startswith("为了解决")
+
+
+class TestAbstractFromBlocks:
+    """**结构产物里没有 Abstract 章节时的兜底**（实测中文期刊就是这样）。
+
+    实测 paper 18（软件学报）：`structure.sections` 从"1 载体选择问题模型"开始，
+    没有 Abstract 章节；而摘要段落就在第一页的块里（`摘 要: 为了解决…`）。
+    只走 sections 的话，界面会永远停在占位摘要「真实公开论文 · {url}」。
+    """
+
+    def _blocks(self, pairs):
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(ordinal=i, kind=k, text=t) for i, (k, t) in enumerate(pairs)]
+
+    def test_extracts_chinese_abstract_with_spaced_marker(self):
+        from app.modules.papers.identity import abstract_from_blocks
+
+        body = "为了解决目前图像纹理复杂度建模的隐写载体选择指标难以有效适用于 JPEG 隐写的问题,提出一种方法。"
+        got = abstract_from_blocks(self._blocks([
+            ("paragraph", "基于 Haar 小波域指标自适应选择载体的 JPEG 隐写\\*"),
+            ("paragraph", "黄炜 $^{1}$ ，赵险峰 $^{2}$"),
+            ("paragraph", f"摘 要: {body}"),
+        ]))
+        assert got == body, got
+
+    def test_extracts_english_abstract(self):
+        from app.modules.papers.identity import abstract_from_blocks
+
+        body = "We introduce a new language representation model called BERT, which stands for " \
+               "Bidirectional Encoder Representations from Transformers."
+        got = abstract_from_blocks(self._blocks([("paragraph", f"Abstract: {body}")]))
+        assert got == body
+
+    def test_ignores_short_or_missing_abstract(self):
+        from app.modules.papers.identity import abstract_from_blocks
+
+        assert abstract_from_blocks(self._blocks([("paragraph", "摘要：见正文")])) is None
+        assert abstract_from_blocks(self._blocks([("paragraph", "1 引言")])) is None
+        assert abstract_from_blocks([]) is None
+
+    def test_ignores_heading_kind(self):
+        from app.modules.papers.identity import abstract_from_blocks
+
+        long_body = "这是一段很长的正文" * 10
+        assert abstract_from_blocks(self._blocks([("heading", f"摘要: {long_body}")])) is None, (
+            "heading 是章节标题，不是摘要段落"
+        )
 
 class TestTitleExtraction:
     """标题从第一页第一个正文块取，并且**排除**明显不是标题的行。"""
@@ -246,3 +321,26 @@ class TestBackfillIsBounded:
         )
         assert plan.get("title") == "Parsed Title"
         assert "abstract" not in plan, "没有真实摘要就不要写"
+
+
+class TestTitleFootnoteStripped:
+    """标题尾部的脚注标记要剥掉（PDF 排版产物）。"""
+
+    def test_strips_trailing_escaped_asterisk(self):
+        from app.modules.papers.identity import title_from_blocks
+        from types import SimpleNamespace
+
+        got = title_from_blocks([SimpleNamespace(
+            ordinal=0, kind="paragraph",
+            text="基于 Haar 小波域指标自适应选择载体的 JPEG 隐写\\*",
+        )])
+        assert got == "基于 Haar 小波域指标自适应选择载体的 JPEG 隐写", repr(got)
+
+    def test_strips_dagger_and_keeps_inner_marks(self):
+        from app.modules.papers.identity import title_from_blocks
+        from types import SimpleNamespace
+
+        got = title_from_blocks([SimpleNamespace(
+            ordinal=0, kind="paragraph", text="A Study of C++ and C# Systems†",
+        )])
+        assert got == "A Study of C++ and C# Systems", repr(got)

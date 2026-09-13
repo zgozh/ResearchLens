@@ -112,15 +112,68 @@ class FromUrlBody(BaseModel):
     title: str = ""
 
 
+def slug_for_import(*, url: str, title: str = "") -> str:
+    """给"网址导入"派生一个**唯一且可读**的 slug（R4 紧急修复）。
+
+    ## 为什么必须派生而不是写常量
+
+    旧实现是 `title = body.title.strip() or "Real Paper"` → `slug = "real-paper"`，
+    一个**常量**。而 `papers.slug` 上有唯一索引 —— 只要库里已有一篇 `real-paper`，
+    **之后每一次不带标题的网址导入都会 IntegrityError → HTTP 500**（实测日志见
+    `test_from_url_slug.py`）。前端 `api.paperFromUrl(url)` 从不传 title，
+    所以"粘贴网址"这条路从第二篇起就是坏的。
+
+    ## 派生规则（确定性，便于幂等复用）
+
+    1. 显式给了 `title` → 从标题派生（用户意图优先）；
+    2. 否则从 **URL 的路径段**派生，取最后一段有信息量的（`.../pdf/5281` → `jos-5281`）；
+    3. 都取不到信息时退化为 URL 摘要哈希（仍然唯一、稳定）。
+
+    **同 URL 必得同 slug** —— 这是"重复导入复用同一篇"的前提。
+    """
+    import hashlib
+    import re as _re
+
+    def _clean(text: str) -> str:
+        return _re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]+", "-", text or "").strip("-").lower()
+
+    candidate = _clean(title or "")
+    if not candidate:
+        path = (url or "").split("?", 1)[0].split("#", 1)[0]
+        host = ""
+        if "//" in path:
+            host = path.split("//", 1)[1].split("/", 1)[0]
+            host = _re.sub(r"^www\.", "", host).split(".")[0]   # arxiv / jos / example
+        segments = [s for s in path.split("/") if s]
+        for seg in reversed(segments):
+            cleaned = _clean(_re.sub(r"\.pdf$", "", seg, flags=_re.I))
+            # 纯泛化词不算信息量（否则 slug 会退化成 `arxiv-pdf` 这种常量）
+            if cleaned and cleaned not in {"pdf", "article", "file", "download", "full", "abs"}:
+                candidate = f"{host}-{cleaned}" if host else cleaned
+                break
+    if not candidate:
+        candidate = "paper-" + hashlib.sha256((url or "").encode("utf-8")).hexdigest()[:12]
+    return candidate[:56]
+
+
 @router.post("/papers/from-url")
 def paper_from_url(body: FromUrlBody, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """下载真实公开论文 PDF 并后台完整抽取；立即返回 paper_id，前端轮询。"""
-    import re
-    import time as _t
+    """下载真实公开论文 PDF 并后台完整抽取；立即返回 paper_id，前端轮询。
+
+    **幂等**（R4 修复）：同一 URL 重复导入会复用已有论文，而不是再撞一次唯一索引。
+    """
     import httpx as _httpx
 
-    title = body.title.strip() or "Real Paper"
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-").lower()[:48] or f"real_{int(_t.time())}"
+    title = body.title.strip()
+    slug = slug_for_import(url=body.url, title=title)
+
+    # 幂等：同 URL 已导入过就直接复用（省掉重复下载与重复 LLM 开销，也避免唯一索引冲突）
+    existing = db.query(models.Paper).filter(models.Paper.slug == slug).first()
+    if existing is not None:
+        return {"paper_id": existing.id, "status": "exists", "slug": slug}
+
+    # 标题允许留空 —— publish 阶段会从解析产物回填真实标题/摘要（D-110）
+    title = title or slug
 
     pdf_path = None
     try:
