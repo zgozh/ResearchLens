@@ -18,6 +18,7 @@ import type { GraphOut, GraphNode, ClaimOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { api } from '@/lib/api';
 import { SourceMedia } from '@/components/source/SourceMedia';
+import { MathText } from '@/components/MathText';
 import { layoutGraph } from '@/lib/graphLayout';
 import { cn } from '@/lib/cn';
 
@@ -59,7 +60,7 @@ function LensNode({ data }: NodeProps) {
         </span>
         <span className="text-[12px] font-semibold uppercase tracking-wide" style={{ color }}>{label}</span>
       </div>
-      {props.text && <p className="mt-2 text-[11px] leading-snug text-slate-300">{props.text as string}</p>}
+      {props.text && <MathText text={props.text as string} className="mt-2 block text-[11px] leading-snug text-slate-300" />}
       {!props.text && label && <p className="mt-2 line-clamp-2 text-[11px] leading-snug text-slate-400">{label}</p>}
       {claimId && (
         <div className="mt-2 inline-flex rounded-md bg-white/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-slate-400">{claimId}</div>
@@ -280,8 +281,11 @@ export function GraphView({ graph, accent, onClaimSelected, paperId, onNavigate,
                                   : e.verification_status ? `· ${e.verification_status}` : ''}
                           </span>
                         </div>
-                        <p className={cn('mt-1 whitespace-pre-wrap text-[11.5px] leading-5 text-slate-300',
-                          !expandEv && hasLongEvidence && 'line-clamp-2')}>{e.quote || e.text}</p>
+                        <MathText
+                          text={e.quote || e.text}
+                          className={cn('mt-1 block whitespace-pre-wrap text-[11.5px] leading-5 text-slate-300',
+                            !expandEv && hasLongEvidence && 'line-clamp-2')}
+                        />
                       </div>
                     ))}
                   </div>
@@ -322,7 +326,7 @@ export function GraphView({ graph, accent, onClaimSelected, paperId, onNavigate,
                       {selected.props?.legacy_no != null ? ` ${selected.props.legacy_no}` : ''}
                     </span>
                     {selected.props?.caption && (
-                      <span className="truncate text-slate-500">{String(selected.props.caption).slice(0, 60)}</span>
+                      <MathText text={String(selected.props.caption).slice(0, 60)} className="truncate text-slate-500" />
                     )}
                   </div>
                   {loadingMedia ? (

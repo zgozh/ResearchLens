@@ -364,7 +364,7 @@ export function PaperView({
               <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-[#0F172A] p-1">
                 <FigureImage image_url={f.image_url} image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
               </div>
-              <p className="mt-2 text-[11px] text-slate-500">{f.caption}</p>
+              <MathText text={f.caption} className="mt-2 block text-[11px] text-slate-500" />
             </GlassCard>
           ))}
           </div>
@@ -380,7 +380,7 @@ export function PaperView({
                 <span className="text-sm font-semibold text-slate-200">表 {t.table_no}</span>
                 <span className="ml-auto font-mono text-[10px] text-slate-500">p.{t.page}</span>
               </div>
-              <p className="mb-3 text-[12px] text-slate-500">{t.caption}</p>
+              <MathText text={t.caption} className="mb-3 block text-[12px] text-slate-500" />
               <div className="overflow-hidden rounded-lg border border-[var(--line)] p-1">
                 <TableRender table={t} className="rl-table" />
               </div>

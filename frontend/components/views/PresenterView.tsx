@@ -9,6 +9,7 @@ import { cn } from '@/lib/cn';
 import { FigureImage } from '@/components/FigureImage';
 import { TableRender } from '@/components/TableRender';
 import { LongText } from '@/components/LongText';
+import { MathText } from '@/components/MathText';
 
 /** 讲解里出现的长句断言/步骤，单行展示前必须截断。 */
 function shortText(text: string | undefined, max: number): string {
@@ -143,7 +144,7 @@ export function PresenterView({ presentation, accent, detail, claims, statements
                 <span className="rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wide" style={{ background: `${color}22`, color }}>{scene?.kind}</span>
                 <h2 className="text-xl font-semibold text-white">{scene?.title}</h2>
               </div>
-              <p className="mt-2 text-[15px] leading-relaxed text-slate-300">{scene?.summary}</p>
+              {scene?.summary && <MathText text={scene.summary} className="mt-2 block text-[15px] leading-relaxed text-slate-300" />}
             </div>
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -188,7 +189,7 @@ export function PresenterView({ presentation, accent, detail, claims, statements
                       onClick={() => setSel({ type: 'text', label: '已验证断言', text: r.text, quote: r.text })}
                       className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-[var(--line)] bg-white/[0.03] px-2.5 py-1 text-[12px] text-slate-300 transition hover:border-white/25 hover:text-white">
                       <Quote className="h-3.5 w-3.5 shrink-0" style={{ color }} />
-                      <span className="truncate">{shortText(r.text, 34)}</span>
+                      <MathText text={shortText(r.text, 34)} className="truncate" />
                     </button>
                   ))}
                   {unresolvedRefs > 0 && (
@@ -237,7 +238,7 @@ export function PresenterView({ presentation, accent, detail, claims, statements
                     <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[#0F172A] p-2">
                       <FigureImage image_url={f.image_url} image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
                     </div>
-                    <p className="mt-2 text-[13px] text-slate-300">{f.caption}</p>
+                    <MathText text={f.caption} className="mt-2 block text-[13px] text-slate-300" />
                     {f.description && <p className="mt-1 text-[12px] text-slate-500">{f.description}</p>}
                   </div>
                 ) : <p className="text-[13px] text-slate-500">未找到该图。</p>;
@@ -264,8 +265,12 @@ export function PresenterView({ presentation, accent, detail, claims, statements
                     <Quote className="h-3 w-3" style={{ color }} />
                     {sel.label}{sel.page ? ` · p.${sel.page}` : ''}
                   </div>
-                  {sel.quote && <p className="text-slate-200">“{sel.quote}”</p>}
-                  {sel.text && sel.text !== sel.quote && <p className="mt-1.5 text-slate-400">{sel.text}</p>}
+                  {sel.quote && (
+                    <MathText text={`“${sel.quote}”`} className="block text-slate-200" />
+                  )}
+                  {sel.text && sel.text !== sel.quote && (
+                    <MathText text={sel.text} className="mt-1.5 block text-slate-400" />
+                  )}
                 </div>
               )}
             </motion.div>

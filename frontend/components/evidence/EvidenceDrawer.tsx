@@ -9,6 +9,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { ScanSearch, X } from 'lucide-react';
 import type { EvidenceRecord, Id, NavigationTarget, Scope } from '@/lib/contracts';
 import { api } from '@/lib/api';
+import { MathText } from '@/components/MathText';
 import { CitationLink } from './CitationLink';
 import { VerificationStatus } from './VerificationStatus';
 
@@ -47,7 +48,7 @@ function EvidenceContent({
             <VerificationStatus status={meta.status} label={meta.label} />
             <span className="ml-auto font-mono text-[10px] text-slate-400">{e.claim_id}</span>
           </div>
-          <p className="mb-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{e.source_text}</p>
+          <MathText text={e.source_text} className="mb-2 block whitespace-pre-wrap text-sm leading-6 text-slate-700" />
           {onNavigate && <CitationLink evidence={e} onNavigate={onNavigate} />}
         </li>
         );

@@ -18,6 +18,7 @@ import type {
 import { useQAStream } from '@/hooks/useQAStream';
 import { Badge, Btn, GlassCard, Kicker, Spinner } from '@/components/ui';
 import { RichText } from '@/components/RichText';
+import { MathText } from '@/components/MathText';
 import { MediaModal, type MediaItem } from '@/components/MediaModal';
 import { cn } from '@/lib/cn';
 
@@ -366,9 +367,9 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
                                 PDF 第 {e.page} 页{e.region ? ` · ${e.region}` : ''}
                               </span>
                               {open || !e.text ? (
-                                <div className="mt-0.5 text-slate-300">{e.text || e.quote}</div>
+                                <MathText text={e.text || e.quote} className="mt-0.5 block text-slate-300" />
                               ) : (
-                                <div className="mt-0.5 line-clamp-2">{e.text || e.quote}</div>
+                                <MathText text={e.text || e.quote} className="mt-0.5 line-clamp-2 block" />
                               )}
                             </div>
                             <ChevronDown
@@ -404,7 +405,7 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
                 {liveSentences.length > 0 ? (
                   <div className="space-y-1.5">
                     {liveSentences.map((s, i) => (
-                      <p key={i} className="text-[13px] leading-relaxed text-slate-200">{s.text}</p>
+                      <MathText key={i} text={s.text} className="block text-[13px] leading-relaxed text-slate-200" />
                     ))}
                   </div>
                 ) : (

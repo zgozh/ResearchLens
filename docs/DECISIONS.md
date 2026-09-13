@@ -1559,3 +1559,51 @@ M10 `MetricValue.reason` + 投影透出 + 双读一致性测试；M11 两层卫�
 **未纳入本轮（REFACTOR_PLAN 的优化项，留给后续版本）**：
 M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` 的重复投影合并成一处——
 本轮只补了"双读一致性"测试作为安全网）、M12 阶段进度与断点续跑。
+
+---
+
+# 第六批：REFACTOR_PLAN_R3（docs/REFACTOR_PLAN_R3.md）
+
+## D-84 M1 证据文本渲染**扩面**：漏面才是"未转义字符还在"的真因
+
+- **用户实测**：证据链里仍看到 `For the base model, we use a rate of $P _ { d r o p } = 0 . 1$` 原文。
+- **真因（纯展示层漏面，与判定无关）**：D-71 统一了渲染内核，但有 **8 处**直接把论文文本
+  当 JSX 子节点裸插值，绕过了内核：`QAView`（问答正文、**证据卡 ×2**）、
+  `GraphView`（节点正文、证据引文、节点题注）、`PresenterView`（分镜摘要、句标、图题）、
+  `PaperView`（图题 ×2）、`EvidenceDrawer`（证据原文）。
+  配合 D-77 附录的 A/B 实测（脏字符**不改变**判定，12 条样本 0 变化），可以定论：
+  **不是引用没重做，也不是原文脏字符导致判定失败，就是漏面。**
+- **修法**：8 处全部改为 `<MathText text={...} />`（委托 `lib/richtext.ts`）。
+- **防回归（关键）**：新增 `frontend/scripts/check-text-paths.cjs` ——**穷举展示路径清单**
+  （8 个文件 + 各自"显示什么"），在这些文件里禁止
+  `>{ …source_text|quote|answer|body|caption|.text… }<` 这种裸插值；并带 `--self-test`：
+  **往检测器里塞已知坏样本，断言它必须被报出来**（门禁必须能红）。已挂进
+  `npm run test:lib`（`npm run test:textpaths`）。
+- **实测**：门禁首次运行就报出 **8 处**（我原以为只有 2–4 处），修完转绿：
+  「清单内所有展示点的论文文本都经过渲染内核 ✅」。
+- **测试**：`npm run test:lib` 五套全绿（rich 25 / graph 9 / media 6 / policy 7 / eval 12）
+  + 路径门禁 + 自验证。
+
+## D-85 M8 指标解析统一：修"对象当数字用"，并发现**两份报告本身不一致**
+
+- **用户实测**："说好了全部 ai 评测，但还是全部显示未评测。"
+- **根因一（前端 bug）**：`EvalView` 优先读 `/exhibits` 里持久化的 canonical report，其
+  `metrics` 是 `list[MetricEntry]`、每项 `entry.value` 是 `MetricValue` **对象**；旧代码把对象
+  当数字用 → `toNumber(对象)` = NaN → **全部按"未评测"渲染**，而且因为该键已存在，
+  legacy 的数字**不会覆盖**它。→ 新增 `frontend/lib/evalMetrics.ts` 作唯一解析入口
+  （吃 number / `MetricValue` 对象 / `list[MetricEntry]` / dict 四种形态；认不出的形态标
+  `unparsable` 并在界面显式报"数据异常（解析失败）"，**绝不静默当未评测**）。
+- **根因二（数据本身，实测发现）**：用**真实响应回放**时发现两份报告打架 ——
+  持久化报告把 10 项标成未评测/0，而 `/evaluation` 现算有真值：
+  `quote_exact_rate 1.0`、`support_precision 0.6667`、`input_tokens 5213`、
+  `qa_first_verified_ms 3767`、`unanswerable_refusal_rate 1.0` …
+  → 解析规则定为**有值优先**（canonical measured/proxy 权威；canonical 无值时用现算值），
+  同时 `findConflicts()` 把"两源不一致"**显式**提示给用户（不静默挑一个）。
+- **实测（真实响应回放）**：`0.3571 / 1 / 1 / 5213 / 3767 / 1` 均可显示，
+  仅 `anchor_region_hit_rate` 仍是未评测，并按 M9 标"**不适用**"（原文无坐标矩形、拒绝编造 IoU）。
+- **留给下一轮（如实登记，未解决）**：① canonical 的 `support_precision = 0 (proxy)`
+  会盖掉现算的 `0.6667` —— "有值即权威"分不清"真实的 0"与"过期的 0"，
+  需要后端明确持久化报告是否权威（或重算时刷新它）；② 回放中解析出一个未知名 `ai_judge`，
+  **没查清其真实形态、没有猜着改**。
+- **测试**：`npm run test:eval` 12 条（四种形态同值、回归锁"对象挡住数字"、冲突检测、
+  元信息键不入列表、unparsable 不静默、人工/AI 口径互不回退）。
