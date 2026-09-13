@@ -11,6 +11,8 @@ R4-M5（ADR D-105）：``overall_score`` 现在是**主分「AI 质量评分（�
 API:
 - ``compute(input, ctx) -> EvaluationReport``（canonical）
 - ``get(scope) -> EvaluationReport``（canonical，只读）
+- ``get_current(scope) -> EvaluationReport``（**读报告的推荐入口**：过期就地重算，
+  避免 `/exhibits` 与 `/evaluation` 两个入口给出两套数）
 - ``run_golden(input, ctx) -> EvaluationReport``
 - ``compute_evaluation(db, paper_id) -> models.Evaluation``（旧 HTTP 兼容）
 """
@@ -22,11 +24,12 @@ from .metrics import (  # noqa: F401
     one_to_one_match,
     similarity,
 )
-from .service import ALGORITHM_VERSION, compute, get, run_golden  # noqa: F401
+from .service import ALGORITHM_VERSION, compute, get, get_current, run_golden  # noqa: F401
 
 __all__ = [
     "compute",
     "get",
+    "get_current",
     "run_golden",
     "compute_evaluation",
     "to_legacy_evaluation",

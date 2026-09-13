@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -34,6 +35,8 @@ from app.core.errors import invalid_input, not_found, revision_mismatch
 from . import golden as golden_mod
 from . import metrics as M
 from . import repository as repo
+
+log = logging.getLogger("researchlens.evaluation")
 
 #: 评测算法版本（进入评测版本）
 ALGORITHM_VERSION = "rl.eval/2"
@@ -67,6 +70,10 @@ def compute(
     report = EvaluationReport(
         scope=scope,
         id=_report_id(scope.revision_id, getattr(golden_set, "id", None)),
+        # **必须显式盖章**：不写这一行就会用契约默认值 `rl.eval/1`，
+        # 于是报告永远自称旧版本（实测：算法已到 rl.eval/2，落库仍是 rl.eval/1），
+        # 任何"按版本判断报告是否过期"的逻辑都会失效。
+        version=ALGORITHM_VERSION,
         overall_score=None,
         metrics=entries,
         golden_id=getattr(golden_set, "id", None),
@@ -276,8 +283,13 @@ def _persist(report: EvaluationReport) -> None:
                 golden_id=report.golden_id,
                 warnings=payload.get("warnings", []),
             )
-    except Exception:  # noqa: BLE001  持久化失败不回滚已算好的报告
-        pass
+    except Exception as exc:  # noqa: BLE001  落库失败不回滚已算好的报告
+        # **不许静默**：旧实现这里是裸 `pass`，把"重复主键 → 报告永远停在第一次"
+        # 藏了整整一天（界面显示过期的 0、两个数据源不一致）。现在至少留下痕迹。
+        log.warning(
+            "评测报告落库失败（本次结果仍返回，但下次读到的还是旧报告）：%s: %s",
+            type(exc).__name__, exc,
+        )
 
 
 # =============================================================== get
@@ -294,6 +306,7 @@ def get(scope: Scope) -> EvaluationReport:
         return EvaluationReport(
             scope=scope,
             id=_report_id(scope.revision_id, None),
+            version=ALGORITHM_VERSION,
             overall_score=None,
             metrics=[not_evaluated(n, method="尚无评测报告") for n in METRIC_NAMES],
             golden_id=None,
@@ -327,6 +340,64 @@ def get(scope: Scope) -> EvaluationReport:
         computed_at=row.computed_at,
         warnings=_warnings_from(row.warnings),
     )
+
+
+def _is_current(report: EvaluationReport) -> bool:
+    """报告是否"当前"：版本一致 **且** 15 个指标名一个不缺。
+
+    为什么两条都要：版本换代时旧数字不可比；而**新增指标**（如
+    `recovery_success_rate` / 改名后的 `unanswerable_honesty_rate`）在旧报告里
+    根本没有 —— 那种报告读出来就是"报告未包含该指标"，正是界面显示的
+    「未评测：报告未包含该指标」。
+    """
+    if (report.version or "") != ALGORITHM_VERSION:
+        return False
+    have = {e.name for e in report.metrics}
+    return all(name in have for name in METRIC_NAMES)
+
+
+def get_current(scope: Scope) -> EvaluationReport:
+    """**读评测报告的唯一入口**：读到过期就地重算，绝不把旧数字当权威。
+
+    为什么要它（实测事故 2026-09-13）：`/exhibits` 走 `get()`（读持久化），
+    `/evaluation` 走重算 —— 两个入口给出两套数（canonical: support_precision **0.0**、
+    报告停在 `rl.eval/1`；现算: 0.8571）。两个请求还是**并行**发出的，
+    于是首屏必然打架：前端报"两个数据源不一致"，用户看到过期的 0。
+
+    重算沿用 legacy 的输入装配（AI 裁判按 digest 复用缓存，正常不产生新的云调用），
+    与 `/evaluation` 完全同源。
+    """
+    stored = get(scope)
+    if _is_current(stored):
+        return stored
+
+    from app.core.db import session_scope
+
+    from . import legacy as legacy_mod
+
+    try:
+        with session_scope() as db:
+            cached = legacy_mod._cached_ai_judge(legacy_mod._latest_row(db, scope.paper_id))
+        inp = legacy_mod._input_for(scope, ai_judge=cached)
+        fresh = compute(inp, legacy_mod._judge_ctx(scope))
+        log.info(
+            "评测报告过期（stored=%s / 期望 %s），已就地重算：paper=%s revision=%s",
+            stored.version, ALGORITHM_VERSION, scope.paper_id, scope.revision_id,
+        )
+        return fresh
+    except Exception as exc:  # noqa: BLE001
+        # 重算失败宁可如实返回旧报告（带 warning），也不许静默当成"没问题"
+        log.warning("评测报告重算失败，暂返回旧报告：%s: %s", type(exc).__name__, exc)
+        return stored.model_copy(update={
+            "warnings": list(stored.warnings) + [Warning(
+                code="evaluation_stale",
+                message=(
+                    f"持久化报告版本为 {stored.version}（当前 {ALGORITHM_VERSION}）"
+                    f"且重算失败，以下数字可能过期：{type(exc).__name__}"
+                ),
+                stage="evaluation",
+            )]
+        })
 
 
 def _warnings_from(raw) -> List[Warning]:

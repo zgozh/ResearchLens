@@ -35,6 +35,9 @@ export interface OverallView {
   basis: string | null;
 }
 
+/** AI 裁判结论在 `metrics` 里的键（legacy 投影专有）。 */
+export const AI_JUDGE_KEY = 'ai_judge';
+
 /** `metrics` 里属于**元信息**而非指标本身的键，不参与指标列表。 */
 const META_KEYS = new Set([
   'not_evaluated',
@@ -49,7 +52,54 @@ const META_KEYS = new Set([
   'version',
   'warnings',
   'note',
+  // AI 裁判的**计数对象**（不是指标值）：`{matches,true_positive,total_predicted,
+  // total_golden,model,digest,judge_version}`。它不是 MetricValue，硬按指标解析
+  // 必然落到 `unparsable` → 界面弹「数据异常（解析失败）：ai_judge」——
+  // 那是**前端没认出形态**，不是后端坏了。这里排除出指标列表，另行解析成裁判卡片。
+  AI_JUDGE_KEY,
 ]);
+
+
+/** AI 裁判的支撑判定结论（`ai_judge` 的解析结果）。 */
+export interface AiJudgeView {
+  truePositive: number;
+  totalPredicted: number;
+  totalGolden: number;
+  model: string;
+  digest: string;
+  /** 命中 / 预测；无预测样本时为 null（不以 0 冒充）。 */
+  precision: number | null;
+  /** 命中 / 真值；无真值样本时为 null。 */
+  recall: number | null;
+}
+
+/**
+ * 解析 `metrics.ai_judge`；**认不出就返回 null**（不假装有结论）。
+ *
+ * 它同时解释了 `support_precision` / `support_recall` 为什么是 `proxy`：
+ * 那两个数就是这里算出来的（命中/预测、命中/真值），只是口径是"AI 判定"而非人工真值。
+ */
+export function parseAiJudge(legacy: unknown): AiJudgeView | null {
+  if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return null;
+  const raw = (legacy as Record<string, unknown>)[AI_JUDGE_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const tp = num(obj.true_positive);
+  const pred = num(obj.total_predicted);
+  const gold = num(obj.total_golden);
+  if (tp === null || pred === null || gold === null) return null;
+  return {
+    truePositive: tp,
+    totalPredicted: pred,
+    totalGolden: gold,
+    model: typeof obj.model === 'string' ? obj.model : '',
+    digest: typeof obj.digest === 'string' ? obj.digest : '',
+    precision: pred > 0 ? tp / pred : null,
+    recall: gold > 0 ? tp / gold : null,
+  };
+}
 
 function toNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;

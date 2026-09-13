@@ -74,19 +74,48 @@ def insert_report(
     golden_id: Optional[str],
     warnings: list,
 ) -> None:
+    """写入**或刷新**该 (revision, golden) 的评测报告 —— 同 id 覆盖（upsert）。
+
+    ## 为什么必须是 upsert（实测事故，2026-09-13）
+
+    `report_id = service._report_id(revision_id, golden_id)` 对同一 (revision, golden)
+    **是确定性的**：同一个字符串。旧实现是纯 ``db.add(...)``，于是
+
+    1. 第一次写成功；
+    2. 之后**每次** ``svc.compute()`` → ``_persist()`` 都在主键上冲突；
+    3. 而 ``_persist`` 里是 ``except Exception: pass`` → **静默吞掉**。
+
+    结果：canonical 报告永远停在第一次（实测停在 ``rl.eval/1``、2026-09-12T07:41），
+    而 ``/evaluation`` 每次 GET 都重算并更新 legacy ``evaluations`` 行 ——
+    两个数据源长期不一致，界面按"canonical 有值即权威"显示**过期的 0**。
+
+    回归锁：`tests/unit/test_evaluation_report_refresh.py`。
+    """
     from app.models.source import now as _now
 
-    db.add(EvaluationReportORM(
-        id=report_id,
-        paper_id=paper_id,
-        revision_id=revision_id,
-        version=version,
-        overall_score=overall_score,
-        metrics=metrics,
-        golden_id=golden_id,
-        warnings=warnings,
-        computed_at=_now(),
-    ))
+    ts = _now()
+    row = db.get(EvaluationReportORM, report_id)
+    if row is None:
+        db.add(EvaluationReportORM(
+            id=report_id,
+            paper_id=paper_id,
+            revision_id=revision_id,
+            version=version,
+            overall_score=overall_score,
+            metrics=metrics,
+            golden_id=golden_id,
+            warnings=warnings,
+            computed_at=ts,
+        ))
+    else:
+        row.paper_id = paper_id
+        row.revision_id = revision_id
+        row.version = version
+        row.overall_score = overall_score
+        row.metrics = metrics
+        row.golden_id = golden_id
+        row.warnings = warnings
+        row.computed_at = ts
     db.flush()
 
 

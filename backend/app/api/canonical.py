@@ -364,7 +364,10 @@ def exhibits(paper_id: int, revision_id: Optional[str] = None):
     presentation = scene_mod.get(scope)
     evaluation = None
     try:
-        evaluation = eval_mod.get(scope)
+        # 用 `get_current`（不是 `get`）：读到过期报告就地重算。
+        # 键因（实测 2026-09-13）：`get` 读持久化、`/evaluation` 现算，而两者是**并行**请求，
+        # 首屏必然打架（前端报"两个数据源不一致"，用户看到停在 rl.eval/1 的过期 0）。
+        evaluation = eval_mod.get_current(scope)
     except DomainError:
         pass
     return ExhibitBundle(

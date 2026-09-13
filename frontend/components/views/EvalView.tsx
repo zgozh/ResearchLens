@@ -17,11 +17,18 @@
 // 绝不用 0 冒充，也绝不把"没数据"当成"通过"。
 
 import { motion } from 'framer-motion';
-import { Gauge, ShieldAlert, CheckCircle2, ListChecks, Info } from 'lucide-react';
+import { Gauge, ShieldAlert, CheckCircle2, ListChecks, Info, Bot } from 'lucide-react';
 import type { EvaluationReport } from '@/lib/contracts';
 import type { ClaimSummary, EvaluationOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker, Meter } from '@/components/ui';
-import { buildMetricViews, findConflicts, NOT_APPLICABLE_REASONS, parseOverall, reasonText } from '@/lib/evalMetrics';
+import {
+  buildMetricViews,
+  findConflicts,
+  NOT_APPLICABLE_REASONS,
+  parseAiJudge,
+  parseOverall,
+  reasonText,
+} from '@/lib/evalMetrics';
 
 /** canonical 比率型指标（值域 0–1，展示为百分比）。 */
 const RATIO_METRICS: { key: string; label: string; color: string; hint?: string }[] = [
@@ -76,6 +83,8 @@ export function EvalView({
   const unparsableViews = metricViews.filter((v) => v.status === 'unparsable');
 
   const notEvaluated = notEvaluatedViews.map((v) => v.name);
+  // AI 裁判结论（支撑判定的计数）：它同时解释 support_precision/recall 为什么是 proxy。
+  const aiJudge = parseAiJudge(evalData.metrics ?? null);
   // 原因码：优先取解析结果里的 reason（canonical 的 MetricValue.reason），
   // 再回落到 legacy 的 not_evaluated_reasons 表。
   const legacyReasons: Record<string, string> =
@@ -262,6 +271,47 @@ export function EvalView({
             })}
           </div>
         </div>
+
+        {aiJudge && (
+          <div className="mt-5 rounded-xl border border-indigo-500/25 bg-indigo-500/[0.06] p-3.5">
+            <div className="mb-2.5 flex flex-wrap items-center gap-2 text-[11px] text-indigo-200">
+              <Bot className="h-3.5 w-3.5" />
+              AI 裁判 · 断言↔真值支撑判定
+              {aiJudge.model && (
+                <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+                  模型 {aiJudge.model}
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div>
+                <div className="font-mono text-lg font-bold text-white">
+                  {aiJudge.truePositive}/{aiJudge.totalPredicted}
+                </div>
+                <div className="mt-0.5 text-[10px] text-slate-500">命中 / 预测断言</div>
+              </div>
+              <div>
+                <div className="font-mono text-lg font-bold text-white">
+                  {aiJudge.precision === null ? '—' : `${(aiJudge.precision * 100).toFixed(1)}%`}
+                </div>
+                <div className="mt-0.5 text-[10px] text-slate-500">支撑精确率（proxy）</div>
+              </div>
+              <div>
+                <div className="font-mono text-lg font-bold text-white">
+                  {aiJudge.recall === null ? '—' : `${(aiJudge.recall * 100).toFixed(1)}%`}
+                </div>
+                <div className="mt-0.5 text-[10px] text-slate-500">
+                  支撑召回率（proxy）· 真值 {aiJudge.totalGolden} 条
+                </div>
+              </div>
+            </div>
+            <p className="mt-2.5 text-[10px] leading-relaxed text-slate-500">
+              上面两个比例就是「证据支撑精确率 / 召回率」的来源：由 AI 裁判逐条判定预测断言
+              是否被真值支持（命中 ÷ 预测、命中 ÷ 真值），属<strong className="text-amber-300/80">间接口径 proxy</strong>，
+              不是人工标注 —— 所以那两项在明细里带 proxy 标记。
+            </p>
+          </div>
+        )}
 
         {notEvaluated.length > 0 && (
           <div className="mt-5 rounded-xl border border-white/10 bg-white/[0.02] p-3.5">

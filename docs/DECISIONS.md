@@ -2875,6 +2875,85 @@ canonical 的数据模型要求**原文页 + 块 + 逐字引文**，而 demo IR 
 `graph=0 / scenes=0` —— 那只是**阻塞域就绪 ≠ 作业结束**（此时 job 还在 `claims` 阶段）。
 在作业真正跑到 `publish` 之后再探，图谱/场景才是有内容的。
 
+## D-120 评测页四项显示 0 / 两源不一致 / `ai_judge` 解析失败：三个真根因
+
+### 用户报的现象（2026-09-13）
+
+> "锚点区域命中率，证据支撑精确率，证据支撑召回率，无支撑事实逃逸率（目标 ≈ 0）
+>  这四个都没有指标，为 0…… 数据异常（解析失败）：ai_judge ……
+>  两个数据源不一致（持久化报告 vs 现算结果）……11 项"
+
+### 根因（三处，全部实测确认）
+
+**① `insert_report` 只能写一次，第二次的主键冲突被静默吞掉（主因）**
+
+- `repository.insert_report()` 是纯 `db.add(EvaluationReportORM(id=report_id, ...))`；
+- 而 `report_id = _report_id(revision_id, golden_id)` 对同一 (revision, golden)
+  **是确定性字符串**；
+- 于是**第一次**写成功，之后每次 `svc.compute()` 走到 `_persist()` 都在主键上冲突；
+- `_persist()` 里是 `except Exception: pass` —— **静默吞掉，没有任何日志**。
+
+结果：canonical 报告**永远停在第一次**（实测 `version=rl.eval/1`、
+`computed_at=2026-09-12T07:41`）；而 `/evaluation` 每次 GET 都重算，只更新了 legacy
+`evaluations` 行 → 两个数据源长期不一致。前端按"canonical 有值即权威"取数，
+于是用户看到的是**持久化那份里的过期 0**（`support_precision=0.0, measured`）。
+
+**② `compute()` 从不给报告盖算法版本**
+
+`EvaluationReport(version=...)` 没传 → 用契约默认值 `rl.eval/1`，而
+`ALGORITHM_VERSION = "rl.eval/2"`。报告永远自称旧版本，
+任何"按版本判断报告是否过期"的逻辑都失效 —— 这也是它能藏这么久的原因。
+
+**③ `ai_judge` 是**计数对象**，不是指标值**
+
+`metrics.ai_judge = {matches, true_positive:6, total_predicted:7, total_golden:11,
+model, digest, judge_version}`：没有 `status`/`value`，前端 `parseMetricValue` 认不出
+→ 标 `unparsable` → 界面弹「数据异常（解析失败）」。
+**它不是坏数据**：`support_precision`/`support_recall` 的 proxy 值正是它算出来的
+（6/7 = 0.857、6/11 = 0.545），只是前端没认出形态。
+
+### 修法
+
+| | 改动 |
+|---|---|
+| ① | `insert_report` 改 **upsert**（同 id 覆盖 version/metrics/overall_score/warnings/**computed_at**）；`_persist` 的 except 里加 `log.warning`（静默吞异常本身就是这次事故的放大器） |
+| ② | `compute()` 显式 `version=ALGORITHM_VERSION`；`get()` 的无报告分支同样盖章 |
+| ③ | 前端新增 `parseAiJudge()`（解析成命中/预测/真值 + 精确率 + 召回率），并把 `ai_judge` 放进 `META_KEYS` 从指标列表排除；`EvalView` 新增**「AI 裁判 · 断言↔真值支撑判定」**卡片，写明那两个 proxy 值的来源 |
+| ④ | 新增 `evaluation.get_current(scope)`：读到**版本不符或缺指标名**的报告就**就地重算**（沿用 legacy 输入装配、AI 裁判按 digest 复用缓存）；`/exhibits` 改用它 —— 否则首屏两个请求**并行**时仍会打架（`/evaluation` 刷新、`/exhibits` 返回旧的） |
+
+### 实测（修后，paper 1）
+
+```
+现算 version   = rl.eval/2
+持久化 version = 'rl.eval/2'   computed_at=2026-09-13T13:25:28   ← 真的刷新到今天了
+两源不一致：0 项     报告里缺值（现算有）：0 项
+support_precision 0.8571(proxy) / support_recall 0.5455(proxy)
+unsupported_fact_escape_rate 0.0(proxy) / anchor_region_hit_rate null（见下）
+主分 93.74  basis=ai_generated
+前端 bundle 已含新卡片文案「断言↔真值支撑判定」（重建后 grep 到）
+```
+
+**测试**：后端 `test_evaluation_report_refresh.py`（6 条：重算必须被 `get` 读到、
+version/computed_at 推进、过期即重算、当前不重算、缺指标触发重算、落库失败要留 warning）；
+前端 `test:eval` 15 → **19 条**（`ai_judge` 不再 unparsable、能解析出计数与比例、
+形态不认识返回 null、无样本时比例为 null 不以 0 冒充）。后端全量 **1040 passed**。
+
+### 仍未解决：`anchor_region_hit_rate` 没有独立真值（用户问的"让 AI 来"）
+
+它保持 `not_evaluated`（原因 `no_independent_region_truth`）——**这不是 bug**：
+`expected_rect` 与 `actual_rect` **同源**（都由引用块的 bbox 派生），据此算 IoU 恒为 1.0，
+是**自证的满分**，比"未评测"更糟。要让它可测，必须引入**第二个独立来源**。三条路线：
+
+| | 做法 | 代价 | 诚实性 |
+|---|---|---|---|
+| **P** | **双解析器交叉核对**：用 PyMuPDF 在锚点页**独立**检索引文（`search_for`）→ 归一化矩形与锚点矩形算 IoU | 免费、离线、确定性 | 测"两个独立定位器是否指向同一区域"；不是语义真值，但**不再自证** |
+| **V** | **视觉模型当裁判**：裁剪锚点区域 → 丢给 `VISION_MODEL` 判"这段引文是否出现在图中" | 每锚点 1 次视觉调用（按 digest 缓存） | 最接近"让 AI 来判"；但会把**视觉模型对密集中文小字的识别能力**混进指标（读不清 ≠ 区域错），必须标 `proxy` 并写明这一点 |
+| **G** | **用金标集的 `acceptable_block_ids` 当期望区域**：金标由 AI 从原文独立构造，其块选择与抽取器的引用块选择是两条独立过程 | 免费（金标已存在） | 需要"预测↔真值"配对 —— AI 裁判的 `matches` **目前不落库**（只存计数），要先用文本匹配或重跑裁判拿配对 |
+
+**建议**：先做 **P**（免费，能立刻把一个"未评测"变成真测量），**V** 作为可选增强
+（做成 `proxy` 并如实标注"可能是模型读不清图而不是区域错"）。
+
+
 
 
 

@@ -9,6 +9,7 @@ import {
   parseMetricValue,
   findConflicts,
   parseOverall,
+  parseAiJudge,
   reasonText,
 } from '../lib/evalMetrics';
 
@@ -188,6 +189,56 @@ check('10. dict 形态的 canonical 也能解析', () => {
     { quote_exact_rate: 0.1 },
   );
   assert.strictEqual(views.find((v) => v.name === 'quote_exact_rate')!.value, 0.9);
+});
+
+// ---------------------------------------------------------------- ai_judge
+//
+// 用户实测（2026-09-13）：「数据异常（解析失败）：ai_judge —— 这不是未评测，
+// 是前端没认出后端返回的形态」。实测 payload：
+//   ai_judge = {matches:[], true_positive:6, total_predicted:7, total_golden:11,
+//               model:'cached', digest:'e4b3…', judge_version:''}
+// 它是 AI 裁判的**计数对象**，不是 MetricValue —— 必须被认出来，而不是当指标解析。
+
+const LEGACY_WITH_JUDGE = {
+  support_precision: 0.8571,
+  support_recall: 0.5455,
+  ai_judge: {
+    matches: [], true_positive: 6, total_predicted: 7, total_golden: 11,
+    model: 'cached', digest: 'e4b3dab5f85e651b3659901f0c10e5a3', judge_version: '',
+  },
+};
+
+check('11. ai_judge 不再被当成"解析失败"的指标', () => {
+  const views = buildMetricViews(null, LEGACY_WITH_JUDGE);
+  const judge = views.find((v) => v.name === 'ai_judge');
+  assert.strictEqual(judge, undefined, 'ai_judge 是元信息，不该出现在指标列表里');
+  assert.strictEqual(views.filter((v) => v.status === 'unparsable').length, 0,
+    '不该再有 unparsable（界面就不会弹"数据异常（解析失败）"）');
+});
+
+check('12. ai_judge 解析出命中/预测/真值与两个比例', () => {
+  const j = parseAiJudge(LEGACY_WITH_JUDGE)!;
+  assert.ok(j, '必须能解析出 AI 裁判结论');
+  assert.strictEqual(j.truePositive, 6);
+  assert.strictEqual(j.totalPredicted, 7);
+  assert.strictEqual(j.totalGolden, 11);
+  assert.ok(Math.abs(j.precision! - 6 / 7) < 1e-9, `精确率 = 命中/预测：${j.precision}`);
+  assert.ok(Math.abs(j.recall! - 6 / 11) < 1e-9, `召回率 = 命中/真值：${j.recall}`);
+  assert.strictEqual(j.model, 'cached');
+});
+
+check('13. 形态不认识就返回 null（不假装有结论）', () => {
+  assert.strictEqual(parseAiJudge(null), null);
+  assert.strictEqual(parseAiJudge({}), null);
+  assert.strictEqual(parseAiJudge({ ai_judge: 'oops' }), null);
+  assert.strictEqual(parseAiJudge({ ai_judge: { true_positive: 1 } }), null,
+    '缺 total_predicted/total_golden 时不许编出比例');
+});
+
+check('14. 没有预测/真值样本时比例为 null（不以 0 冒充）', () => {
+  const j = parseAiJudge({ ai_judge: { true_positive: 0, total_predicted: 0, total_golden: 0 } })!;
+  assert.strictEqual(j.precision, null);
+  assert.strictEqual(j.recall, null);
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed`);
