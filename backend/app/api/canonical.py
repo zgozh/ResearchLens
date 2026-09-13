@@ -418,6 +418,35 @@ async def qa_stream(paper_id: int, body: QARequest, revision_id: Optional[str] =
     )
 
 
+class ProcessBody(BaseModel):
+    """`POST /papers/{id}/process` 请求体（M12）：可选续跑起点。"""
+
+    from_stage: Optional[str] = None
+
+
+@router.post("/papers/{paper_id}/resume")
+def paper_resume(paper_id: int, body: ProcessBody = ProcessBody()):
+    """按续跑计划起一次管线任务（M12）。
+
+    - 不传 `from_stage` → 从**第一个未完成阶段**开始（默认安全，不重烧 AI 阶段）；
+    - 传 `from_stage` → 从该阶段开始；
+    - 全部阶段已完成 → `status="noop"`，**不建 job**（不产生空任务）。
+
+    **为什么路径是 `/resume` 而不是方案里写的 `/process`**（实测发现）：
+    `/api/papers/{id}/process` 已经被 **legacy** 路由占用（`api/routes.py`，先注册者胜），
+    curl 实测那个路径返回的是 legacy 的 `{paper_id, job_id, status:"running"}` ——
+    新端点即使注册了也**永远不可达**。硬改路由优先级会破坏 legacy 兼容契约，
+    因此改为新增不冲突的 `/resume`；`/process` 的 legacy 行为保持不变。
+    """
+    from app.modules.pipeline import ingest as ingest_mod
+
+    scope, revision = _resolve_scope(paper_id, None)
+    if revision is None:
+        return {"status": "noop", "start_stage": None, "skipped": [],
+                "reason": "该论文还没有可读 revision，无法续跑"}
+    return ingest_mod.resume_paper(scope, body.from_stage)
+
+
 @router.get("/papers/{paper_id}/resume-plan")
 def resume_plan(
     paper_id: int,

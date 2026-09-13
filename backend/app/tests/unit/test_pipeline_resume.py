@@ -64,3 +64,52 @@ class TestExplicitFromStage:
         plan = plan_resume({"acquire"}, from_stage="acquire")
         assert plan.start_stage == "acquire"
         assert plan.skipped == []
+
+
+class TestEnqueueStartStage:
+    """接线的关键一环：起点必须落到 `job.stage`（那就是 runner 的"当前阶段"）。
+
+    若这条断了，`/process?from_stage=evaluate` 会静默地从 acquire 重跑 ——
+    白烧一遍 AI 阶段（claims 起草 / 题库作答 / evaluate 裁判）。
+    """
+
+    def _scope_and_spec(self):
+        from uuid import uuid4
+
+        from app.contracts.documents import PaperCreate, SourceMetadata
+        from app.contracts.jobs import JobSpec
+        from app.modules import papers as papers_mod
+
+        paper = papers_mod.create_paper(
+            PaperCreate(title=f"续跑接线-{uuid4().hex[:8]}", source_mode="upload",
+                        provenance_class="source_document")
+        )
+        source = papers_mod.store_source(
+            paper.id, b"%PDF-1.4\n%%EOF\n", SourceMetadata(original_filename="r.pdf")
+        )
+        revision = papers_mod.create_revision(paper.id, source.id, "source")
+        spec = JobSpec(paper_id=paper.id, revision_id=revision.id, kind="ingest",
+                       idempotency_key=f"k-{uuid4().hex[:8]}")
+        return paper.id, revision.id, spec
+
+    def test_start_stage_is_written_to_job(self):
+        from app.core.db import session_scope
+        from app.models.jobs import JobORM
+        from app.modules.pipeline import service as svc
+
+        paper_id, revision_id, spec = self._scope_and_spec()
+        job = svc.enqueue(spec, None, start_stage="evaluate")
+        with session_scope() as db:
+            row = db.get(JobORM, job.id)
+            assert row is not None
+            assert row.stage == "evaluate", f"起点没落到 job.stage：{row.stage}"
+
+    def test_default_start_stage_is_acquire(self):
+        from app.core.db import session_scope
+        from app.models.jobs import JobORM
+        from app.modules.pipeline import service as svc
+
+        paper_id, revision_id, spec = self._scope_and_spec()
+        job = svc.enqueue(spec, None)
+        with session_scope() as db:
+            assert db.get(JobORM, job.id).stage == "acquire"

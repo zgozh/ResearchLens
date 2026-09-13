@@ -199,3 +199,33 @@ def _run_job_inline(job_id: int) -> None:
 
 
 __all__ = ["ingest_paper_from_pdf"]
+
+
+def resume_paper(scope: "Scope", from_stage: Optional[str] = None) -> dict:
+    """按断点续跑计划**真的**起一次 job（M12）。
+
+    - 用 `resume.resolve_start_stage()` 决策起点（不传 → 第一个未成功阶段）；
+    - 起点为 None（全部已完成）→ **不建 job**，直接如实返回，避免白建一次任务；
+    - 起点 > acquire 时不带 source：那些阶段不会执行，acquire 需要的源已存在。
+
+    返回 `{status, start_stage, skipped, reason, job_id?}`，供 API 原样下发。
+    """
+    from app.contracts.jobs import JobSpec
+    from app.modules.pipeline import resume as resume_mod
+    from app.modules.pipeline import service as svc
+
+    # 由调用方（API 层）解析好 scope：那里已经有 _resolve_scope 处理
+    # "有没有可读 revision"的全部边界（此处不再自己猜函数名，实测踩过一次 500）。
+    plan = resume_mod.resolve_start_stage(scope, from_stage)
+    if plan.start_stage is None:
+        return {"status": "noop", "start_stage": None, "skipped": plan.skipped,
+                "reason": plan.reason}
+
+    spec = JobSpec(
+        paper_id=scope.paper_id, revision_id=scope.revision_id, kind="ingest",
+        source=None,  # 起点之后的阶段不需要源文件
+    )
+    job = svc.enqueue(spec, _ingest_ctx(scope.paper_id, scope.revision_id),
+                     start_stage=plan.start_stage)
+    return {"status": "queued", "job_id": job.id, "start_stage": plan.start_stage,
+            "skipped": plan.skipped, "reason": plan.reason}

@@ -1883,3 +1883,32 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
 - **如实说明（仍未做）**：这个端点只回答"**该**从哪起"，**还没有**把它接进
   `POST /process` 的入参（即"按计划真的从该阶段起跑"仍需在 ingest 入口接 `from_stage`）。
   本轮交付的是决策层 + 可查询入口，**不声称端到端续跑已完成**。
+
+## D-99 M12 收尾③：`from_stage` 真正接进起跑入口（并修掉两个连带缺陷）
+
+- **做了什么**：`POST /api/papers/{id}/resume {from_stage?}` —— 决策（D-98 的 `plan_resume`）
+  → `service.enqueue(..., start_stage=…)` → `repository.insert_job(..., start_stage=…)`
+  写进 `job.stage`（那就是 runner 的"当前阶段"），因此**起点之前的阶段天然不执行**。
+  全部阶段已完成 → 返回 `status="noop"` 且**不建 job**（不产生空任务）。
+- **实测（真实 paper 7，重建后端后）**：
+  ```
+  POST /resume {from_stage:"evaluate"} →
+    {"status":"queued","job_id":9,"start_stage":"evaluate",
+     "skipped":["acquire","parse","normalize","media","index","qa_bank"], ...}
+  POST /resume {from_stage:"publish"} →
+    {"status":"queued","job_id":10,"start_stage":"publish","skipped":[7 项], ...}
+    job 10 的首个事件 = stage_started publish  ✅
+  ```
+- **过程中发现并修掉的三个真缺陷**（都是"照方案写会踩、实测才发现"）：
+  1. **路由被 legacy 抢占**：方案写的路径是 `POST /papers/{id}/process`，但该路径**已被
+     legacy 路由占用**（先注册者胜）—— curl 实测返回的是 legacy 的
+     `{paper_id, job_id, status:"running"}`，新端点**永远不可达**。硬改优先级会破坏 legacy
+     兼容契约，因此改用不冲突的 `/papers/{id}/resume`（`/process` 行为保持不变）。
+  2. **`ProcessBody` 定义在端点之后**，且用了字符串注解 + `=None` → FastAPI 没能正确建路由
+     （路由当时根本没注册）。已前移并把注解改成真实类型。
+  3. **入队事件硬编码 `stage="acquire"`**：续跑时 job 的 stage 明明是 `evaluate`，
+     界面却先报"acquire 开始"（实测 job 9 的首个事件就是错的）。已改为使用 job 的真实起点。
+- **测试**：`test_pipeline_resume.py` 增至 11 条（新增 `enqueue(start_stage=…)` 必须写进
+  `job.stage`、默认仍是 `acquire`）。后端全量 **898 passed / 0 failed**。
+- **M12 至此闭环**（进度事件 + 去重 + 时间线 + 续跑决策 + 真正起跑），
+  **唯一与方案文本的差异是路径名**：`/resume` 而非 `/process`（原因见上，已写进端点 docstring）。

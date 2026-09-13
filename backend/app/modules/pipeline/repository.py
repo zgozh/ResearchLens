@@ -143,13 +143,16 @@ def insert_job(
     budget: Dict[str, Any],
     model_snapshot: Dict[str, Any],
     idempotency_key: Optional[str],
+    start_stage: str = "acquire",
 ) -> JobORM:
     row = JobORM(
         paper_id=paper_id,
         revision_id=revision_id,
         kind=kind,
         state="queued",
-        stage="acquire",
+        # M12：`stage` 就是 runner 的"当前阶段"。续跑时把它设成起点阶段，
+        # 之前的阶段天然不会执行（它们已成功、产物已在）。
+        stage=(start_stage or "acquire"),
         progress=0.0,
         attempt=0,
         fence=0,

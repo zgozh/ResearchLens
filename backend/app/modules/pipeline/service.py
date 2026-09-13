@@ -71,8 +71,17 @@ RETRY_BACKOFF_MS = 1000
 # ================================================================== 入队
 
 
-def enqueue(spec: JobSpec, ctx: Optional[CallContext] = None) -> JobRecord:
+def enqueue(
+    spec: JobSpec,
+    ctx: Optional[CallContext] = None,
+    *,
+    start_stage: str = "acquire",
+) -> JobRecord:
     """入队一个任务。幂等键命中返回既有 job（不重复建）。
+
+    `start_stage`（M12）：续跑时的起点阶段 —— 它被写进 `job.stage`，
+    而 `job.stage` 就是 runner 的"当前阶段"，因此之前的阶段天然不执行
+    （它们已成功、产物已在，重跑它们既浪费又可能重复计费）。
 
     - ``review_ids`` 非空只允许 ``kind=reprocess``，且必须来自相同旧 scope；
     - 模型快照在此**固定**，之后 runtime 切换不影响进行中的 job。
@@ -106,12 +115,16 @@ def enqueue(spec: JobSpec, ctx: Optional[CallContext] = None) -> JobRecord:
             revision_id=revision_id,
             kind=spec.kind,
             spec=spec_payload,
+            start_stage=start_stage,
             budget=budget.model_dump(),
             model_snapshot=snapshot.model_dump(mode="json") if snapshot else {},
             idempotency_key=spec.idempotency_key,
         )
         job_id = row.id
-        _emit(db, job_id, "stage_started", stage="acquire", progress=0.0,
+        row_stage = row.stage
+        # 起点可能是续跑阶段（start_stage）：**不能再硬编码 acquire**，
+        # 否则界面会先报"acquire 开始"，而 job.stage 其实是 evaluate（实测 job 9）。
+        _emit(db, job_id, "stage_started", stage=(row_stage or "acquire"), progress=0.0,
               message="任务已入队")
         db.flush()
     return get_job(job_id)
