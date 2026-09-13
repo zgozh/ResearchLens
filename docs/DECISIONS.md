@@ -2664,13 +2664,15 @@ tick → status='loading' → notReady=true  → 进度卡出现（把下方内�
 ### 改动面（小，但要一起改完）
 
 1. `backend/app/modules/pipeline/seed_real.py`：新增 `AUTO_SEED_PAPERS`，`seed_catalog` 遍历它；
-2. **验收脚本 4 套原本写死 `for pid in (1, 2, 3)`** —— 这是本次真正的**回归风险**：
-   干净克隆上 id 2/3 会变成 **demo** 论文，而 demo 论文没有 revision
-   （`/exhibits` 409、`/graph` 返回空图），写死 id 会让验收在**别人的机器上假红**。
-   新增 `scripts/acceptance/_papers.py`（按 `source_mode=real` 挑论文）并改
-   `verify_route_a.py` / `verify_graph.py` / `verify_qa_stability.py` / `verify_qa_modes.py` /
-   `verify_upload_progress.py` 共用它。本机仍跑 3 篇真实论文，干净克隆只跑 1 篇 ——
-   两种情况的结果都反映真实状态；
+2. **验收脚本全部 7 套都写死过论文 id**（`for pid in (1, 2, 3)` / `/api/papers/1/...` /
+   `items[:3]`）—— 这是本次真正的**回归风险**：干净克隆上第 2/3 篇会变成 **demo** 论文，
+   而 demo 论文没有 revision（`/exhibits` 409、`/graph` 空图、`/statements` 422、
+   `/presentation` 0 场景、QA 直接返回空），写死 id 会让验收在**别人的机器上假红**。
+   新增 `scripts/acceptance/_papers.py`（按 `source_mode=real` 挑论文），7 套脚本全部共用。
+   其中 `verify_e2e_extra.py`（写死 `/api/papers/1`）与 `verify_metrics_live.py`
+   （取 `items[:3]`）是在**把本机库清成"新部署的样子"之后才暴露出来的** ——
+   即：只有真的模拟干净克隆，这类假红才会现形（实测第一次跑就是 6 条失败断言）。
+   本机仍覆盖真实论文，干净克隆只覆盖 1 篇 —— 两种情况的结果都反映真实状态；
 
 ### 验收（实测，不是推演）
 
@@ -2759,7 +2761,13 @@ if config.config_file_name is not None and config.attributes.get("configure_logg
 （行为断言刻意写成"迁移**没有改动**调用方配置"，而不是"≤ INFO" —— pytest 自己的 root
 默认是 WARNING，写后者会被测试框架带偏，测不出真问题。）
 
-**本轮收尾**：后端全量 pytest **1032 passed / 0 failed**；`run_all.py` **7/7**
-（四套脚本改成按 `source_mode=real` 挑论文后仍全绿）。
+**本轮收尾**：后端全量 pytest **1032 passed / 0 failed**；`run_all.py` **7/7**。
+
+**本机库已清成「新部署的样子」**（用户要求，2026-09-13）：删掉 papers 2/3/7/11/19/20
+（含全部子表，用 `.scratch/delete_papers_v2.py` —— 从 `information_schema` 动态枚举
+37 张带 `paper_id` 的表 + `job_events`，比硬编码清单少漏），只留
+**paper 1（Haar，真实自举）+ 4/5/6（3 篇示例）**。这台机器从此可以当**干净克隆的验收基线**：
+清完之后第一次跑 `run_all.py` 就抓出两套脚本假红（见上文第 2 点），修完 **7/7**。
+（重导任意一篇 arXiv 论文约 4 分钟，导入页示例里就有那几条链接。）
 
 

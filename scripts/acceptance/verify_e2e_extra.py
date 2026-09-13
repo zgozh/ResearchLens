@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -62,23 +63,30 @@ def post_sse(path: str, payload: dict, timeout: int = 180):
 
 
 print("=== 1. claims 详情桥接（此前对 canonical 断言恒 404） ===")
-status, claims = get_json("/api/papers/1/claims")
+# 动态挑一篇真实论文（理由见 _papers.py）：写死 1 在干净克隆上可能撞上 demo 论文
+# （没有 revision → /claims 详情与 QA 全部走不通），于是验收会假红。
+from _papers import pick_one_paper_id  # noqa: E402 - 同目录共用工具
+
+PID = int(os.environ.get("RL_PAPER_ID") or pick_one_paper_id(BASE) or 1)
+print(f"  （用 paper {PID}）")
+status, claims = get_json(f"/api/papers/{PID}/claims")
 check("GET /claims 200 且有断言", status == 200 and bool(claims), f"{status} n={len(claims or [])}")
 if claims:
     cid = claims[0]["claim_id"]
-    st, detail = get_json(f"/api/papers/1/claims/{cid}")
+    st, detail = get_json(f"/api/papers/{PID}/claims/{cid}")
     check(f"GET /claims/{cid} 200（此前 404）", st == 200 and isinstance(detail, dict), f"HTTP {st}")
     if isinstance(detail, dict):
         check("详情带 statement 正文", bool((detail.get("statement") or "").strip()),
               repr((detail.get("statement") or "")[:40]))
         check("详情带 evidence 列表字段", isinstance(detail.get("evidence"), list),
               f"{len(detail.get('evidence') or [])} 条")
-    st2, _ = get_json("/api/papers/1/claims/definitely-not-a-claim")
+    st2, _ = get_json(f"/api/papers/{PID}/claims/definitely-not-a-claim")
     check("未知 claim_id 仍是 404（不是 500）", st2 == 404, f"HTTP {st2}")
 
 print("\n=== 2. 证据问答 SSE（注入快照前恒 abstained/空气泡） ===")
 try:
-    st, events = post_sse("/api/papers/1/qa/stream", {"question": "这篇论文提出的方法是什么？", "top_k": 5})
+    st, events = post_sse(f"/api/papers/{PID}/qa/stream",
+                          {"question": "这篇论文提出的方法是什么？", "top_k": 5})
     kinds = [k for k, _ in events]
     print(f"  SSE HTTP {st}，事件类型 = {kinds}")
     final = next((d for k, d in events if k == "final"), None)

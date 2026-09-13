@@ -30,12 +30,21 @@ def check(label: str, ok: bool, detail: str = "") -> None:
     print(f"  [{'OK  ' if ok else 'FAIL'}] {label}{(' — ' + detail) if detail else ''}")
 
 
+from _papers import real_paper_ids  # 同目录共用工具（见 _papers.py）
+
 status, papers = get("/api/papers")
 check("GET /api/papers 200", status == 200, f"HTTP {status}")
-items = papers if isinstance(papers, list) else (papers or {}).get("items", [])
 
-for p in items[:3]:
-    pid = p.get("id")
+# 动态挑真实论文（理由见 _papers.py）：原先取 `items[:3]`，隐含假设"前 3 篇都是真实论文"。
+# 一旦库里只剩 1 篇真实论文（干净克隆，或本机清成新部署的样子），第 2/3 个就是 **demo**
+# 论文 —— 它们没有 revision：/statements 会 422、/presentation 0 场景、metrics.proxy 为 None，
+# 于是这套验收在**别人的机器上假红**（实测已发生）。
+pids = real_paper_ids(BASE, limit=3)
+check("库里有真实论文（/api/papers 中 source_mode=real）", bool(pids),
+      "一篇都没有 —— 启动自举没跑或还没建论文")
+print(f"待核对真实论文：{pids}")
+
+for pid in pids:
     print(f"\n=== paper {pid} ===")
 
     s, stmts = get(f"/api/papers/{pid}/statements")

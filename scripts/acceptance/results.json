@@ -9,50 +9,50 @@
       "script": "verify_route_a.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 1298,
+      "elapsed_ms": 642,
       "tail": "  [OK  ] 前端首页 200 — 13710 bytes\n\n总计失败断言：0"
     },
     {
       "script": "verify_graph.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 566,
+      "elapsed_ms": 625,
       "tail": "  [OK  ] exhibits.graph 里图谱告警可见 — ['evidence_bindings_derived']\n\n总计失败断言：0"
     },
     {
       "script": "verify_e2e_extra.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 15502,
+      "elapsed_ms": 17600,
       "tail": "  [OK  ] bundle 含「另有」（PresenterView 未解析引用提示） — /app/.next/server/app/paper/[slug]/page.js\n\n总计失败断言：0"
     },
     {
       "script": "verify_qa_modes.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 70114,
-      "tail": "  [OK  ] paper 2 「论文用了什么数据集？」 mode=extractive conf=High len=907\n\n总失败断言：0（共检查 6 条回答）"
+      "elapsed_ms": 37058,
+      "tail": "  [OK  ] paper 1 「论文用了什么数据集？」 mode=generated conf=Medium len=80\n\n总失败断言：0（共检查 3 条回答）"
     },
     {
       "script": "verify_upload_progress.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 460,
+      "elapsed_ms": 463,
       "tail": "  [OK  ] 标题长度合理（不是单字标签） — 25\n\n总计失败断言：0"
     },
     {
       "script": "verify_metrics_live.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 862,
+      "elapsed_ms": 537,
       "tail": "  [OK  ] overall_score 可用时必须标明来源为 AI 口径（不许谎称人工评审） — available=True basis='ai_generated'\n\n总失败断言：0"
     },
     {
       "script": "verify_qa_stability.py",
       "status": "pass",
       "failures": null,
-      "elapsed_ms": 131291,
-      "tail": "paper 3 round 3: answer_len=423 mode=generated grounded=True citation=7 sentence=7 OK\n\n空答案次数：0/9"
+      "elapsed_ms": 39577,
+      "tail": "paper 1 round 3: answer_len=1142 mode=generated grounded=True citation=7 sentence=7 OK\n\n空答案次数：0/3"
     }
   ]
 }
