@@ -369,37 +369,26 @@ def to_legacy_graph(
     graph: GraphArtifact,
     statements: Optional[List[VerifiedStatement]] = None,
 ) -> GraphOut:
-    """``GraphArtifact → GraphOut``：nodes/edges 字段名与旧前端一致。
+    """``GraphArtifact → GraphOut``：**M10 收敛后委托唯一实现**。
 
-    **不把 unsupported 变 supports**：边关系原样投影。
+    分叉实证（双读一致性测试当场抓到）：这里的旧实现是**白名单式投影**，
+    props 只列了 `status/claim_id/evidence_id/media_id/anchor_ids` ——
+    而 `modules/graph/legacy.to_legacy_graph` 已经补上了节点自带 `props` 的透传
+    （ADR-0058/D-48：白名单漏字段会让功能整块失效，API 表面却看不出异常）。
+    两条路径因此对同一份 canonical 对象给出**不同结果**：图谱端点有
+    `support_status`，走这里的路径没有。
+
+    现在两处共用同一份实现（先委托，再做返回类型包装）。`statements` 参数两侧都没用，
+    保留签名只为兼容既有调用方。
     """
-    nodes = [
-        {
-            "id": n.id,
-            "label": (n.label.text if n.label else ""),
-            "kind": n.kind,
-            "props": {
-                "status": n.status,
-                "claim_id": n.claim_id,
-                "evidence_id": n.evidence_id,
-                "media_id": n.media_id,
-                "anchor_ids": list(n.anchor_ids or []),
-            },
-        }
-        for n in graph.nodes
-    ]
-    edges = [
-        {
-            "id": e.id,
-            "source": e.source,
-            "target": e.target,
-            "label": (e.label.text if e.label else e.relation),
-            "relation": e.relation,
-            "status": e.status,
-        }
-        for e in graph.edges
-    ]
-    return GraphOut(nodes=nodes, edges=edges, revision_id=graph.scope.revision_id)
+    from app.modules.graph.legacy import to_legacy_graph as _projection
+
+    projected = _projection(graph)
+    return GraphOut(
+        nodes=projected["nodes"],
+        edges=projected["edges"],
+        revision_id=graph.scope.revision_id,
+    )
 
 
 # ================================================================== 讲解

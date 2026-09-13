@@ -1753,3 +1753,27 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
   ① 坏样本必被检出；② 合规写法不误报；③ **注入检测**：已登记文件里插一条裸插值必须变红；
   ④ **清单漂移**：清单登记了不存在的组件必须变红（防止清单腐化成"看起来在管、其实没管"）。
 - **实测**：后端全量 **878 passed / 0 failed**（较上轮 +51）；前端六套 + 门禁（8 个展示点）全绿。
+
+## D-93 M10 第一步：先建安全网，**当场抓到一处真实分叉**并收敛图谱域
+
+- **做法（按方案 §M10 测试要点 1/2 先做前两件）**：
+  1. 新增 `test_projection_dual_read.py`：**跨域双读一致性**（qa / graph / evaluation 各一例，
+     同一 canonical 对象经 `schemas/adapters` 与 `modules/*/legacy` 两处投影必须逐字段相等）
+     + **静态门禁**（`def to_legacy_` 只允许出现在白名单里；新增副本立刻变红；
+     白名单里"已经没有投影"的条目也会变红，逼着清单随合并收敛）。
+- **安全网第一次运行就抓到真分叉（这就是它存在的意义）**：
+  `adapters.to_legacy_graph` 是**白名单式投影**（props 只列
+  `status/claim_id/evidence_id/media_id/anchor_ids`），而
+  `modules/graph/legacy.to_legacy_graph` 已经补上节点 `props` 透传（ADR-0058/D-48）。
+  后果：**同一份 canonical 图谱，两条路径给出的结果不同** —— 图谱端点带
+  `support_status`（证据节点的判定），走 adapters 的路径没有。这正是 D-48/D-60
+  那类"改了一处、另一处没改"的事故结构，只是这次由测试而不是用户发现。
+- **收敛**：`adapters.to_legacy_graph` 改为**委托** `modules.graph.legacy.to_legacy_graph`
+  （函数内延迟导入避免循环依赖），只做 `GraphOut` 包装；`statements` 参数两侧都没用，
+  保留签名仅为兼容。收敛后双读测试转绿。
+- **实测**：双读一致性 5 条全绿；后端全量 **883 passed / 0 failed**；
+  重建后端后验收 `verify_graph / verify_route_a / verify_metrics_live` **全绿**。
+- **剩余（M10 未完）**：`scene`（`to_legacy_presentation` 两侧**签名就不一样**：
+  adapters 版本多收 media/evidence/statements —— 合并前要先定哪份权威）、
+  `qa`、`evaluation` 三域的合并；以及把实现真正迁到 `app/projection/` 并收白名单。
+  本轮只完成了"安全网 + 一个域"，**不声称 M10 完成**。
