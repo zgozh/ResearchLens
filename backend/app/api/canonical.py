@@ -744,12 +744,12 @@ def get_golden_set(
     revision_id: Optional[str] = None,
     x_admin_token: Optional[str] = Header(None),
 ):
-    """读取该 revision 的**金标集草案**，供人工复核。
+    """读取该 revision 的**金标集**（AI 从原文构造，供查看与排查）。
 
-    为什么需要（规格 §5.9）：``support_precision/recall`` 必须有**标注集**才叫 measured，
-    且综合评分只在"包含人工真值的核心指标均可测"时才计算。机器自动构造的集合只是
-    **草案/调参集**，必须有人看过并确认（``POST .../golden-set/confirm``）才能当真值。
-    这里把草案逐条列出来，让"确认"是**看过之后的确认**，而不是盖空章。
+    R4-M5（ADR D-105）：**人工复核/确认环节已删除**。金标集只有一种形态：
+    AI（或确定性句子挑选）从原文构造。它不再"等人工确认"，评测直接按 **AI 口径**出分
+    并在报告里标 ``overall_score_basis="ai_generated"`` —— 分数来源对用户可见，
+    但不再要求任何人工动作。
     """
     require_admin(x_admin_token)
     scope, _rev = _resolve_scope(paper_id, revision_id)
@@ -757,15 +757,15 @@ def get_golden_set(
     from app.modules.evaluation import golden_builder
 
     with session_scope() as db:
-        golden, is_tuning = golden_builder.find_for_scope_ex(db, scope)
+        golden, _is_tuning = golden_builder.find_for_scope_ex(db, scope)
     if golden is None:
-        raise not_found("该 revision 尚无金标集，先 POST /golden-set 生成草案")
+        raise not_found("该 revision 尚无金标集，先 POST /golden-set 生成")
     return {
         "scope": {"paper_id": scope.paper_id, "revision_id": scope.revision_id},
         "golden": {
             "id": golden.id, "version": golden.version,
-            "is_tuning": is_tuning,
-            "status": "draft（机器构造，待人工确认）" if is_tuning else "confirmed（人工已确认）",
+            # R4-M5：`is_tuning` 字段删除（该概念已不存在）；status 只剩一种取值。
+            "status": "ai_constructed（AI 从原文构造，非人工评审）",
         },
         "claims": [
             {"id": c.id, "text": c.text, "acceptable_block_ids": c.acceptable_block_ids}
@@ -778,29 +778,11 @@ def get_golden_set(
     }
 
 
-@router.post("/papers/{paper_id}/golden-set/confirm")
-def confirm_golden_set(
-    paper_id: int,
-    revision_id: Optional[str] = None,
-    x_admin_token: Optional[str] = Header(None),
-):
-    """把金标集标记为**人工已确认**（此后 precision/recall 才算 measured、才出综合评分）。
-
-    **调用即表示人工复核通过**（admin 凭据承担确认责任）。机器自动构造的集合在此之前
-    一律按调参集处理，不参与对外报告——避免"让模型给自己出卷子"。
-    """
-    actor = require_admin(x_admin_token)
-    scope, _rev = _resolve_scope(paper_id, revision_id)
-    from app.modules.evaluation import golden_builder
-
-    golden = golden_builder.confirm_for_scope(scope)
-    if golden is None:
-        raise not_found("该 revision 尚无金标集，先 POST /golden-set 生成草案")
-    return {
-        "scope": {"paper_id": scope.paper_id, "revision_id": scope.revision_id},
-        "confirmed": {"id": golden.id, "version": golden.version},
-        "actor": getattr(actor, "kind", "") or str(actor),
-    }
+# R4-M5（ADR D-105）：`POST /papers/{id}/golden-set/confirm` **已删除**。
+# 为什么要删而不是保留成空操作：留着它就等于留着一个"人工确认"的产品语义入口，
+# 而用户明确要求"人工有关的全部删掉"（不是隐藏、不是保留但不用）。
+# 历史兼容：老客户端调用该路径会得到 404 —— 这是**期望的失败方式**（fail loud），
+# 而不是静默假装成功。
 
 
 __all__ = ["router"]

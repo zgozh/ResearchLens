@@ -74,20 +74,25 @@ def compute(
         warnings=warnings,
     )
 
-    # overall_score 只依赖 report 内部指标；缺失核心指标时为 None（不是 0）。
-    # ``ai_overall_score`` 是**另一个口径**（允许 AI 裁判的 proxy 参与），两者并存。
+    # R4-M5（ADR D-105）：`overall_score` 就是**主分「AI 质量评分（自动）」**，
+    # 用 AI 口径算（四项核心指标"可用"即可，support_precision 允许 AI 裁判 proxy 参与）。
+    # 人工口径函数 `compute_overall` / `core_metric_missing` 已随决策 3 删除。
+    ai_score = M.compute_ai_overall(report)
     report = report.model_copy(update={
-        "overall_score": M.compute_overall(report),
-        "ai_overall_score": M.compute_ai_overall(report),
+        "overall_score": ai_score,
+        # 来源标注（决策底线 2）：AI 判定 ≠ 客观测量，必须写明。
+        "overall_score_basis": "ai_generated" if ai_score is not None else None,
+        # 已废弃字段：与主分同值，保留一个版本周期供旧消费方过渡。
+        "ai_overall_score": ai_score,
     })
 
-    missing_core = M.core_metric_missing(report)
+    missing_core = M.ai_core_metric_missing(report)
     if missing_core:
         report = report.model_copy(update={
             "warnings": report.warnings + [Warning(
-                code="overall_not_evaluated",
+                code="ai_overall_not_evaluated",
                 message=(
-                    "核心指标缺失，overall_score 为 null（不以 0 冒充）："
+                    "AI 质量评分暂不可用（核心指标缺失，**不以 0 冒充**）："
                     + ", ".join(missing_core)
                 ),
                 stage="evaluation",
@@ -162,44 +167,40 @@ def _compute_entries(
         precision, recall = golden_mod.support_precision_recall(
             predicted_texts, list(golden_set.claims), predicted_ok=predicted_ok,
         )
-        if input.golden_is_tuning:
-            # 规格（§5.9 / L613）：``support_precision/recall`` **必须有标注集**才叫
-            # measured；调参集（机器自动构造、未经人工确认）**不用于对外报告**。
-            # 否则 `overall_score` 会拿机器自造的"真值"给自己打分——那是自我确认。
-            #
-            # 但"未评测"的**技术卡点**是文本相似度：预测与参考常是"同一事实不同措辞"，
-            # 实测最高相似度 0.21（**不是**阈值问题，ADR-0052）。所以这里改用
-            # **LLM 裁判按语义判等**（ADR-0056）：数值可见，但状态仍是 proxy，不是 measured。
-            judged = _ai_judged_support(
-                input, predicted_texts, predicted_ok, list(golden_set.claims), ctx, warnings,
-            )
-            if judged is not None:
-                entries["support_precision"], entries["support_recall"] = judged
-            else:
-                proxy = ""
-                for entry in (precision, recall):
-                    if entry.value.value is not None:
-                        proxy += f"{entry.name}={entry.value.value:.3f} "
-                warnings.append(Warning(
-                    code="golden_not_annotated",
-                    message=(
-                        "金标集为**调参集**（机器从原文自动构造、未经人工确认），"
-                        "support_precision/recall 不计为 measured；AI 裁判本次未给出结论，"
-                        f"综合评分保持 null（文本相似度 proxy：{proxy.strip() or 'n/a'}）"
-                    ),
-                    stage="evaluation",
-                ))
-                entries["support_precision"] = not_evaluated(
-                    "support_precision",
-                    method="金标集未经人工确认且 AI 裁判未出结论（不以 0 冒充）", unit="ratio",
-                )
-                entries["support_recall"] = not_evaluated(
-                    "support_recall",
-                    method="金标集未经人工确认且 AI 裁判未出结论（不以 0 冒充）", unit="ratio",
-                )
+        # R4-M5（ADR D-105）：**"调参集 vs 人工确认集"的分叉已删除** ——
+        # 产品里不再有人工确认环节，金标集只剩一种形态：AI 从原文构造。
+        # 因此支持度一律走 **AI 裁判按语义判等**（数值可见，状态仍是 proxy，不是 measured）。
+        #
+        # 背景（保留，因为解释了"为什么必须让 AI 判"）："未评测"的技术卡点是文本相似度
+        # —— 预测与参考常是"同一事实不同措辞"，实测最高相似度 0.21（不是阈值问题，ADR-0052）。
+        judged = _ai_judged_support(
+            input, predicted_texts, predicted_ok, list(golden_set.claims), ctx, warnings,
+        )
+        if judged is not None:
+            entries["support_precision"], entries["support_recall"] = judged
         else:
-            entries["support_precision"] = precision
-            entries["support_recall"] = recall
+            proxy = ""
+            for entry in (precision, recall):
+                if entry.value.value is not None:
+                    proxy += f"{entry.name}={entry.value.value:.3f} "
+            # 纯**说明性**告警（不含任何"待人工确认"语义）：AI 裁判这次没给出结论。
+            warnings.append(Warning(
+                code="golden_ai_constructed",
+                message=(
+                    "金标集由 AI 从原文构造，评分为 **AI 口径**（非人工评审）；"
+                    "AI 裁判本次未给出结论，support_precision/recall 标为未评测，"
+                    f"主分保持 null（文本相似度参考：{proxy.strip() or 'n/a'}）"
+                ),
+                stage="evaluation",
+            ))
+            entries["support_precision"] = not_evaluated(
+                "support_precision",
+                method="AI 裁判未出结论（不以 0 冒充）", unit="ratio",
+            )
+            entries["support_recall"] = not_evaluated(
+                "support_recall",
+                method="AI 裁判未出结论（不以 0 冒充）", unit="ratio",
+            )
     else:
         precision, recall, escape = M.support_metrics(statements)
         entries["support_precision"] = precision

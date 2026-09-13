@@ -115,11 +115,8 @@ class EvaluationInput(ContractModel):
     answers: List[Any] = Field(default_factory=list)     # AnswerRecord（避免循环导入）
     navigation_checks: List[NavigationCheck] = Field(default_factory=list)
     golden: Optional[GoldenSet] = None
-    #: ``golden`` 是否为**调参集**（机器自动构造、未经人工确认）。
-    #: 规格要求：``support_precision/recall`` 必须有**标注集**才叫 measured，
-    #: 且 ``overall_score`` 只在"包含人工真值的核心指标均可测"时才计算；
-    #: 调参集**不用于对外报告**（``golden.py`` 的既有约定）。
-    golden_is_tuning: bool = False
+    # R4-M5（ADR D-105）：`golden_is_tuning`（调参集 vs 人工确认集）**已删除** ——
+    # 产品里不再有人工确认环节，金标集只剩一种形态：AI 从原文构造。
     #: **已缓存的 AI 裁判结果**（摘要匹配时复用，避免每次打开评测页都调用模型）。
     ai_judge: Optional[AiJudgeResult] = None
 
@@ -128,10 +125,14 @@ class EvaluationReport(ContractModel):
     scope: Scope
     id: Id
     version: str = "rl.eval/1"
-    #: **人工真值口径**的综合分：只在四项核心指标全部 measured 时才有值（规格纪律）。
+    #: **主分 = AI 质量评分（自动）**（R4-M5 / ADR D-105）：用 AI 口径公式算，
+    #: 四项核心指标"可用"（measured 或 AI 裁判 proxy）即可。核心指标缺失时为
+    #: ``None`` + 原因告警，**绝不填 0**。
     overall_score: Optional[float] = None
-    #: **AI 裁判口径**的综合分（ADR-0056）：四项核心指标"可用"（measured 或
-    #: AI 裁判 proxy）即可算。与 ``overall_score`` 并存、语义不同、绝不互相冒充。
+    #: 分数的**来源**：``"ai_generated"`` = AI 裁判 + 程序测量自动得出（非人工评审）。
+    #: 用户拍板取消人工真值维度，但"AI 判定 ≠ 客观测量"这条标注纪律必须保留。
+    overall_score_basis: Optional[str] = None
+    #: **已废弃**（R4-M5）：与 ``overall_score`` 同值，保留一个版本周期供旧消费方过渡。
     ai_overall_score: Optional[float] = None
     metrics: List[MetricEntry] = Field(default_factory=list)
     golden_id: Optional[str] = None

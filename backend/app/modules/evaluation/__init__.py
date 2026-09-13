@@ -1,7 +1,11 @@
 """M12 — 自动评测模块（REFACTOR_SPEC §3.2、§5.9、§5.10、§6.14）。
 
-固定 15 个指标名；``value=null`` 的 ``not_evaluated`` 不可冒充 0/100；
-``overall_score`` 仅在核心人工真值指标均可测时计算，否则 canonical null。
+固定 15 个指标名；``value=null`` 的 ``not_evaluated`` 不可冒充 0/100。
+
+R4-M5（ADR D-105）：``overall_score`` 现在是**主分「AI 质量评分（自动）」**——
+用 AI 口径公式算（四项核心指标"可用"即可，``support_precision`` 允许 AI 裁判 proxy 参与），
+并带 ``overall_score_basis="ai_generated"`` 标明来源。人工真值口径已随决策 3 删除。
+
 **M12 不调用 pipeline**，只接收 ``EvaluationInput``；``get`` 不计算、不写库。
 
 API:
@@ -13,8 +17,8 @@ API:
 from .golden import load_golden_set, save_golden_set  # noqa: F401
 from .legacy import compute_evaluation, to_legacy_evaluation  # noqa: F401
 from .metrics import (  # noqa: F401
-    compute_overall,
-    core_metric_missing,
+    ai_core_metric_missing,
+    compute_ai_overall,
     one_to_one_match,
     similarity,
 )
@@ -28,8 +32,8 @@ __all__ = [
     "to_legacy_evaluation",
     "load_golden_set",
     "save_golden_set",
-    "compute_overall",
-    "core_metric_missing",
+    "compute_ai_overall",
+    "ai_core_metric_missing",
     "one_to_one_match",
     "similarity",
     "ALGORITHM_VERSION",

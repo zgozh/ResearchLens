@@ -151,17 +151,30 @@ class TestAiGoldenClaims:
         assert found.version == golden_builder.AI_GOLDEN_VERSION, \
             f"应优先 AI 版，实际用了 {found.version}"
 
-    def test_human_confirmed_wins_over_ai(self, world, monkeypatch):
-        """人工确认过的版本优先级最高（AI 起草不能盖过人工真值）。"""
+    def test_ai_version_wins_over_sentence_version(self, world, monkeypatch):
+        """来源优先级：AI 起草版 > 句子挑选版（R4-M5 改写）。
+
+        原语义为什么失效：本用例此前叫 `test_human_confirmed_wins_over_ai`，断言
+        "人工确认版优先级最高"。人工确认环节已随决策 3 删除（`annotated=` 参数与
+        `confirm_for_scope` 都不存在了），所以"人工版压过 AI 版"这件事**不可能再发生**。
+
+        保留下来的、仍然有意义的规则是**版本来源优先级**本身（ADR-0065）：
+        AI 起草版优先于句子挑选版，否则重建句子版会把评测悄悄换回旧口径。
+        """
         from app.contracts.common import new_ctx
         from app.core.db import session_scope
         from app.modules.evaluation import golden_builder
 
         _canned([{"text": "AI 起草的断言", "quote": "基于 Haar 小波域指标自适应选择载体",
                   "section": "1 方法"}], monkeypatch)
-        golden_builder.build_and_save(world, annotated=True)   # 人工确认版（句子版）
-        golden_builder.build_and_save_ai(world, new_ctx(world))  # AI 版
+        golden_builder.build_and_save(world)                     # 句子版（先建）
+        golden_builder.build_and_save_ai(world, new_ctx(world))  # AI 版（后建）
         with session_scope() as db:
             found, is_tuning = golden_builder.find_for_scope_ex(db, world)
-        assert found is not None and is_tuning is False, "人工确认版必须优先"
+        assert found is not None
+        assert found.version == golden_builder.AI_GOLDEN_VERSION, \
+            f"AI 起草版必须优先，实际用了 {found.version}"
+        assert is_tuning is False, (
+            "`is_tuning` 已不再是产品语义（恒 False）；保留它只为兼容二元返回形态"
+        )
 

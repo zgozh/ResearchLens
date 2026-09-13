@@ -285,55 +285,45 @@ class TestOneToOneMatching:
         assert sum(1 for p in gold_to_pred if p is not None) == 1
 
     def test_support_precision_capped_at_one(self, world):
-        """一对多场景下 support_precision 不得超过 1.0。"""
-        from app.modules import evaluation
+        """一对多场景下 support_precision 不得超过 1.0。
+
+        R4-M5 改写：以前经 `evaluation.compute` 取指标值。现在只要有金标集，
+        precision/recall 一律走 **AI 裁判**（决策 3：不再有"人工确认集"这条绕过 AI 判等的路），
+        无 LLM 时如实 `not_evaluated`。所以这两个用例改为**直接验证确定性匹配算法**
+        —— 它们本来要锁的就是"一对一匹配不许把 precision 撑过 1"这件事，
+        直接测算法比隔着服务层更贴近意图。
+        """
         from app.contracts.evaluation import GoldenClaim
+        from app.modules.evaluation import golden as golden_mod
 
         scope = world["scope"]
         text = "论文提出图神经网络方法并在 QM9 上取得最优结果。"
-        # 1 条预测，3 个内容相同的 gold —— 旧实现会算成 precision>1
-        statements = [_statement(scope, text=text, evidence_ids=["ev1"])]
         claims = [
             GoldenClaim(id=f"gc{i}", scope=scope, text=text, expected_support="supports")
             for i in range(3)
         ]
-        report = evaluation.compute(
-            EvaluationInput(
-                scope=scope, statements=statements,
-                golden=_golden(scope, claims=claims),
-            ),
-            new_ctx(scope),
+        precision, _recall = golden_mod.support_precision_recall(
+            [text], claims, predicted_ok=[True],
         )
-        precision = report.metric("support_precision")
-        assert precision is not None
-        assert precision.value <= 1.0, "精确率不得超过 100%"
+        assert precision.value.value is not None
+        assert precision.value.value <= 1.0, "精确率不得超过 100%"
 
     def test_recall_counts_unique_matches(self, world):
         """2 条预测、3 个 gold、内容全同 → recall = 2/3。"""
-        from app.modules import evaluation
         from app.contracts.evaluation import GoldenClaim
+        from app.modules.evaluation import golden as golden_mod
 
         scope = world["scope"]
         text = "论文在 QM9 数据集上取得最优结果。"
-        statements = [
-            _statement(scope, text=text, evidence_ids=["ev1"]),
-            _statement(scope, text=text, evidence_ids=["ev2"]),
-        ]
         claims = [
             GoldenClaim(id=f"gc{i}", scope=scope, text=text, expected_support="supports")
             for i in range(3)
         ]
-        report = evaluation.compute(
-            EvaluationInput(
-                scope=scope, statements=statements,
-                golden=_golden(scope, claims=claims),
-            ),
-            new_ctx(scope),
+        _precision, recall = golden_mod.support_precision_recall(
+            [text, text], claims, predicted_ok=[True, True],
         )
-        recall = report.metric("support_recall")
-        assert recall is not None
-        assert recall.numerator == 2 and recall.denominator == 3
-        assert abs(recall.value - (2 / 3)) < 1e-3, "指标按 4 位小数取整"
+        assert recall.value.numerator == 2 and recall.value.denominator == 3
+        assert abs(recall.value.value - (2 / 3)) < 1e-3, "指标按 4 位小数取整"
 
 
 # =============================================================== 中文匹配
@@ -372,7 +362,7 @@ class TestOverallScore:
         scope = world["scope"]
         report = evaluation.compute(EvaluationInput(scope=scope), new_ctx(scope))
         assert report.overall_score is None
-        assert any(w.code == "overall_not_evaluated" for w in report.warnings)
+        assert any(w.code == "ai_overall_not_evaluated" for w in report.warnings)
 
     def test_overall_formula_weights(self, world):
         """4 个核心指标均可测时按 §5.9 加权公式计算。"""
@@ -408,7 +398,7 @@ class TestOverallScore:
     def test_overall_exact_weighting(self):
         """纯函数校验：权重 0.4/0.2/0.2/0.2 且 ratio 只缩放一次。"""
         from app.contracts.evaluation import EvaluationReport, MetricEntry, MetricValue
-        from app.modules.evaluation.metrics import compute_overall
+        from app.modules.evaluation.metrics import compute_ai_overall
 
         def entry(name, value):
             return MetricEntry(name=name, value=MetricValue(
@@ -426,12 +416,12 @@ class TestOverallScore:
             ],
         )
         # 100 × (0.4*0.5 + 0.2*1.0 + 0.2*0.0 + 0.2*1.0) = 100 × 0.6 = 60
-        assert compute_overall(report) == 60.0
+        assert compute_ai_overall(report) == 60.0
 
     def test_overall_never_substitutes_zero(self):
         """缺一个核心指标绝不用 0 顶替（把"无法评估"伪装成"很差"）。"""
         from app.contracts.evaluation import EvaluationReport, MetricEntry, MetricValue
-        from app.modules.evaluation.metrics import compute_overall
+        from app.modules.evaluation.metrics import compute_ai_overall
 
         def entry(name, value):
             return MetricEntry(name=name, value=MetricValue(
@@ -447,7 +437,7 @@ class TestOverallScore:
                 # unanswerable_honesty_rate 缺失（R4-M3 更名后）
             ],
         )
-        assert compute_overall(report) is None
+        assert compute_ai_overall(report) is None
 
 
 class TestGet:

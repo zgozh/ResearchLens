@@ -218,32 +218,43 @@ def _overall(report: EvaluationReport, *, proxy_allowed: frozenset = frozenset()
     return round(total, 2)
 
 
-def compute_overall(report: EvaluationReport) -> Optional[float]:
-    """**人工真值口径**的综合分：四项核心指标全部 ``measured`` 才算（规格纪律）。"""
-    return _overall(report)
-
-
-#: 允许以 proxy 参与 AI 评分的核心指标：只有 AI 裁判给出的 support_precision。
-#: 其余核心指标本来就是程序可测（quote/anchor/refusal），不该出现 proxy。
+#: 允许以 proxy 参与主分的核心指标：只有 AI 裁判给出的 support_precision。
+#: 其余核心指标本来就是程序可测（quote/anchor/honesty），不该出现 proxy。
 AI_PROXY_CORE = frozenset({"support_precision"})
 
 
 def compute_ai_overall(report: EvaluationReport) -> Optional[float]:
-    """**AI 裁判口径**的综合分（ADR-0056）。
+    """**主分 = AI 质量评分（自动）**（R4-M5，ADR D-105，原 ADR-0056 的 AI 口径）。
 
-    为什么需要：没有人工标注集时 ``support_precision`` 只能是 proxy，于是
-    ``overall_score`` 恒 null；而用户需要看到分数。这里用同一公式，但允许
-    ``support_precision`` 以 **proxy** 参与，**并存的** ``overall_score`` 规则不变
-    （仍是"四项 measured"），两者绝不互相冒充。
+    为什么它现在是主分：用户拍板"取消一切跟人工有关的，自动评测直接全部 AI 评 AI 打分"
+    —— 人工确认在真实使用中**永远不会发生**（单人参赛、没有标注人力），
+    于是旧的主位 ``overall_score`` 恒为 null，界面只能显示"未确认"，用户永远看不到分数。
+
+    公式与旧人工口径**完全一致**（`_overall` 的 0.4/0.2/0.2/0.2 加权），
+    只是允许 ``support_precision`` 以 **proxy**（AI 裁判语义判等）参与。
+
+    **底线不变**：任一核心指标不可用 → 返回 ``None``，**绝不用 0 冒充**
+    （把"无法评估"伪装成"表现很差"）。
     """
     return _overall(report, proxy_allowed=AI_PROXY_CORE)
 
 
-def core_metric_missing(report: EvaluationReport) -> List[str]:
+def ai_core_metric_missing(report: EvaluationReport) -> List[str]:
+    """AI 口径下**还缺哪些核心指标**（用于原因告警，缺哪项列哪项）。
+
+    原 `core_metric_missing` 只认 ``measured``（人工口径）；决策 3 删除了人工口径，
+    这里改为认"可用" = ``measured``，或 ``proxy`` 且在白名单里。
+    """
     missing: List[str] = []
     for name in OVERALL_WEIGHTS:
         metric = report.metric(name)
-        if metric is None or metric.status != "measured" or metric.value is None:
+        if metric is None or metric.value is None:
+            missing.append(name)
+            continue
+        ok = metric.status == "measured" or (
+            metric.status == "proxy" and name in AI_PROXY_CORE
+        )
+        if not ok:
             missing.append(name)
     return missing
 

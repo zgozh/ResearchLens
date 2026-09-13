@@ -147,9 +147,16 @@ class TestAiOverallScore:
         ]
         return EvaluationReport(scope=_SCOPE, id="r1", metrics=entries)
 
-    def test_canonical_overall_stays_null_with_proxy_precision(self):
-        """**纪律不变**：support_precision 是 proxy → canonical overall_score 必须是 null。"""
-        assert M.compute_overall(self._report()) is None
+    def test_proxy_precision_never_claims_measured(self):
+        """**纪律不变**：support_precision 是 proxy → 不许冒充 measured。
+
+        R4-M5 改写：以前这里断言"canonical overall_score 仍是 null"（人工口径）。
+        人工口径已删除，但"proxy 不许写成 measured"这条**内核纪律**保留，
+        现在改为直接断言指标状态本身。
+        """
+        report = self._report()
+        assert report.metric("support_precision").status == "proxy"
+        assert report.metric("support_precision").status != "measured"
 
     def test_ai_overall_score_is_computed_from_available_core_metrics(self):
         report = self._report()
@@ -162,10 +169,13 @@ class TestAiOverallScore:
         report = self._report(refusal="not_evaluated")
         assert M.compute_ai_overall(report) is None, "缺一项核心指标就不给分（不用 0 顶替）"
 
-    def test_both_scores_when_everything_measured(self):
+    def test_ai_overall_is_the_only_score_now(self):
+        """R4-M5：主分只有一个来源（AI 口径），人工口径函数已删除。"""
+        from app.modules.evaluation import metrics as MM
+
         report = self._report(precision="measured")
-        assert M.compute_overall(report) == 80.0
-        assert M.compute_ai_overall(report) == 80.0
+        assert MM.compute_ai_overall(report) == 80.0
+        assert not hasattr(MM, "compute_overall")
 
 
 # ======================================================= 服务层接线
@@ -188,7 +198,7 @@ def real_scope():
     return Scope(paper_id=paper.id, revision_id=revision.id)
 
 
-def _inputs(scope: Scope, *, golden_is_tuning: bool, ai_judge=None) -> EvaluationInput:
+def _inputs(scope: Scope, *, ai_judge=None) -> EvaluationInput:
     from app.contracts.evidence import VerifiedStatement
 
     stmt = VerifiedStatement(
@@ -205,7 +215,7 @@ def _inputs(scope: Scope, *, golden_is_tuning: bool, ai_judge=None) -> Evaluatio
     )
     return EvaluationInput(
         scope=scope, statements=[stmt], golden=golden,
-        golden_is_tuning=golden_is_tuning, ai_judge=ai_judge,
+        ai_judge=ai_judge,
         navigation_checks=[],
     )
 
@@ -216,7 +226,7 @@ class TestServiceWiring:
         from app.modules import evaluation
 
         report = evaluation.compute(
-            _inputs(real_scope, golden_is_tuning=True), None
+            _inputs(real_scope, ), None
         )
         assert report.metric("support_precision").status == "not_evaluated"
         assert report.ai_overall_score is None
@@ -239,7 +249,7 @@ class TestServiceWiring:
                 model="fresh",
             ),
         )
-        fresh = evaluation.compute(_inputs(real_scope, golden_is_tuning=True), new_ctx(real_scope))
+        fresh = evaluation.compute(_inputs(real_scope, ), new_ctx(real_scope))
         assert fresh.metric("support_precision").value == 1.0
 
         # 模拟 legacy 层持久化出来的缓存契约：**配对为空、只有计数**
@@ -251,7 +261,7 @@ class TestServiceWiring:
             matches=[], true_positive=1, total_predicted=1, total_golden=1, digest=digest,
         )
         reused = evaluation.compute(
-            _inputs(real_scope, golden_is_tuning=True, ai_judge=persisted), None
+            _inputs(real_scope, ai_judge=persisted), None
         )
         assert reused.metric("support_precision").value == 1.0, \
             "复用缓存必须与原判一致，不能因为不回写配对而变成 0"
@@ -269,7 +279,7 @@ class TestServiceWiring:
 
         monkeypatch.setattr(ai_grader, "judge_support", fake)
         report = evaluation.compute(
-            _inputs(real_scope, golden_is_tuning=True), new_ctx(real_scope)
+            _inputs(real_scope, ), new_ctx(real_scope)
         )
         precision = report.metric("support_precision")
         assert precision.status == "proxy", "AI 裁判给的是 proxy，不能冒充 measured"
@@ -301,7 +311,7 @@ class TestServiceWiring:
                 model="fake-judge",
             ),
         )
-        inp = _inputs(real_scope, golden_is_tuning=True)
+        inp = _inputs(real_scope, )
         inp.golden.anchors = [
             GoldenAnchor(id="a1", scope=real_scope, expected_page_index=0),
         ]
@@ -331,7 +341,7 @@ class TestServiceWiring:
             model="cached", digest=digest,
         )
         report = evaluation.compute(
-            _inputs(real_scope, golden_is_tuning=True, ai_judge=cached.as_contract()),
+            _inputs(real_scope, ai_judge=cached.as_contract()),
             new_ctx(real_scope),
         )
         assert report.metric("support_precision").value == 1.0
@@ -356,7 +366,7 @@ class TestServiceWiring:
             model="stale", digest="digest-of-something-else",
         )
         report = evaluation.compute(
-            _inputs(real_scope, golden_is_tuning=True, ai_judge=stale.as_contract()),
+            _inputs(real_scope, ai_judge=stale.as_contract()),
             new_ctx(real_scope),
         )
         assert called["n"] == 1, "摘要不匹配必须重判"

@@ -236,9 +236,9 @@ def _input_for(scope: Scope, *, ai_judge: Optional[AiJudgeResult] = None):
         from app.modules.evaluation import golden_builder
 
         with session_scope() as db:
-            golden, golden_is_tuning = golden_builder.find_for_scope_ex(db, scope)
+            golden, _is_tuning = golden_builder.find_for_scope_ex(db, scope)
     except Exception:  # noqa: BLE001
-        golden, golden_is_tuning = None, False
+        golden = None
 
     # 媒体：``source_asset_coverage`` 的分母（此前不传 → 该指标永远 not_evaluated，
     # 而实际上 media 表里有真实数据）。
@@ -252,7 +252,7 @@ def _input_for(scope: Scope, *, ai_judge: Optional[AiJudgeResult] = None):
 
     return EvaluationInput(
         scope=scope, statements=statements, answers=answers, media=media,
-        golden=golden, golden_is_tuning=golden_is_tuning,
+        golden=golden,
         navigation_checks=_navigation_checks(scope),
         ai_judge=ai_judge,
     )

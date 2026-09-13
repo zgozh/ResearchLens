@@ -53,7 +53,7 @@ const LEGACY = {
   overall_score_available: false,
   ai_overall_score: 86.67,
   ai_overall_score_available: true,
-  overall_score_basis: 'ai_judge',
+  overall_score_basis: 'ai_generated',
 };
 
 console.log('evalMetrics 测试');
@@ -142,10 +142,33 @@ check('7. 声称 measured 却没有值 → unparsable（不静默）', () => {
   assert.strictEqual(views[0]!.status, 'unparsable');
 });
 
-check('8. 人工口径与 AI 口径分开，互不回退', () => {
+check('8. 主分是单一 AI 口径，且必须标明来源（R4-M5 改写）', () => {
+  // 原语义为什么失效：此用例此前断言 `o.human === null && o.ai === 86.67`
+  // （"人工口径与 AI 口径分开"）。决策 3 删除了人工维度，双口径结构随之收敛为
+  // `{score, basis}` —— 但"来源必须可见"这条纪律保留，所以 basis 必须为 ai_generated。
   const o = parseOverall(CANONICAL, LEGACY);
-  assert.strictEqual(o.human, null, '人工真值未确认时必须为 null');
-  assert.strictEqual(o.ai, 86.67);
+  assert.strictEqual(o.score, 86.67, '主分取 AI 口径值');
+  assert.strictEqual(o.basis, 'ai_generated', '分数来源必须可见：AI 判定 ≠ 人工评审');
+  assert.ok(!('human' in o), '人工口径字段已删除');
+  assert.ok(!('ai' in o), '双口径结构已收敛');
+});
+
+check('8b. 无值时 score 与 basis 都为 null（不谎称来源）', () => {
+  const o = parseOverall([], {});
+  assert.strictEqual(o.score, null);
+  assert.strictEqual(o.basis, null);
+});
+
+check('8c. 显式声明了 basis 时以声明为准', () => {
+  const o = parseOverall([], { overall_score: 60, overall_score_basis: 'ai_generated' });
+  assert.strictEqual(o.score, 60);
+  assert.strictEqual(o.basis, 'ai_generated');
+});
+
+check('8d. 旧报告的 ai_overall_score 仍能读到（过渡期兼容）', () => {
+  const o = parseOverall([], { ai_overall_score: 55 });
+  assert.strictEqual(o.score, 55);
+  assert.strictEqual(o.basis, 'ai_generated', '缺失声明时按 AI 口径处理，绝不谎称人工审核');
 });
 
 check('9. 原因码翻人话；缺原因时说"原因未记录"而不是留空', () => {

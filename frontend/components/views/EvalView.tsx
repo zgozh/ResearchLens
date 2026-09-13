@@ -21,7 +21,7 @@ import { Gauge, ShieldAlert, CheckCircle2, ListChecks, Info } from 'lucide-react
 import type { EvaluationReport } from '@/lib/contracts';
 import type { ClaimSummary, EvaluationOut } from '@/lib/types';
 import { Badge, GlassCard, Kicker, Meter } from '@/components/ui';
-import { buildMetricViews, findConflicts, NOT_APPLICABLE_REASONS, reasonText } from '@/lib/evalMetrics';
+import { buildMetricViews, findConflicts, NOT_APPLICABLE_REASONS, parseOverall, reasonText } from '@/lib/evalMetrics';
 
 /** canonical 比率型指标（值域 0–1，展示为百分比）。 */
 const RATIO_METRICS: { key: string; label: string; color: string; hint?: string }[] = [
@@ -32,8 +32,10 @@ const RATIO_METRICS: { key: string; label: string; color: string; hint?: string 
   { key: 'support_precision', label: '证据支撑精确率', color: '#A78BFA' },
   { key: 'support_recall', label: '证据支撑召回率', color: '#8B5CF6', hint: '需要 Golden Set 真值' },
   { key: 'unsupported_fact_escape_rate', label: '无支撑事实逃逸率（目标 ≈ 0）', color: '#F43F5E' },
-  { key: 'unanswerable_refusal_rate', label: '不可答问题拒答率', color: '#F59E0B' },
-  { key: 'answerable_false_refusal_rate', label: '可答问题误拒率', color: '#FB923C' },
+  // R4-M3/M5：不可答题**诚实率**取代旧的"拒答率"；`answerable_false_refusal_rate`
+  // 已删除（它测的"可答题被误拒"行为随"拒答退出产品语义"一并消失，留着就是恒 0 的假指标）。
+  { key: 'unanswerable_honesty_rate', label: '不可答问题如实率', color: '#F59E0B',
+    hint: '对真正不可答的问题，是否如实说明论文没有依据' },
   { key: 'recovery_success_rate', label: '失败恢复成功率', color: '#64748B' },
 ];
 
@@ -83,21 +85,15 @@ export function EvalView({
   const reasonOf = (name: string) => viewByName.get(name)?.reason ?? legacyReasons[name];
   // proxy 指标：值算出来了、但口径是"间接测量"，必须**标着 proxy 显示**而不是当未评测藏起来。
   const isProxy = (name: string) => viewByName.get(name)?.status === 'proxy';
-  const scoreValue = toNumber(report?.overall_score) ?? toNumber(evalData.overall_score);
-  // 「可用」必须由后端显式声明，且分数确实是数字；否则一律按未评测处理。
+  // R4-M5（ADR D-105）：主分 = **AI 质量评分（自动）**，单一口径。
+  // 旧的双口径（人工真值 / AI）已随"取消一切跟人工有关的"删除。
+  const overall = parseOverall(report?.metrics ?? null, evalData.metrics ?? null);
+  const aiScoreValue = overall.score;
+  const humanScore = aiScoreValue;   // 主位就是它（保留变量名以免大改 JSX）
   const scoreAvailable =
-    evalData.metrics?.overall_score_available !== false && scoreValue !== null;
-  // **AI 口径**综合分（ADR-0056）：人工真值缺失时由 LLM 语义裁判给出，标着口径显示，
-  // 绝不与人工真值口径混为一谈。展示优先级：人工真值 > AI 裁判 > 未评测。
-  const aiScoreValue = toNumber(evalData.metrics?.ai_overall_score);
-  const aiScoreAvailable =
-    !scoreAvailable &&
-    evalData.metrics?.ai_overall_score_available !== false &&
-    aiScoreValue !== null;
-  // M9：**两个口径分开**，互不顶替 —— 人工真值未确认时主位显示"未确认"，
-  // AI 口径单独成卡并带徽标（此前 AI 值会直接顶到人工位上，容易被读成"论文评分 86 分"）。
-  const humanScore = scoreAvailable ? scoreValue : null;
-  const hasAnyScore = humanScore !== null || aiScoreAvailable;  // 供下方提示复用
+    humanScore !== null && evalData.metrics?.overall_score_available !== false;
+  const aiScoreAvailable = false;    // 已合并到主位，不再有副卡
+  const hasAnyScore = humanScore !== null;
 
   const claimCount = claims?.length ?? 0;
   const supportedCount = claims?.filter((c) => c.status === 'SUPPORTED').length ?? 0;
@@ -105,9 +101,9 @@ export function EvalView({
   const unsupportedRate = metricValue('unsupported_fact_escape_rate');
   // **只有真的算出来过**才允许说"通过"；null 必须显示"未评测"。
   const gatePassed = unsupportedRate !== null && unsupportedRate === 0;
-  // 金标集来源：机器构造的集合**不是人工真值**（规格 §5.9），不能让它给自己打分。
-  const goldenTuning = (report?.warnings ?? []).some(
-    (w) => w.code === 'golden_not_annotated',
+  // R4-M5：金标集只有一种形态（AI 从原文构造），说明性告警取代"待人工确认"。
+  const goldenAiConstructed = (report?.warnings ?? []).some(
+    (w) => w.code === 'golden_ai_constructed',
   );
 
   return (
@@ -115,7 +111,7 @@ export function EvalView({
       {/* 总评 */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[300px,1fr]">
         <GlassCard className="flex flex-col items-center justify-center p-6 text-center">
-          <Kicker className="mb-3">综合评分（人工真值口径）</Kicker>
+          <Kicker className="mb-3">AI 质量评分（自动）</Kicker>
           {humanScore !== null ? (
             <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
               className="relative grid h-40 w-40 place-items-center">
@@ -137,11 +133,9 @@ export function EvalView({
           ) : (
             <div className="grid h-40 w-40 place-items-center rounded-full border border-dashed border-white/15">
               <div>
-                <div className="text-2xl font-bold text-slate-400">
-                  {aiScoreAvailable ? '未确认' : '未评测'}
-                </div>
+                <div className="text-2xl font-bold text-slate-400">未评测</div>
                 <div className="mt-1 font-mono text-[10px] uppercase text-slate-600">
-                  {aiScoreAvailable ? 'NOT CONFIRMED' : 'NOT EVALUATED'}
+                  NOT EVALUATED
                 </div>
               </div>
             </div>
@@ -149,21 +143,10 @@ export function EvalView({
           <div className="mt-4 flex items-center gap-1.5 text-[11px] text-slate-500">
             <Gauge className="h-3.5 w-3.5" /> 自动质量评测
           </div>
-          {aiScoreAvailable && (
-            <div className="mt-3 w-full rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-left">
-              <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-200">
-                <ShieldAlert className="h-3.5 w-3.5" /> AI 评分（非人工真值）
-              </div>
-              <div className="mt-0.5 font-mono text-lg text-amber-100">
-                {Math.round(aiScoreValue as number)}
-                <span className="ml-1 text-[10px] text-amber-300/70">/ 100</span>
-              </div>
-              <p className="mt-1 text-[10px] leading-relaxed text-amber-300/70">
-                由 LLM 语义裁判给出（support_precision/recall 为 proxy），金标集未经人工确认；
-                <strong>不等于</strong>人工真值分，也不与上面的综合评分互相顶替。
-              </p>
-            </div>
-          )}
+          {/* R4-M5 决策底线 2：分数来源必须可见 —— 删掉人工口径不等于不标来源。 */}
+          <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
+            由 AI 裁判与程序测量自动得出，<strong>非人工评审</strong>。
+          </p>
         </GlassCard>
 
         <GlassCard className="p-6">
@@ -172,16 +155,12 @@ export function EvalView({
             <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-[12px] text-amber-200">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
               <span>
-                {scoreAvailable ? null : aiScoreAvailable ? (
-                  <>
-                    人工真值口径的综合评分仍不出（金标集是机器从原文构造的草案，未人工确认）——
-                    避免"让模型给自己出卷子"。左侧单独列出 AI 口径分数，两者互不顶替。
-                  </>
-                ) : goldenTuning ? (
-                  '综合评分尚未产出：金标集是机器从原文自动构造的草案，未经过人工确认，'
-                  + '因此不当作真值（避免"让模型给自己出卷子"）；AI 裁判本次也未给出结论。'
+                {goldenAiConstructed ? (
+                  'AI 质量评分尚未产出：金标集由 AI 从原文构造，AI 裁判本次未给出结论'
+                  + '（support_precision/recall 因此不可用）；主分不以 0 冒充。'
                 ) : (
-                  '本篇尚未产出可用的综合评分：核心指标缺真值（需要 Golden Set 与已跑通的问答轨迹）。'
+                  '本篇尚未产出可用的 AI 质量评分：核心指标缺样本'
+                  + '（需要金标集、引文跨度与已跑通的问答轨迹）。'
                 )}
                 界面不以 0 分冒充通过，缺失项一律标注"未评测"。
               </span>
@@ -227,12 +206,10 @@ export function EvalView({
       <GlassCard className="p-6">
         <div className="mb-4 flex items-center gap-2">
           <Kicker>评测指标 · METRICS</Kicker>
-          {goldenTuning ? (
-            <Badge tone="amber">金标集待人工确认</Badge>
-          ) : report?.golden_id ? (
-            <Badge tone="emerald">Golden Set 已确认</Badge>
+          {report?.golden_id ? (
+            <Badge tone="emerald">金标集：AI 构造</Badge>
           ) : (
-            <Badge tone="amber">缺少 Golden Set</Badge>
+            <Badge tone="amber">缺少金标集</Badge>
           )}
           {report?.version && (
             <span className="font-mono text-[10px] text-slate-500">{report.version}</span>
@@ -258,7 +235,7 @@ export function EvalView({
                 <Meter value={value * 100} label={meta.label} color={meta.color} />
                 {isProxy(meta.key) ? (
                   <p className="mt-1 text-[10px] text-amber-300/70">
-                    proxy：间接口径（规格允许报告但必须标明），非人工真值
+                    proxy：间接口径（AI 判定或间接测量，必须标明来源）
                   </p>
                 ) : (
                   meta.hint && <p className="mt-1 text-[10px] text-slate-600">{meta.hint}</p>

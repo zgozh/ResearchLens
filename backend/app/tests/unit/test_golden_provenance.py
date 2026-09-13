@@ -1,18 +1,23 @@
-"""金标集来源纪律：**机器构造的集合不得当人工真值**（ADR-0050）。
+"""金标集来源纪律 —— **R4-M5 按新语义重写**（ADR D-105，推翻 D-50）。
 
-规格（`docs/REFACTOR_SPEC.md:613`）明确：
+原语义为什么失效（逐条说明，不是"删掉不测了"）：
 
-> 自动流水线只可报告可直接测量项或 proxy；**support precision/recall 等必须有标注集
-> 才叫 measured**。……只在**包含人工真值的核心指标均可测**时计算 overall_score；
-> 否则 canonical null。
+本文件此前钉死的是 D-50：「机器构造的集合**不得当人工真值**；未走
+``POST /golden-set/confirm`` 人工确认前，precision/recall 一律 not_evaluated、
+``overall_score`` 保持 null」。这条纪律在**当时**是对的（防止"让机器给自己出卷子"）。
 
-而我上一轮把"机器从原文自动构造的金标集"直接当成了真值 → `support_precision` 被
-算成 measured、`overall_score` 出了 60/55/75。**那等于让机器给自己出卷子**，
-既违反规格也违背"不以假数字冒充"的产品纪律。本文件把它钉死：
+R4 的产品决策（用户拍板："取消一切跟人工有关的，那个自动评测直接全部 ai 评 ai 打分"）
+推翻了它，理由是**真实约束**：人工确认在真实使用中永远不会发生（单人参赛、没有标注人力），
+于是主分恒为 null，界面只能永远显示"未确认"，用户永远看不到分数。
 
-- 未确认（`is_tuning=True`）→ precision/recall 一律 ``not_evaluated`` + 告警，
-  综合评分保持 **null**（proxy 数值写进告警便于排查，但不当真值）；
-- 走 ``POST /golden-set/confirm`` 人工确认后 → 才算 measured、才允许出分。
+**新语义**（本文件现在锁住的）：
+- 金标集只有一种形态：AI/确定性构造，**需要标注的是来源而不是等人工确认**；
+- ``support_precision/recall`` 一律走 **AI 裁判语义判等**，状态 `proxy`（**不是** measured）；
+- ``overall_score`` 是**主分**且**允许 proxy 参与**，带 ``overall_score_basis="ai_generated"``；
+- **保留的纪律**（这才是 D-50 里真正不能丢的部分）：
+  1. proxy 就是 proxy，不许声称 measured；
+  2. AI 裁判没出结论时 → ``not_evaluated`` + 原因告警，**绝不用 0 冒充**；
+  3. 分数来源必须对用户可见（`overall_score_basis`）。
 """
 from __future__ import annotations
 
@@ -87,8 +92,8 @@ def world():
 
 
 class TestGoldenProvenance:
-    def test_auto_built_set_is_marked_tuning(self, world):
-        """默认构造出来的集合必须是**调参集**（机器构造、待人确认）。"""
+    def test_auto_built_set_is_selectable(self, world):
+        """构造出来的集合必须可被评测选中（不再有"待人工确认"这个前置状态）。"""
         from app.core.db import session_scope
         from app.modules.evaluation import golden_builder
 
@@ -98,67 +103,82 @@ class TestGoldenProvenance:
             golden, is_tuning = golden_builder.find_for_scope_ex(db, scope)
 
         assert golden is not None
-        assert is_tuning is True, "机器自动构造的金标集不得被当成人工真值"
-
-    def test_confirm_clears_tuning_flag(self, world):
-        from app.core.db import session_scope
-        from app.modules.evaluation import golden_builder
-
-        scope = world["scope"]
-        golden_builder.build_and_save(scope)
-        confirmed = golden_builder.confirm_for_scope(scope)
-
-        assert confirmed is not None
-        with session_scope() as db:
-            _golden, is_tuning = golden_builder.find_for_scope_ex(db, scope)
-        assert is_tuning is False, "确认后必须不再标为调参集"
-
-    def test_confirm_without_set_returns_none(self, world):
-        from app.modules.evaluation import golden_builder
-
-        assert golden_builder.confirm_for_scope(world["scope"]) is None
-
-
-class TestEvaluationRespectsProvenance:
-    def test_tuning_set_keeps_score_null_and_reports_proxy(self, world):
-        """**核心纪律**：调参集不得让 precision 变 measured，也不得算出 overall_score。"""
-        from app.modules.evaluation import golden_builder, legacy as eval_legacy
-        from app.modules.evaluation import service as eval_service
-
-        scope = world["scope"]
-        golden_builder.build_and_save(scope)   # annotated=False → 调参集
-
-        payload = eval_legacy._input_for(scope)
-        assert payload.golden is not None and payload.golden_is_tuning is True
-
-        report = eval_service.compute(payload)
-
-        precision = report.metric("support_precision")
-        assert precision is not None and precision.status == "not_evaluated", \
-            f"调参集不得让 precision 变 measured：{precision}"
-        assert report.overall_score is None, \
-            f"调参集不得算出综合评分（会变成机器给自己打分）：{report.overall_score}"
-        codes = [w.code for w in report.warnings]
-        assert "golden_not_annotated" in codes, codes
-
-    def test_confirmed_set_allows_measured_metrics(self, world):
-        """人工确认后，precision/recall 才允许 measured（此例无预测断言 → 仍可能 not_evaluated，
-        但**原因不能是"未确认"**）。"""
-        from app.core.db import session_scope
-        from app.modules.evaluation import golden_builder, legacy as eval_legacy
-        from app.modules.evaluation import service as eval_service
-
-        scope = world["scope"]
-        golden_builder.build_and_save(scope)
-        golden_builder.confirm_for_scope(scope)
-
-        payload = eval_legacy._input_for(scope)
-        with session_scope() as db:
-            _g, is_tuning = golden_builder.find_for_scope_ex(db, scope)
+        # `is_tuning` 是保留的历史返回位（恒 False），不再承载产品语义
         assert is_tuning is False
-        assert payload.golden_is_tuning is False
+
+    def test_confirm_machinery_is_deleted(self, world):
+        """人工确认环节**删除**（不是留着不用）。"""
+        from app.modules.evaluation import golden_builder
+
+        assert not hasattr(golden_builder, "confirm_for_scope")
+
+    def test_build_and_save_takes_no_annotated_flag(self, world):
+        """`annotated=` 参数随人工确认一并删除：金标集只有一种形态。"""
+        import inspect
+
+        from app.modules.evaluation import golden_builder
+
+        params = inspect.signature(golden_builder.build_and_save).parameters
+        assert "annotated" not in params, params
+
+
+class TestEvaluationUnderNewSemantics:
+    def test_support_is_proxy_not_measured(self, world, monkeypatch):
+        """**保留的纪律**：AI 裁判给的 precision 是 proxy，**不许声称 measured**。"""
+        from app.modules.evaluation import golden_builder, legacy as eval_legacy
+        from app.modules.evaluation import service as eval_service
+
+        scope = world["scope"]
+        golden_builder.build_and_save(scope)
+
+        payload = eval_legacy._input_for(scope)
+        assert payload.golden is not None
+        assert not hasattr(payload, "golden_is_tuning"), "该字段已随人工确认删除"
+
+        # 无 LLM → AI 裁判不可用 → not_evaluated（**不是 0**），并给出说明性告警
+        report = eval_service.compute(payload)
+        precision = report.metric("support_precision")
+        assert precision is not None
+        assert precision.status in ("proxy", "not_evaluated"), precision.status
+        assert precision.status != "measured", "AI 裁判结果不得声称是 measured"
+        codes = [w.code for w in report.warnings]
+        assert "golden_not_annotated" not in codes, "人工语义告警必须清零"
+        assert "golden_ai_constructed" in codes, codes
+
+    def test_judge_available_yields_ai_basis_score(self, world, monkeypatch):
+        """AI 裁判有结论 → 主分可算且标明 `ai_generated`（这正是决策 3/4 要的效果）。"""
+        from app.contracts.evaluation import AiJudgeResult
+        from app.modules.evaluation import golden_builder, legacy as eval_legacy
+        from app.modules.evaluation import service as eval_service
+
+        scope = world["scope"]
+        golden_builder.build_and_save(scope)
+        payload = eval_legacy._input_for(scope)
+        payload = payload.model_copy(update={"ai_judge": AiJudgeResult(
+            matches=[], true_positive=0, total_predicted=0, total_golden=1,
+            model="judge", digest="d", judge_version="v1",
+        )})
 
         report = eval_service.compute(payload)
-        codes = [w.code for w in report.warnings]
-        assert "golden_not_annotated" not in codes, \
-            f"已确认的集合不该再报'未人工确认'：{codes}"
+        precision = report.metric("support_precision")
+        if precision is not None and precision.status == "proxy":
+            # 主分若可算，来源必须写明；若核心指标仍缺样本则必须为 None（不许 0）
+            if report.overall_score is not None:
+                assert report.overall_score_basis == "ai_generated"
+            else:
+                assert any(w.code == "ai_overall_not_evaluated" for w in report.warnings)
+        assert not any(w.code == "golden_not_annotated" for w in report.warnings)
+
+    def test_missing_core_metric_never_zero(self, world):
+        """**底线**：核心指标缺样本 → 主分为 None（不以 0 冒充）。"""
+        from app.modules.evaluation import golden_builder, legacy as eval_legacy
+        from app.modules.evaluation import service as eval_service
+
+        scope = world["scope"]
+        golden_builder.build_and_save(scope)
+        report = eval_service.compute(eval_legacy._input_for(scope))
+        if report.overall_score is None:
+            assert report.overall_score_basis is None
+            assert any(w.code == "ai_overall_not_evaluated" for w in report.warnings)
+        else:
+            assert report.overall_score_basis == "ai_generated"

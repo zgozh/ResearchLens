@@ -25,10 +25,14 @@ export interface MetricView {
 }
 
 export interface OverallView {
-  /** 人工真值口径（需人工确认金标集才有值）。 */
-  human: number | null;
-  /** AI 裁判口径（**不是**人工真值，必须分开显示）。 */
-  ai: number | null;
+  score: number | null;
+  /**
+   * 分数**来源**。产品里只有一种来源（AI 裁判 + 程序测量自动得出），
+   * 契约值为 `'ai_generated'`；类型保留 `string` 是为了**原样透传**后端声明
+   * （宁可显示一个我们不认识但真实的来源码，也不要把它硬改成我们知道的那个）。
+   * 无值时一律 null —— 不谎称来源。
+   */
+  basis: string | null;
 }
 
 /** `metrics` 里属于**元信息**而非指标本身的键，不参与指标列表。 */
@@ -165,20 +169,49 @@ export function buildMetricViews(canonical: unknown, legacy: unknown): MetricVie
   return [...views.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** 人工口径与 AI 口径**分开**返回，互不回退（人工无值时不得用 AI 值顶替）。 */
+/**
+ * **主分 = AI 质量评分（自动）**（R4-M5 / ADR D-105）。
+ *
+ * 为什么不再有 human/ai 双口径：用户拍板"取消一切跟人工有关的……把综合评分右边的
+ * （人工真值口径）字段删掉"。人工确认在真实使用中永远不会发生，双口径的结果就是
+ * 主位永远显示"未确认"、用户永远看不到分数。
+ *
+ * 但**来源标注纪律保留**：`basis` 必须能表达"这个分数是 AI 判定 + 程序测量自动得出的"，
+ * 不是人工评审 —— 所以返回 `{ score, basis }` 而不是单一个数字。
+ */
+export interface OverallView {
+  score: number | null;
+  /**
+   * 分数**来源**。产品里只有一种来源（AI 裁判 + 程序测量自动得出），
+   * 契约值为 `'ai_generated'`；类型保留 `string` 是为了**原样透传**后端声明
+   * （宁可显示一个我们不认识但真实的来源码，也不要把它硬改成我们知道的那个）。
+   * 无值时一律 null —— 不谎称来源。
+   */
+  basis: string | null;
+}
+
 export function parseOverall(canonical: unknown, legacy: unknown): OverallView {
-  const fromLegacy = (key: string): number | null =>
+  const fromLegacy = (key: string): unknown =>
     legacy && typeof legacy === 'object' && !Array.isArray(legacy)
-      ? toNumber((legacy as Record<string, unknown>)[key])
+      ? (legacy as Record<string, unknown>)[key]
       : null;
   const fromCanonical = (key: string): number | null => {
     const views = buildMetricViews(canonical, null);
     return views.find((v) => v.name === key)?.value ?? null;
   };
-  return {
-    human: fromCanonical('overall_score') ?? fromLegacy('overall_score'),
-    ai: fromCanonical('ai_overall_score') ?? fromLegacy('ai_overall_score'),
-  };
+  // 分数：canonical 主分优先，旧投影的 `overall_score` 兜底；
+  // 再退到已废弃的 `ai_overall_score`（过渡期内它与主分同值）。
+  const score =
+    fromCanonical('overall_score')
+    ?? toNumber(fromLegacy('overall_score'))
+    ?? fromCanonical('ai_overall_score')
+    ?? toNumber(fromLegacy('ai_overall_score'));
+  if (score === null) return { score: null, basis: null };
+  // 来源：优先读后端显式声明的 basis；缺失（旧报告）时按"这就是 AI 口径分"处理，
+  // 因为决策 3 之后**不存在**人工口径的分了 —— 绝不谎称人工审核过。
+  const declared = fromLegacy('overall_score_basis');
+  const basis = typeof declared === 'string' && declared ? declared : 'ai_generated';
+  return { score, basis };
 }
 
 /** 不可测（设计上测不了）与"暂时没有真值"是两件事，UI 要分开显示。 */
@@ -241,7 +274,8 @@ export function reasonText(code?: string): string {
 export const REASON_TEXT: Record<string, string> = {
   source_pdf_has_no_coordinate_rects: '原文 PDF 未提供坐标矩形，该指标设计上不可测（拒绝编造 IoU）',
   usage_missing_in_answer_rows: '作答记录里没有 token / 时延用量',
-  no_golden_truth: '缺少人工确认的参考断言（AI 起草的只能算 proxy）',
+  no_golden_truth: '缺少参考断言（AI 从原文构造或句子挑选均可）',
+  no_ai_judge: 'AI 裁判本次未给出结论（不以 0 冒充）',
   no_prediction_samples: '本次没有可对比的预测样本',
   no_quote_spans: '没有可核对的引文跨度',
   no_navigation_checks: '没有导航校验样本',

@@ -514,10 +514,14 @@ def build_golden_set_ai(scope: Scope, ctx=None) -> GoldenSet:
 
 
 def build_and_save_ai(scope: Scope, ctx=None) -> GoldenSet:
-    """起草并持久化 AI 参考集（仍按**调参集**保存：AI 起草 ≠ 人工确认）。
+    """起草并持久化 AI 参考集。
+
+    R4-M5（ADR D-105）：**"调参集 / 人工确认集"的区分已删除** —— 产品里不再有人工确认，
+    金标集只剩一种形态（AI 从原文构造）。DB 的 ``is_tuning`` 列保留但不再承载语义，
+    写入恒为 ``False``（列是历史遗留，删列需要迁移，而它已不影响任何行为）。
 
     **题目与锚点仍用确定性构造**：AI 只负责 ``claims``（关键断言）。
-    理由：拒答率指标需要"不可答题"的分母，而"不可答"必须是**程序验证术语全文不出现**
+    理由：诚实率指标需要"不可答题"的分母，而"不可答"必须是**程序验证术语全文不出现**
     （ADR-0046 的纪律），不能交给模型自由发挥。所以这里把 ``build_golden_set`` 的
     questions/anchors 合并进来，两类来源各司其职。
     """
@@ -538,41 +542,21 @@ def build_and_save_ai(scope: Scope, ctx=None) -> GoldenSet:
         pass
     with session_scope() as db:
         golden_mod.save_golden_set(
-            db, golden, blob_id=f"{golden.id}:{golden.version}", is_tuning=True,
+            db, golden, blob_id=f"{golden.id}:{golden.version}", is_tuning=False,
         )
     return golden
 
 
-def build_and_save(scope: Scope, *, annotated: bool = False) -> GoldenSet:
+def build_and_save(scope: Scope) -> GoldenSet:
     """构造并持久化（幂等：同 ``(golden_id, version)`` 覆盖写）。
 
-    ``annotated=False``（默认）→ 记为**调参集**（``is_tuning=True``）：
-    机器从原文自动构造、**未经人工确认**，因此按规格不参与对外报告
-    （``golden.py`` 的既有约定），评测侧会把 precision/recall 降级为 not_evaluated。
-    只有 ``annotated=True``（人工确认过）才算真值、才允许出综合评分。
+    R4-M5（ADR D-105）：``annotated`` 参数与"人工确认"语义一并删除 ——
+    金标集只有一种形态，评测侧统一按 **AI 口径**出分并标注来源。
     """
     from . import golden as golden_mod
 
     golden = build_golden_set(scope)
     with session_scope() as db:
-        golden_mod.save_golden_set(
-            db, golden, blob_id=f"{golden.id}:{golden.version}",
-            is_tuning=not annotated,
-        )
-    return golden
-
-
-def confirm_for_scope(scope: Scope) -> Optional[GoldenSet]:
-    """把该 revision 的金标集**标记为人工确认**（``is_tuning=False``）。
-
-    语义即"人工复核通过"：调用方（admin）承担确认责任。返回 ``None`` 表示没有可确认的集合。
-    """
-    from . import golden as golden_mod
-
-    with session_scope() as db:
-        golden, _is_tuning = find_for_scope_ex(db, scope)
-        if golden is None:
-            return None
         golden_mod.save_golden_set(
             db, golden, blob_id=f"{golden.id}:{golden.version}", is_tuning=False,
         )
@@ -582,17 +566,15 @@ def confirm_for_scope(scope: Scope) -> Optional[GoldenSet]:
 #: 参考集来源优先级（越小越优先）——**决定评测用哪一版**（ADR-0065）。
 #: 此前只看 ``created_at`` 最新：同一篇建了 AI 版之后再重建句子版，评测会**悄悄换回旧版**，
 #: 用户完全看不出来（实测 paper 7 的评测就用了句子版，precision 因此停在 0.0）。
-#: 优先级：人工确认过的 > AI 起草的（与抽取断言更对齐、引文可溯源）> 句子挑选的。
+#: 优先级：AI 起草的（与抽取断言更对齐、引文可溯源）> 句子挑选的。
 _VERSION_PRIORITY = (
     ("rl.golden.ai", 0),   # AI 起草
     ("rl.golden/", 1),     # 句子挑选
 )
 
 
-def _source_rank(version: str, is_tuning: bool) -> int:
-    """越小越优先；不是调参集（人工确认过）的一律最优先。"""
-    if not is_tuning:
-        return -1
+def _source_rank(version: str) -> int:
+    """越小越优先。R4-M5：不再看 ``is_tuning``（该概念已删除），只看来源版本。"""
     for prefix, rank in _VERSION_PRIORITY:
         if str(version or "").startswith(prefix):
             return rank
@@ -602,9 +584,11 @@ def _source_rank(version: str, is_tuning: bool) -> int:
 def find_for_scope_ex(db, scope: Scope) -> Tuple[Optional[GoldenSet], bool]:
     """找该 revision 的参考集，并返回 ``(golden, is_tuning)``。
 
-    **选择规则是确定性的**：先按来源优先级（人工确认 > AI 起草 > 句子挑选），
-    同优先级再取 ``created_at`` 最新。这样"用哪一版"可预测、可解释，
-    不会因为"谁最后被重建"而变。
+    第二个返回值是**历史遗留**（恒为 ``False``）：``is_tuning`` 概念随决策 3 删除，
+    但保留二元返回形态以免改动所有调用点；新代码不应再据此分支。
+
+    **选择规则是确定性的**：先按来源优先级（AI 起草 > 句子挑选），同优先级再取
+    ``created_at`` 最新。这样"用哪一版"可预测、可解释，不会因为"谁最后被重建"而变。
     """
     from sqlalchemy import select
 
@@ -621,14 +605,14 @@ def find_for_scope_ex(db, scope: Scope) -> Tuple[Optional[GoldenSet], bool]:
         if golden is None:
             continue
         if golden_mod.golden_scope_ok(golden, scope.paper_id, scope.revision_id):
-            candidates.append((_source_rank(row.version, bool(row.is_tuning)),
+            candidates.append((_source_rank(row.version),
                                -float(row.created_at.timestamp() if row.created_at else 0.0),
-                               golden, bool(row.is_tuning)))
+                               golden))
     if not candidates:
         return None, False
     candidates.sort(key=lambda c: (c[0], c[1]))
-    _rank, _ts, golden, is_tuning = candidates[0]
-    return golden, is_tuning
+    _rank, _ts, golden = candidates[0]
+    return golden, False
 
 
 def find_for_scope(db, scope: Scope) -> Optional[GoldenSet]:
@@ -640,7 +624,6 @@ __all__ = [
     "GOLDEN_VERSION",
     "build_golden_set",
     "build_and_save",
-    "confirm_for_scope",
     "find_for_scope",
     "find_for_scope_ex",
 ]

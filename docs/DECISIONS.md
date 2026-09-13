@@ -2065,3 +2065,39 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
   `_legacy_mode`）映射：带"对象缺席"note → `not_mentioned`，否则 → `unavailable`。
   实测真实历史形态：旧代码里 `mode='abstained'` **只**由"没找到证据"产出（对象缺席那条路产的
   是 `not_mentioned`），所以绝大多数历史行落 `unavailable`。
+
+---
+
+## D-105 产品决策：**取消人工真值维度，自动评测全面 AI 化**（R4-M5，推翻 D-50/D-65）
+
+- **谁要求的**：用户原话——"我建议就是直接取消一切跟人工有关的，那个自动评测直接全部 ai 评 ai 打分。"
+  + "综合评分，各项指标什么率的全部 ai 直接完成，取消人工操作并且把综合评分右边的
+  （人工真值口径）字段删掉。" + 拍板"人工有关的全部删掉""那就改成『AI 质量评分（自动）』"。
+- **推翻了什么**：
+  - **D-50**「机器构造的集合不得当人工真值；`support_precision/recall` 必须有标注集才叫 measured」；
+  - 人工确认链路：`POST /papers/{id}/golden-set/confirm` 端点、`golden_builder.confirm_for_scope`、
+    `EvaluationInput.golden_is_tuning` 字段、`build_and_save(annotated=)` 参数、
+    `golden.py` 的 `is_tuning` 优先级（ORM 列保留，不再承载语义）；
+  - 人工口径函数 `metrics.compute_overall` / `core_metric_missing`（**删除**，不是保留不用）；
+  - 人工语义告警码 `golden_not_annotated` / `overall_not_evaluated`。
+- **为什么（真实约束）**：人工确认在真实使用中**永远不会发生**（单人参赛、没有标注人力），
+  于是主分恒为 `null`、界面永远显示"未确认"，用户永远看不到分数 —— 一条永不触发的纪律
+  等于把产品功能关掉。
+- **新语义**：
+  - `overall_score` = **主分「AI 质量评分（自动）」**，用 `compute_ai_overall` 算
+    （公式不变：0.4·support_precision + 0.2·quote_exact_rate + 0.2·anchor_page_accuracy
+    + 0.2·unanswerable_honesty_rate），允许 `support_precision` 以 **proxy**（AI 裁判语义判等）参与；
+  - 新增 **`overall_score_basis`** 字段（契约值 `"ai_generated"`），前端主卡下方固定一行小字
+    "由 AI 裁判与程序测量自动得出，非人工评审"；
+  - 金标集只剩一种形态（AI/确定性构造），`GET golden-set` 的 `status` 改为
+    `ai_constructed（AI 从原文构造，非人工评审）`，`is_tuning` 字段从响应删除。
+- **保留的纪律（D-50 里真正不能丢的部分）**：
+  1. **proxy 就是 proxy**，不许声称 measured（AI 裁判给的支持度永远是 `proxy`）；
+  2. AI 裁判没出结论 → `not_evaluated` + 原因码（`no_ai_judge`），**绝不用 0 冒充**；
+  3. 核心指标缺失 → `overall_score=null` + 告警 `ai_overall_not_evaluated`（缺哪项列哪项）；
+  4. **来源可追溯**：`overall_score_basis` + 主卡小字 + "金标集：AI 构造"徽标三处显式传达。
+- **代价**：分数失去人工校验背书。缓解 = 上述第 4 条的三处标注，**不遮不掩**。
+- **实测**：后端 `pytest` **935 passed / 0 failed**（M3 的 917 + 新增 12 + 改写若干）；
+  前端 `test:lib` **96 项**全绿。
+- **兼容**：`ai_overall_score` 字段保留一个版本周期（与主分同值，deprecated），
+  前端 `parseOverall` 仍能读旧报告；`is_tuning` DB 列保留（删列需要迁移，且已无行为影响）。
