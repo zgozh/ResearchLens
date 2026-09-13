@@ -32,7 +32,7 @@ from app.contracts.qa import (
 )
 from app.core.errors import DomainError, ErrorCode
 
-from . import answer_gate as gate, service as svc
+from . import answer_gate as gate, audit as audit_mod, service as svc
 
 #: heartbeat 间隔（秒）；注释帧不占事件序号
 HEARTBEAT_SECONDS = 10.0
@@ -86,6 +86,21 @@ class EventEncoder:
         return f"retry: {int(ms)}\n\n".encode("utf-8")
 
 
+class _AuditedEncoder(EventEncoder):
+    """记录事件类型序列（M7 审计）：`encode` 是**唯一**出口，挂这里不会漏事件。
+
+    只记类型名、不记正文 —— 审计表体积可控，也避免把答案正文复制一份。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.types: List[str] = []
+
+    def encode(self, event: QAStreamEvent) -> bytes:
+        self.types.append(str(event.type))
+        return super().encode(event)
+
+
 async def stream(
     scope: Scope,
     request: QARequest,
@@ -99,21 +114,26 @@ async def stream(
     前端只能显示"本次回答被中断"。现在**所有**事件都在保护区里，任何异常都收敛成
     ``error`` 终结事件；等待生成期间每 ``HEARTBEAT_SECONDS`` 发一个注释帧保活。
     """
-    encoder = EventEncoder()
+    encoder = _AuditedEncoder()
+    timer = audit_mod.AuditTimer()
+    failure: dict = {"code": None, "exc": None}
+    mode_seen = ""
     terminal = _Terminal()
     request_id = _request_id(ctx)
 
-    # meta：先声明本次回答的身份（answer_id 是断流恢复的凭据）与截止时间
-    yield encoder.encode(_event(
-        encoder.next_id(), request_id, "meta",
-        QAMeta(
-            scope=scope,
-            answer_id=_answer_id(scope, request),
-            deadline_at=getattr(ctx, "deadline_at", None),
-        ),
-    ))
-
     try:
+        # meta：先声明本次回答的身份（answer_id 是断流恢复的凭据）与截止时间。
+        # **必须在 try 内**：客户端只收到 meta 就断开的场景，只有这样才能走到 finally 的
+        # 审计写入（`terminal='none'` 正是"前端显示被中断"的对账数据）。
+        yield encoder.encode(_event(
+            encoder.next_id(), request_id, "meta",
+            QAMeta(
+                scope=scope,
+                answer_id=_answer_id(scope, request),
+                deadline_at=getattr(ctx, "deadline_at", None),
+            ),
+        ))
+
         yield encoder.encode(_event(
             encoder.next_id(), request_id, "status",
             QAStatus(stage="retrieving", message="正在检索论文原文"),
@@ -134,6 +154,7 @@ async def stream(
 
         # status：告知已进入验证/降级/通用回答（ADR-0057）
         mode = str(getattr(record, "mode", "") or "")
+        mode_seen = mode  # M7 审计：本次回答最终落到哪个模式
         if mode in ("general",):
             stage, message = "drafting", "通用回答（未使用论文证据）"
         elif mode in ("abstained", "not_mentioned"):
@@ -173,23 +194,41 @@ async def stream(
                 encoder.next_id(), request_id, "final", final_payload,
             ))
     except _StreamCancelled:
+        failure["code"] = "CANCELLED"
         if terminal.claim("error"):
             yield encoder.encode(_event(
                 encoder.next_id(), request_id, "error",
                 QAError(error=_cancelled_error(), partial=False),
             ))
     except DomainError as exc:
+        failure["code"] = str(getattr(exc.code, "value", exc.code))
         if terminal.claim("error"):
             yield encoder.encode(_event(
                 encoder.next_id(), request_id, "error",
                 QAError(error=exc.to_dict(), partial=False),
             ))
     except Exception as exc:  # noqa: BLE001  未知异常也必须给唯一终态
+        failure["exc"] = type(exc).__name__
         if terminal.claim("error"):
             yield encoder.encode(_event(
                 encoder.next_id(), request_id, "error",
                 QAError(error=_internal_error(exc), partial=False),
             ))
+    finally:
+        # M7 审计：**一次流只写一行**，且**只记日志不改变流**。
+        # 放在 finally 里 → 客户端中途断开（GeneratorExit）也能留下 terminal='none' 的对账行，
+        # 这正是"前端显示被中断"最需要的那条数据。
+        audit_mod.record(
+            paper_id=scope.paper_id,
+            revision_id=scope.revision_id,
+            answer_id=_answer_id(scope, request),
+            mode=mode_seen,
+            events=list(encoder.types),
+            terminal=terminal.sent or "none",
+            error_code=failure["code"],
+            exception_type=failure["exc"],
+            elapsed_ms=timer.elapsed_ms,
+        )
 
     if terminal.sent is None:  # pragma: no cover - 防御性兜底
         terminal.claim("error")

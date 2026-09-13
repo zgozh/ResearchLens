@@ -418,6 +418,19 @@ async def qa_stream(paper_id: int, body: QARequest, revision_id: Optional[str] =
     )
 
 
+@router.get("/papers/{paper_id}/qa/stream-audit")
+def qa_stream_audit(paper_id: int, limit: int = 50):
+    """流式问答审计（M7）：按创建时间倒序列出该 paper 的流式回答对账记录。
+
+    为什么需要：用户报"显示被中断"时，服务端**每次都有 final** —— 没有对账数据就只能靠猜。
+    这里能看到每次流的事件序列、终结类型（`none` = 服务端没发出终结事件，即"被中断"）、
+    错误码与耗时。`events` 只存类型名，不含答案正文。
+    """
+    from app.modules.qa import audit as qa_audit
+
+    return {"paper_id": paper_id, "items": qa_audit.list_audits(paper_id, limit=limit)}
+
+
 @router.get("/papers/{paper_id}/qa/answers/{answer_id}")
 def qa_answer_recover(paper_id: int, answer_id: str, db: Session = Depends(get_db)):
     """断流恢复（REFACTOR_PLAN M6 §5.2）：按 answer_id 取回**已落库**的回答。

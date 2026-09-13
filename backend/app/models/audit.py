@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import List, Optional
 
 from sqlalchemy import (
     JSON,
@@ -97,3 +98,33 @@ class GoldenSetORM(Base):
 
 
 __all__ = ["ReviewORM", "AuditLogORM", "EvaluationReportORM", "GoldenSetORM"]
+
+
+class QaStreamAuditORM(Base):
+    """M7：每次流式问答落一行审计（**不存正文**，只存事件类型序列）。
+
+    `terminal='none'` 表示"服务端没发出任何终结事件" —— 这是"前端显示被中断"
+    的对账数据源；此前线上完全查不到。全部字段从宽（可空），迁移只增不改。
+    """
+
+    __tablename__ = "qa_stream_audits"
+    __table_args__ = (
+        Index("ix_qa_audit_paper_created", "paper_id", "created_at"),
+        Index("ix_qa_audit_answer", "answer_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    paper_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    answer_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    #: 事件类型名序列，如 ["meta","status","citation","sentence","final"]
+    events: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    #: final | error | none（none = 没发出终结事件）
+    terminal: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
+    error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    exception_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    elapsed_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=now
+    )

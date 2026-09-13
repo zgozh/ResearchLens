@@ -1684,3 +1684,27 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
   文案写明"不等于人工真值分，也不与上面的综合评分互相顶替"。
 - **测试/验证**：`tsc --noEmit` 通过；`npm run test:lib` 六套（rich 25 / graph 9 / media 6 /
   policy 7 / eval 12 / verdict 11）+ 展示路径门禁全绿；前端重建后 200。
+
+## D-90 M7 流式审计：把"被中断"变成**可对账的数据**
+
+- **动机（实测矛盾）**：用户报"三条默认问题都显示本次回答被中断"，但我用**完全相同**的
+  POST 复现时服务端**每次都发 final**。问题在客户端侧 —— 可线上**一条对账数据都没有**：
+  事件序列、终结事件有没有出去、客户端是否断开，全都查不到。
+- **做了什么**：
+  - 新表 `qa_stream_audits`（Alembic `0009`，纯 expand：只新增表与索引，字段全可空）：
+    `id, paper_id, revision_id, answer_id, mode, events(JSONB，**只存事件类型名**),
+    terminal, error_code, exception_type, elapsed_ms, created_at`；
+  - `modules/qa/audit.py`：`record()`（**内部 try/except，写失败只记日志**，审计绝不改变流行为）、
+    `list_audits()`（倒序、limit ≤ 200）、`AuditTimer`；
+  - 挂在 `stream.py`：`_AuditedEncoder` 覆盖 `encode()` —— 它是事件的**唯一出口**，
+    挂这里不会漏事件；审计写入放在 `try/finally` 的 `finally` 里，且**把 `meta` 事件也移进 try**
+    （这样"客户端只收到 meta 就断开"也能留下 `terminal='none'` 的一行）；
+  - 新端点 `GET /papers/{id}/qa/stream-audit?limit=`。
+- **实测（重建后端 + 跑迁移后）**：
+  打一次真实 SSE → 事件序列 `meta, status, status, citation, sentence, final`；
+  查审计 → **1 行**：`terminal=final, mode=generated, elapsed_ms=5750,
+  events=[meta,status,status,citation,sentence,final]`。
+- **测试**：`test_qa_stream_audit.py` 6 条 —— 成功一次写一行且 `events` 首尾正确、
+  `events` 只含类型名（不含正文）、异常路径记 `exception_type`、DomainError 记 `error_code`、
+  **客户端断开记 `terminal='none'`**、`audit.record` 自己吞掉写库异常。
+  后端全量 **827 passed / 0 failed**（较上轮 +6）。
