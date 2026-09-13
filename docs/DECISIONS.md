@@ -2770,4 +2770,50 @@ if config.config_file_name is not None and config.attributes.get("configure_logg
 清完之后第一次跑 `run_all.py` 就抓出两套脚本假红（见上文第 2 点），修完 **7/7**。
 （重导任意一篇 arXiv 论文约 4 分钟，导入页示例里就有那几条链接。）
 
+## D-118 demo 论文**不能**直接补 canonical revision（先量后判，附替代方案）
+
+### 起因
+
+用户选"3 条都做"，第 1 条是「给 demo 论文补 revision，让 3 篇示例也有完整 8 视图」。
+**动手前先量现状**，结论是这条路不能走 —— 而且我上一轮对 demo 现状的描述本身也太乐观。
+
+### 实测现状（HTTP 探测 paper 4，3 篇同形）
+
+| 视图 | 端点 | 结果 |
+|---|---|---|
+| 论文地图 / 方法动画 / 论文阅读 | `GET /api/papers/4`（legacy 详情） | ✅ 5 章节 / 4 图（`glyph_svg`）/ 3 表 / 5 方法步 / `map_summary` 齐全 |
+| 证据链 | `GET /api/papers/4/exhibits` | ❌ **409「尚无可读 revision，展项不可用」** |
+| 研究图谱 | `GET /api/papers/4/graph` | ❌ `{"nodes":[],"edges":[],"revision_id":null}` |
+| 讲解 | `GET /api/papers/4/presentation` | ❌ `{"scenes":[],"revision_id":null}` |
+| 自动评测 | `GET /api/papers/4/evaluation` | ❌ `not_evaluated:["*"]`「尚无可用 revision」 |
+| 证据问答 | `POST /api/papers/4/qa` | ❌ **`answer=""`**（note：「论文不存在或尚无可用 revision」）—— 连"绝不空答"不变量都没兜住 |
+| 统计口径 | `GET /api/papers/4/statements` | ❌ **HTTP 422** |
+
+即 8 个视图里 **5 个是坏的**（上一轮我说"只有图谱/讲解/自动评测空"是**低估**）。
+
+### 为什么"补 revision"补不出来（硬数据）
+
+canonical 的数据模型要求**原文页 + 块 + 逐字引文**，而 demo IR 里根本没有：
+
+- **`pages = 0`**（三篇都是）—— 没有原文页，也就没有 block、没有锚点；
+- 章节正文合计只有 **719 / 697 / 751 字符**（5–6 节 × ~120 字）—— 是一份**提纲**，不是论文；
+- 引文能在「章节正文 + 摘要 + 表格」里逐字找到的：**6/10、2/8、4/8**；
+- `evidence.text` 在正文里逐字命中 **0/10、0/8、0/8**（它们本来就是另写的句子）；
+- 一部分"引文"是导航式标签：`'Method p.3'`、`'Discussion p.8'`、`'1/28 参数量'`。
+
+要把它塞进 canonical，就得**凭空造原文页与锚点**，再让 gate 判 `supports` ——
+那正是本项目纪律禁止的「伪造证据」。**结论：不做**（不是做不了，是不能这样做）。
+
+### 三条替代路线（待用户选）
+
+| | 做法 | 代价 | 诚实性 / 副作用 |
+|---|---|---|---|
+| **B** | 三个端点 + 问答对 `source_mode=demo` **读回自绘的 legacy 表**（数据都在：`graph_nodes` 9 / `scenes` 6 / `questions` 5 / `claims` 10 / `evaluations` 1） | 中（~200 行 + 前端证据链回退 + 测试） | 读的是自己写的数据，不伪造；但引入**第二条读路径**，与 R3「canonical 优先、一个真相」方向相反 |
+| **C** | **退役 demo 论文**（首页只留真实论文） | 小 | 最干净；代价是零 Key / 断网时没有可演示内容 |
+| **D** | **重做 3 篇 demo 的语料**：给它们真正的 `pages`/`blocks` 且引文逐字出自这些页，再走 canonical 生成（结构/断言/gate/图谱/场景/词法索引/评测） | 大（重写语料 + 生成器 + 测试） | 唯一能让示例走**同一条** canonical 路径、且内容是**真被 gate 验证过**的方案。问答无需 embedding Key —— `retrieval` 本来就有纯词法兜底（`index()` 无向量时 `status="lexical_only"`、检索 `mode_used="lexical"`），**该代码路径已存在但我尚未实测过 demo 走通** |
+
+**建议**：demo 论文若还要当"零依赖演示"用 → **D**；若只当摆设 → **C**；
+**B** 是最快的止血（当天就能让 8 个视图全亮），代价是接受第二条读路径。
+
+
 
