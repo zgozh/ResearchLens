@@ -2359,3 +2359,60 @@ paper 7 标题已是真值（未被覆盖）、摘要被填成真摘要。新增
   `projection/claims.py` 以避免 `dto ↔ qa` 循环导入。**纯文件组织、零行为变化**。
 - **验收**：后端 `pytest` **992 passed / 0 failed**（含双读一致性五域 + 两条静态门禁 +
   薄委托门禁）；`run_all.py` 见 D-112。
+
+---
+
+## D-112 R4 收口验收记录（M1–M10 全部完成）
+
+### 最终状态（在**重建镜像后的真实环境**上实测）
+
+| 项 | 结果 |
+|---|---|
+| 后端 `pytest` | **993 passed / 0 failed**（基线 900） |
+| 前端 `npm run test:lib` | **133 项**全绿 |
+| `python scripts/acceptance/run_all.py` | **7/7 pass** |
+| 模块完成度 | **M1–M10 全部完成**（含此前唯一剩下的 M8） |
+
+### 本轮（M8）验收过程中抓到的一个**真回归**（价值高于迁移本身）
+
+M8 搬迁后 `verify_route_a.py` 报 `GET /api/papers/{1,2,3} -> 500`，
+而**单元测试 992 条全绿**。根因：
+
+```
+modules/papers/legacy.py:418
+    from app.schemas.adapters import _legacy_step, to_legacy_detail
+ImportError: cannot import name '_legacy_step' from 'app.schemas.adapters'
+```
+
+`schemas/adapters.py` 变成 re-export 门面后，**只再导出了公开函数**，
+而 `_legacy_step` 是私有辅助、且那句 import 写在**函数体内** ——
+静态分析看不见，单测也覆盖不到那条路径，**只有端到端验收打 HTTP 才炸**。
+
+两处修复：
+1. 门面改为**按 `dto.py` 的实际顶层符号全量再导出**（公开 + 私有），
+   并保留 `GraphOut`/`PresentationOut` 的包装版（否则返回类型会变）；
+2. 新增门禁 `test_every_imported_symbol_still_exists_in_the_facade`：
+   扫全仓库所有 `from app.schemas.adapters import ...` 站点，逐个验证符号存在。
+
+**这条门禁的价值**：它把"函数体内 import"这个静态盲区变成了可执行断言。
+R4-M8 的规划里写了"迁移前 grep 每个待搬符号的引用点"——我照做了却只 grep 了公开名，
+这条门禁让下次不会再靠自觉。
+
+### R4 全部交付物
+
+- **四个已拍板产品决策**：拒答退出（`AnswerMode` 无 `abstained`）／低置信回答附逐字原文片段／
+  删除全部人工环节／主分改名「AI 质量评分（自动）」+ 来源标注 —— 均落地并线上验证；
+- **ADR**：D-104 ~ D-112（九条），含两处**基于实测修正方案**的记录
+  （D-107：`anchor_region_hit_rate` 的"不可测"归因是假的；D-108：非阻塞域不该驱动轮询）；
+- **验收套件**：七套脚本 + `run_all.py`，含本轮新增的身份断言与 QA 模式断言；
+- **两个额外的用户可见修复**（D-110）：论文真实标题/摘要回填、题注未转义（含门禁扩面）、
+  QA 残留转圈。
+
+### 如实登记的遗留（**都是非功能或已定性的设计选择**）
+
+1. `projection/dto.py` 按域拆成 `projection/{papers,claims,qa,evaluation}.py` ——
+   **纯文件组织、零行为变化**（拆分需先挪 `to_legacy_evidence` 以避免循环导入）；
+2. `anchor_region_hit_rate` 仍 `not_evaluated` —— 需产品决策"同 PDF 双解析交叉比对"（D-107）；
+3. `verify_upload_progress.py` 的**深档**（`RL_ACCEPT_DEEP=1`）未跑（需解析凭据）；
+4. **前端视觉/手工验证**未做（tsc + 单测 + bundle 检查已覆盖，但"用眼睛看"这一层
+   只有用户能做 —— 尤其 M2 的滚动手感、M5 的主卡观感、M7 的进度界面）。

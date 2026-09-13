@@ -189,6 +189,39 @@ class TestProjectionStaticGate:
             f"它们是**还没搬家的权威实现**：{sorted(set(offenders))}"
         )
 
+    def test_every_imported_symbol_still_exists_in_the_facade(self):
+        """**再导出门面必须覆盖所有被 import 的符号**（含私有辅助）。
+
+        为什么专门加这条：R4-M8 搬迁后第一版门面只再导出了公开函数，而
+        `modules/papers/legacy.py` 从**这里**导入 `_legacy_step`，且那句 import 写在
+        **函数体内** —— 单元测试全绿，直到端到端验收打 `GET /api/papers/{id}` 才 500。
+        「函数体内 import」是静态分析看不见的盲区，所以这里直接扫源码把所有
+        `from app.schemas.adapters import X, Y` 的符号名收集起来逐个验证。
+        """
+        import importlib
+
+        module = importlib.import_module("app.schemas.adapters")
+        missing: list[str] = []
+        sites = 0
+        for path in APP.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            # 锚定行首（允许缩进）—— 否则文档/注释里出现的示例文字会被当成真的 import
+            for m in re.finditer(
+                r"^\s*from app\.schemas\.adapters import ([^\n]+)$", text, flags=re.M
+            ):
+                sites += 1
+                raw = m.group(1).strip().strip("()")
+                for name in raw.split(","):
+                    name = name.strip().split(" as ")[0].strip()
+                    if not name or name == "\\":
+                        continue
+                    if not hasattr(module, name):
+                        missing.append(f"{path.relative_to(APP).as_posix()}: {name}")
+        assert sites > 0, "没扫到任何 `from app.schemas.adapters import` 站点 —— 扫描逻辑失效了？"
+        assert not missing, (
+            "这些符号被别处 import，但再导出门面里没有：\n  " + "\n  ".join(sorted(set(missing)))
+        )
+
     def test_allowlist_has_no_stale_entries(self):
         """白名单里列了、但实际已经没有投影的文件 → 说明合并有进展，清单该收敛了。"""
         present = set()
