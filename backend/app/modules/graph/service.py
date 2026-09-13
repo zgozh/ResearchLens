@@ -90,6 +90,10 @@ def build(
         })
         media_rows = repo.list_media(db, scope.revision_id, media_ids)
         media_by_id = {row.id: row for row in media_rows}
+        # R4-M9：证据节点的四分类徽标数据（批量取，避免 N+1）
+        validation_by_evidence = _validations_for_evidence(
+            db, scope, list(evidence_by_id.values())
+        )
 
     provided = list(claims or [])
     if provided:
@@ -168,7 +172,7 @@ def build(
             status="verified" if row.support_status == "supports" else "unverified",
             # 展示事实：判定结论 + 定位信息。用户实测反馈"证据节点只有一个标签"，
             # 给上前端才有的可说：这条证据支持/反驳、在第几页、原文引文是什么。
-            props=_evidence_node_props(row),
+            props=_evidence_node_props(row, validation_by_evidence.get(ev_id)),
         ))
 
     media_nodes: List[GraphNodeRecord] = []
@@ -493,19 +497,66 @@ def _media_node_props(row) -> Dict[str, Any]:
     }
 
 
-def _evidence_node_props(row) -> Dict[str, Any]:
+def _evidence_node_props(row, validation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """证据节点的**展示事实**：判定结论 + 引文 + 页码（ADR-0058）。
 
     用户实测反馈"证据节点只有一个'可定位锚点 1 个'标签"—— 标签说不出任何内容。
     这里给出**这条证据是什么**（引文）、**判定是什么**（支持/反驳/不足）、
     **在第几页**（``source_page`` 是 1-based 页码，见 ``gate.build_evidence``）。
+
+    R4-M9（ADR D-101 欠账 2）：再加 ``validation{decision, semantic_status, reasons}``
+    —— 前端 `VerdictBadge`（四分类：非研究发现 / 真矛盾 / 有支持但未过其他检查 /
+    证据不足）要的就是这三件套。此前图谱节点只有 ``support_status``，
+    徽标接不上，用户在图谱上只能看到"未支持"这一个词，看不到**为什么**。
+    ``validation`` 缺失时为 ``None``（前端不渲染徽标，天然兼容）。
     """
-    return {
+    props: Dict[str, Any] = {
         "support_status": (row.support_status or ""),
         "quote": (row.source_text or "")[:400],
         "page": int(getattr(row, "source_page", 0) or 0),
         "anchor_id": row.anchor_id or "",
+        "validation": validation,
     }
+    return props
+
+
+def _validations_for_evidence(db, scope, evidence_rows) -> Dict[str, Dict[str, Any]]:
+    """批量取证据对应的 ``validation{decision, semantic_status, reasons}``（避免 N+1）。
+
+    返回 ``{evidence_id: {...}}``。取不到就不进字典 —— 调用方据此把 ``validation``
+    置为 ``None``（前端不渲染徽标），**绝不编造一个空判定**。
+    """
+    from sqlalchemy import select
+
+    from app.models.evidence import ValidationORM
+
+    by_validation_id: Dict[str, str] = {}
+    validation_ids = []
+    for row in evidence_rows:
+        vid = getattr(row, "validation_id", None)
+        if vid:
+            by_validation_id[vid] = row.id
+            validation_ids.append(vid)
+    if not validation_ids:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for vrow in db.execute(
+        select(ValidationORM).where(
+            ValidationORM.revision_id == scope.revision_id,
+            ValidationORM.id.in_(validation_ids),
+        )
+    ).scalars().all():
+        evidence_id = by_validation_id.get(vrow.id)
+        if not evidence_id:
+            continue
+        # reasons 原样透传（与 `evidence.repository.validation_dto` 同一份数据形态），
+        # 前端 `classifyVerdict` 是分类规则的唯一真相，后端不做二次解释。
+        out[evidence_id] = {
+            "decision": vrow.decision or "",
+            "semantic_status": vrow.semantic_status or "",
+            "reasons": list(vrow.reasons or []),
+        }
+    return out
 
 
 def _anchor_node_id(anchor_id: str) -> str:

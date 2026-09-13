@@ -193,4 +193,20 @@ check('R4-M1：抽屉用 allSettled（不允许 Promise.all + 清空）', () => 
   assert.ok(source.includes('VerdictBadge'), '抽屉要挂与列表同源的四分类徽标');
 });
 
+check('R4-M9：GraphView 证据节点挂四分类徽标（此前只有 support_status 一个词）', () => {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const file = path.resolve(process.cwd(), 'components/views/GraphView.tsx');
+  const source = fs.readFileSync(file, 'utf8');
+  assert.ok(source.includes('VerdictBadge'), '图谱证据节点要挂徽标');
+  assert.ok(
+    /VerdictBadge validation=\{selected\.props\?\.validation\}/.test(source),
+    '徽标数据必须取节点 props.validation（后端 R4-M9 新增的三件套）',
+  );
+  assert.ok(
+    source.includes("from '@/components/evidence/VerdictBadge'"),
+    '徽标组件要与证据链/抽屉**同源**，不许另造一套',
+  );
+});
+
 console.log(`\nevidenceStates: ${passed} 项全部通过`);

@@ -19,6 +19,7 @@ import { Badge, GlassCard, Kicker } from '@/components/ui';
 import { api } from '@/lib/api';
 import { SourceMedia } from '@/components/source/SourceMedia';
 import { MathText } from '@/components/MathText';
+import { VerdictBadge } from '@/components/evidence/VerdictBadge';
 import { layoutGraph } from '@/lib/graphLayout';
 import { cn } from '@/lib/cn';
 
@@ -370,6 +371,10 @@ export function GraphView({ graph, accent, onClaimSelected, paperId, onNavigate,
                           : selected.props?.support_status === 'insufficient' ? '证据不足'
                             : '未判定'}
                     </span>
+                    {/* R4-M9：四分类徽标（与证据链/抽屉**同源**，可展开看后端理由）。
+                        此前图谱上只有"支持/反驳/证据不足/未判定"这一个词，
+                        用户看不到**为什么** —— `support_status` 说不出成因。 */}
+                    <VerdictBadge validation={selected.props?.validation} />
                     {selected.props?.page ? (
                       <span className="font-mono text-slate-400">原文第 {selected.props.page} 页</span>
                     ) : null}

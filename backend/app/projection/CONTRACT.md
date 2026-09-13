@@ -40,3 +40,23 @@ API 表面没有异常，但某个功能整块失效，而且**只有用户会�
 白名单收窄到只剩该包。目前是"**逻辑上唯一实现 + 测试防漂移**"，
 **不是**"包结构上的唯一入口"。这一步是纯机械迁移，但要动 9 个函数与多处导入，
 计划单独一轮完成。
+
+## 图谱域字段清单（R4-M9 增补）
+
+`modules/graph/legacy.py::to_legacy_graph` 是图谱投影的**唯一实现**，
+`schemas/adapters.to_legacy_graph` 薄委托给它。节点 props 的构成：
+
+| 键 | 来源 | 说明 |
+|---|---|---|
+| `status` | `GraphNodeRecord.status` | verified / unverified |
+| `claim_id` / `evidence_id` / `media_id` / `anchor_ids` | 节点字段 | 定位与取图 |
+| `support_status` | `graph.service._evidence_node_props` | 证据的支撑结论 |
+| `quote` | 同上 | 逐字原文（截断 400） |
+| `page` | 同上 | 1-based 页码 |
+| `anchor_id` | 同上 | 锚点 |
+| **`validation`** | 同上（**R4-M9 新增**） | `{decision, semantic_status, reasons}`，供前端 `VerdictBadge` 四分类；缺判定时为 `null`（前端不渲染徽标） |
+
+**纪律**：props 由 `**(dict(getattr(n, "props", None) or {}))` **整体透传**，
+不在投影层做白名单筛选 —— 白名单式投影漏字段时 API 表面看不出异常，
+但功能会整块失效（ADR-0058 / D-48 的真实前科：`props.support_status` 曾被丢掉）。
+新增 props 字段**只需在 service 层装配 + 在此登记**，投影层无需改动。
