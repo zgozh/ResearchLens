@@ -400,62 +400,32 @@ def to_legacy_presentation(
     evidence: Optional[List[EvidenceRecord]] = None,
     statements: Optional[List[VerifiedStatement]] = None,
 ) -> PresentationOut:
-    """``PresentationArtifact + Media/Evidence/Statements → PresentationOut``。
+    """``PresentationArtifact → PresentationOut``：**M10 收敛后委托唯一实现**。
 
-    ``figure_refs``/``table_refs`` 仍是**兼容整数**（来自 media.legacy_no），
-    ``linked`` 只由 verified 媒体的 evidence 投影；无关联为空数组。
+    收敛方向说明（与"保留信息更多的那份"相反，理由是实测）：
+
+    - `schemas/adapters` 这份**没有任何调用方** —— 全仓库只出现在它自己的 docstring 与
+      `__all__` 里；
+    - 真正服务 `GET /papers/{id}/presentation` 的是 `modules/scene/legacy.to_legacy_presentation`，
+      并且它被端到端验收覆盖。
+
+    把线上路径换成一份"没人用过、也没被验收覆盖"的实现，风险高于收益。因此这里改为**
+    委托** module 那份，`media` 列表转成它要的 `media_by_id` 映射；
+    `evidence` / `statements` 两个入参**保留签名**但当前未使用：
+    如果确实需要更丰富的引用，应当**在唯一实现里显式加**，而不是靠保留第二份副本来实现。
     """
-    media_by_id = {m.id: m for m in (media or [])}
-    evidence_by_id = {e.id: e for e in (evidence or [])}
-    linked_evidence: List[EvidenceOut] = []
-    for rid in list(evidence_by_id.keys()):
-        linked_evidence.append(to_legacy_evidence(evidence_by_id[rid]))
+    from app.modules.scene.legacy import to_legacy_presentation as _projection
 
-    scenes: List[SceneOut] = []
-    for scene in presentation.scenes:
-        figure_refs: List[int] = []
-        table_refs: List[int] = []
-        linked: List[Dict[str, Any]] = []
-        for mid in scene.media_ids or []:
-            item = media_by_id.get(mid)
-            if item is None:
-                continue
-            if isinstance(item.legacy_no, int):
-                if item.kind == "table":
-                    table_refs.append(item.legacy_no)
-                elif item.kind == "figure":
-                    figure_refs.append(item.legacy_no)
-            linked.append({
-                "type": "media" if item.kind == "figure" else item.kind,
-                "media_id": item.id,
-                "label": item.original_label or "",
-                "caption": item.caption or "",
-            })
-
-        narration = scene.narration
-        scenes.append(SceneOut(
-            order=scene.order,
-            title=scene.title.text if scene.title else "",
-            kind=scene.kind,
-            summary=scene.summary.text if scene.summary else "",
-            steps=list(scene.step_ids or []),
-            evidence_refs=list(scene.statement_ids or []),
-            figure_refs=_dedup_ints(figure_refs),
-            table_refs=_dedup_ints(table_refs),
-            narration={
-                "script": narration.script.text if narration else "",
-                "tts_text": narration.tts_text.text if narration else "",
-                "audio_url": (narration.audio_url if narration else None),
-                "subtitle": [
-                    {"id": c.id, "start_ms": c.start_ms, "end_ms": c.end_ms, "text": c.text.text}
-                    for c in (narration.subtitle_cues if narration else [])
-                ],
-            },
-            linked=linked,
-            media_ids=list(scene.media_ids or []),
-            statement_ids=list(scene.statement_ids or []),
-        ))
-    return PresentationOut(scenes=scenes, revision_id=presentation.scope.revision_id)
+    media_by_id = {
+        getattr(m, "id", ""): m
+        for m in (media or [])
+        if getattr(m, "id", None)
+    }
+    data = _projection(presentation, media_by_id)
+    return PresentationOut(
+        scenes=data.get("scenes", []),
+        revision_id=presentation.scope.revision_id,
+    )
 
 
 def _dedup_ints(values: List[int]) -> List[int]:

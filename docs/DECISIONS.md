@@ -1930,3 +1930,30 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
   重建后端后 `verify_metrics_live / verify_route_a / verify_graph` **0 失败**。
 - **M10 只剩 `scene`**：两侧**签名不同**（`adapters` 多收 `media/evidence/statements`），
   合并前必须先定哪份权威 —— 这一条**我需要用户拍板**，不自行决定（涉及产品语义，不是机械迁移）。
+
+## D-101 M10 收敛③：`scene` 域（**我推翻了自己上一轮的默认方向**，理由是实测）
+
+- **实测改变了判断**：`schemas/adapters.to_legacy_presentation` **没有任何调用方** ——
+  全仓库只出现在它自己的 docstring 与 `__all__` 里；真正服务
+  `GET /papers/{id}/presentation` 的是 `modules/scene/legacy` 那份，而且它被端到端验收覆盖。
+- **因此收敛方向反过来**：上一轮我说"默认保留信息更多的 adapters 版"，但把**线上路径**
+  换成一份"没人用过、也没被验收覆盖"的实现，风险高于收益。改为
+  **module 为唯一实现**，`adapters.to_legacy_presentation` 委托它（`media` 列表转成
+  `media_by_id` 映射），并**保留 `evidence` / `statements` 入参签名**以免破坏潜在调用方 ——
+  若确实需要更丰富的引用，应当**在唯一实现里显式加**，而不是靠保留第二份副本来实现。
+- **实测**：委托调用可跑通；后端全量 **898 passed / 0 failed**；重建后端后
+  `verify_e2e_extra`（含 presentation/分镜路径）与 `verify_route_a` **0 失败**。
+- **M10 四个域的收敛状态**：
+  | 域 | 唯一实现位置 | 另一侧 |
+  |---|---|---|
+  | graph | `modules/graph/legacy` | adapters 委托（D-93） |
+  | evaluation | `schemas/adapters` | modules 委托（D-100） |
+  | qa | `schemas/adapters` | modules 早已委托（ADR-0060，D-100 核实） |
+  | scene | `modules/scene/legacy` | adapters 委托（本轮） |
+  即**每个域只剩一份真实实现**，另外一份是薄委托；配上双读一致性测试与静态门禁，
+  "改了一处、另一处没改"这条事故路径已经堵住。
+- **M10 仍未做（如实登记，不声称完成）**：方案 §M10-1/4 要求的**物理迁移**
+  （把实现搬进 `app/projection/`、`adapters` 改 re-export、白名单收窄到只剩 `projection`）
+  与 `projection/CONTRACT.md` 字段清单**尚未做**。当前是"逻辑上唯一实现 + 测试防漂移"，
+  不是"包结构上的唯一入口"。这一步是纯机械迁移，风险低但要动 9 个函数与多处导入，
+  我选择在上下文预算充足时单独做一轮，而不是赶在末尾半途而废。
