@@ -94,8 +94,10 @@ export function EvalView({
     !scoreAvailable &&
     evalData.metrics?.ai_overall_score_available !== false &&
     aiScoreValue !== null;
-  const shownScore = scoreAvailable ? scoreValue : aiScoreAvailable ? aiScoreValue : null;
-  const scoreBasis = scoreAvailable ? 'human' : aiScoreAvailable ? 'ai' : null;
+  // M9：**两个口径分开**，互不顶替 —— 人工真值未确认时主位显示"未确认"，
+  // AI 口径单独成卡并带徽标（此前 AI 值会直接顶到人工位上，容易被读成"论文评分 86 分"）。
+  const humanScore = scoreAvailable ? scoreValue : null;
+  const hasAnyScore = humanScore !== null || aiScoreAvailable;  // 供下方提示复用
 
   const claimCount = claims?.length ?? 0;
   const supportedCount = claims?.filter((c) => c.status === 'SUPPORTED').length ?? 0;
@@ -113,23 +115,21 @@ export function EvalView({
       {/* 总评 */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[300px,1fr]">
         <GlassCard className="flex flex-col items-center justify-center p-6 text-center">
-          <Kicker className="mb-3">
-            综合评分 · SCORE{scoreBasis === 'ai' ? '（AI 评测）' : ''}
-          </Kicker>
-          {shownScore !== null ? (
+          <Kicker className="mb-3">综合评分（人工真值口径）</Kicker>
+          {humanScore !== null ? (
             <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
               className="relative grid h-40 w-40 place-items-center">
               <svg viewBox="0 0 120 120" className="h-full w-full -rotate-90">
                 <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="10" />
                 <motion.circle cx="60" cy="60" r="52" fill="none" stroke={accent} strokeWidth="10" strokeLinecap="round"
-                  strokeDasharray={`${(Math.max(0, Math.min(100, shownScore)) / 100) * 326.7} 326.7`}
+                  strokeDasharray={`${(Math.max(0, Math.min(100, humanScore)) / 100) * 326.7} 326.7`}
                   initial={{ strokeDasharray: '0 326.7' }}
-                  animate={{ strokeDasharray: `${(Math.max(0, Math.min(100, shownScore)) / 100) * 326.7} 326.7` }}
+                  animate={{ strokeDasharray: `${(Math.max(0, Math.min(100, humanScore)) / 100) * 326.7} 326.7` }}
                   transition={{ duration: 1.1, ease: 'easeOut' }} />
               </svg>
               <div className="absolute inset-0 grid place-items-center">
                 <div>
-                  <div className="text-4xl font-bold text-white">{Math.round(shownScore)}</div>
+                  <div className="text-4xl font-bold text-white">{Math.round(humanScore)}</div>
                   <div className="font-mono text-[10px] uppercase text-slate-500">/ 100</div>
                 </div>
               </div>
@@ -137,19 +137,32 @@ export function EvalView({
           ) : (
             <div className="grid h-40 w-40 place-items-center rounded-full border border-dashed border-white/15">
               <div>
-                <div className="text-2xl font-bold text-slate-400">未评测</div>
-                <div className="mt-1 font-mono text-[10px] uppercase text-slate-600">NOT EVALUATED</div>
+                <div className="text-2xl font-bold text-slate-400">
+                  {aiScoreAvailable ? '未确认' : '未评测'}
+                </div>
+                <div className="mt-1 font-mono text-[10px] uppercase text-slate-600">
+                  {aiScoreAvailable ? 'NOT CONFIRMED' : 'NOT EVALUATED'}
+                </div>
               </div>
             </div>
           )}
           <div className="mt-4 flex items-center gap-1.5 text-[11px] text-slate-500">
             <Gauge className="h-3.5 w-3.5" /> 自动质量评测
           </div>
-          {scoreBasis === 'ai' && (
-            <p className="mt-2 text-[10px] leading-relaxed text-amber-300/70">
-              AI 口径：support_precision/recall 由 LLM 语义裁判按语义判等给出（proxy），
-              金标集未经人工确认 → 不是人工真值分。
-            </p>
+          {aiScoreAvailable && (
+            <div className="mt-3 w-full rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-left">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-200">
+                <ShieldAlert className="h-3.5 w-3.5" /> AI 评分（非人工真值）
+              </div>
+              <div className="mt-0.5 font-mono text-lg text-amber-100">
+                {Math.round(aiScoreValue as number)}
+                <span className="ml-1 text-[10px] text-amber-300/70">/ 100</span>
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-amber-300/70">
+                由 LLM 语义裁判给出（support_precision/recall 为 proxy），金标集未经人工确认；
+                <strong>不等于</strong>人工真值分，也不与上面的综合评分互相顶替。
+              </p>
+            </div>
           )}
         </GlassCard>
 
@@ -161,9 +174,8 @@ export function EvalView({
               <span>
                 {scoreAvailable ? null : aiScoreAvailable ? (
                   <>
-                    上面是 AI 评测口径的分数：金标集是机器从原文构造的草案（未人工确认），
-                    所以 support_precision/recall 标为 proxy、由 LLM 语义裁判判等给出。
-                    人工真值口径的综合评分仍不出（避免"让模型给自己出卷子"）。
+                    人工真值口径的综合评分仍不出（金标集是机器从原文构造的草案，未人工确认）——
+                    避免"让模型给自己出卷子"。左侧单独列出 AI 口径分数，两者互不顶替。
                   </>
                 ) : goldenTuning ? (
                   '综合评分尚未产出：金标集是机器从原文自动构造的草案，未经过人工确认，'

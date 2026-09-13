@@ -10,6 +10,7 @@ import { FigureImage } from '@/components/FigureImage';
 import { TableRender } from '@/components/TableRender';
 import { LongText } from '@/components/LongText';
 import { MathText } from '@/components/MathText';
+import { VerdictBadge } from '@/components/evidence/VerdictBadge';
 
 /** 讲解里出现的长句断言/步骤，单行展示前必须截断。 */
 function shortText(text: string | undefined, max: number): string {
@@ -26,7 +27,9 @@ const KIND_TONE: Record<string, string> = {
 type Sel =
   | { type: 'figure'; fig_no: number }
   | { type: 'table'; table_no: number }
-  | { type: 'text'; label: string; page?: number; region?: string; quote?: string; text?: string };
+  | { type: 'text'; label: string; page?: number; region?: string; quote?: string; text?: string;
+      /** 后端 validation（M2：用来显示"为什么未支持"的四分类徽标）。 */
+      validation?: unknown };
 
 function parseEv(label: string): { page?: number; region?: string } {
   const pm = label.match(/p\.?(\d+)/i);
@@ -186,7 +189,10 @@ export function PresenterView({ presentation, accent, detail, claims, statements
                   ))}
                   {statementRefs.map((r) => (
                     <button key={r.id}
-                      onClick={() => setSel({ type: 'text', label: '已验证断言', text: r.text, quote: r.text })}
+                      onClick={() => setSel({
+                        type: 'text', label: '已验证断言', text: r.text, quote: r.text,
+                        validation: (r as { validation?: unknown }).validation,
+                      })}
                       className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-[var(--line)] bg-white/[0.03] px-2.5 py-1 text-[12px] text-slate-300 transition hover:border-white/25 hover:text-white">
                       <Quote className="h-3.5 w-3.5 shrink-0" style={{ color }} />
                       <MathText text={shortText(r.text, 34)} className="truncate" />
@@ -268,6 +274,8 @@ export function PresenterView({ presentation, accent, detail, claims, statements
                   {sel.quote && (
                     <MathText text={`“${sel.quote}”`} className="block text-slate-200" />
                   )}
+                  {/* M2：这条断言为什么没进事实层 —— 四分类徽标（可展开看后端理由） */}
+                  <VerdictBadge validation={sel.validation} className="mt-1.5" />
                   {sel.text && sel.text !== sel.quote && (
                     <MathText text={sel.text} className="mt-1.5 block text-slate-400" />
                   )}
