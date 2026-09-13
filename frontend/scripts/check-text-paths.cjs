@@ -45,47 +45,69 @@ function scanSource(source) {
   return hits;
 }
 
+function checkTargets(targets) {
+  const failures = [];
+  for (const target of targets) {
+    const full = path.join(ROOT, target.file);
+    if (!fs.existsSync(full)) {
+      // 清单漂移：登记的组件文件不存在（改名/删除后忘了同步清单）→ 必须红，
+      // 否则清单会慢慢腐化成"看起来在管、其实没管"。
+      failures.push({ file: target.file, drift: true, hits: [] });
+      continue;
+    }
+    const hits = scanSource(fs.readFileSync(full, 'utf8'));
+    if (hits.length > 0) failures.push({ file: target.file, what: target.what, hits });
+  }
+  return failures;
+}
+
 function main() {
   const selfTest = process.argv.includes('--self-test');
   if (selfTest) {
     const bad = '          <p className="x">{e.source_text}</p>';
     const good = '          <MathText text={e.source_text} className="x" />';
-    const badHit = scanSource(bad).length > 0;
-    const goodHit = scanSource(good).length > 0;
-    if (!badHit) {
-      console.error('FAIL 自验证：坏样本没被检测出来，门禁是装饰');
-      process.exit(1);
+    const cases = [
+      ['坏样本必被检出', scanSource(bad).length > 0],
+      ['合规写法不误报', scanSource(good).length === 0],
+      [
+        '注入检测：已登记文件里插一条裸插值 → 必须红',
+        scanSource(`${good}\n${bad}`).length > 0,
+      ],
+      [
+        '清单漂移：登记了不存在的组件 → 必须红',
+        checkTargets([{ file: 'components/views/__does_not_exist__.tsx', what: '漂移用例' }])
+          .some((f) => f.drift),
+      ],
+    ];
+    let failed = 0;
+    for (const [name, ok] of cases) {
+      if (ok) {
+        console.log(`ok   自验证：${name}`);
+      } else {
+        console.error(`FAIL 自验证：${name}`);
+        failed += 1;
+      }
     }
-    if (goodHit) {
-      console.error('FAIL 自验证：合规写法被误报');
-      process.exit(1);
-    }
-    console.log('ok   自验证：坏样本必红、合规写法不误报');
+    if (failed) process.exit(1);
     return;
   }
 
-  let failures = 0;
-  for (const target of TARGETS) {
-    const full = path.join(ROOT, target.file);
-    if (!fs.existsSync(full)) {
-      console.error(`FAIL 清单里的文件不存在：${target.file}（清单过期了？）`);
-      failures += 1;
-      continue;
+  const failures = checkTargets(TARGETS);
+  if (failures.length > 0) {
+    for (const f of failures) {
+      if (f.drift) {
+        console.error(`FAIL 清单漂移：${f.file} 不存在（清单过期了？）`);
+        continue;
+      }
+      console.error(`FAIL ${f.file}（${f.what}）存在裸插值：`);
+      for (const h of f.hits) console.error(`     ${h.line}: ${h.text}`);
     }
-    const hits = scanSource(fs.readFileSync(full, 'utf8'));
-    if (hits.length > 0) {
-      failures += hits.length;
-      console.error(`FAIL ${target.file}（${target.what}）存在裸插值：`);
-      for (const h of hits) console.error(`     ${h.line}: ${h.text}`);
-    } else {
-      console.log(`ok   ${target.file}（${target.what}）`);
-    }
-  }
-  if (failures > 0) {
-    console.error(`\n结论：${failures} 处论文文本未经渲染内核直接显示 ❌（改用 <MathText>/<RichText>）`);
+    console.error(
+      `\n结论：${failures.length} 处问题 ❌（裸插值改用 <MathText>/<RichText>；漂移项请同步清单）`,
+    );
     process.exit(1);
   }
-  console.log('\n结论：清单内所有展示点的论文文本都经过渲染内核 ✅');
+  console.log(`结论：清单内 ${TARGETS.length} 个展示点的论文文本都经过渲染内核 ✅`);
 }
 
 main();
