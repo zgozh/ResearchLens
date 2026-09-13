@@ -66,10 +66,20 @@ for p in items[:3]:
     rec = m.get("recovery_success_rate")
     status_text = "not_evaluated" if rec is None else f"value={rec}"
     check("recovery_success_rate 口径可见（本轮改为按答案粒度）", True, status_text)
-    # overall_score 纪律：金标集未人工确认时必须 null
-    check("overall_score 未假装可用（金标集未人工确认 → available=false）",
-          m.get("overall_score_available") is False,
-          f"available={m.get('overall_score_available')} score={m.get('overall_score')}")
+    # R4-M5（ADR D-105）改写：旧规则是"金标集未人工确认 → overall_score 必须不可用"。
+    # 决策 3 删除了人工维度，主分改为 **AI 质量评分（自动）**，所以新规则是：
+    #   · 分数不可用时：不得填 0（这条底线没变）；
+    #   · 分数可用时：必须声明来源为 `ai_generated`（**不许谎称人工评审**）。
+    _avail = m.get("overall_score_available")
+    _basis = m.get("overall_score_basis")
+    if _avail:
+        check("overall_score 可用时必须标明来源为 AI 口径（不许谎称人工评审）",
+              _basis == "ai_generated",
+              f"available={_avail} basis={_basis!r}")
+    else:
+        check("overall_score 不可用时不得填 0（未评估就是未评估）",
+              m.get("overall_score_canonical") is None,
+              f"available={_avail} basis={_basis!r} value={m.get('overall_score_canonical')!r}")
 
 print(f"\n总失败断言：{fails}")
 sys.exit(1 if fails else 0)

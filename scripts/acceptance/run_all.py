@@ -30,11 +30,15 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_BASE = os.environ.get("RL_API", "http://127.0.0.1:8002")
 DEFAULT_FRONTEND = os.environ.get("RL_WEB", "http://127.0.0.1:4002")
 
-#: 迁移入库的五套验收脚本（顺序即执行顺序）
+#: 迁移入库的七套验收脚本（顺序即执行顺序）
+#: R4-M10 新增两套：`verify_upload_progress.py`（需求 F：成果页自己长出来）与
+#: `verify_qa_modes.py`（需求 C：没有拒答、每条回答带 mode + 置信度）。
 SCRIPTS = [
     "verify_route_a.py",
     "verify_graph.py",
     "verify_e2e_extra.py",
+    "verify_qa_modes.py",
+    "verify_upload_progress.py",
     "verify_metrics_live.py",
     "verify_qa_stability.py",
 ]

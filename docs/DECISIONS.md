@@ -2223,3 +2223,52 @@ job_id | stage    | starts       job_id 8..11（M12 修复后创建的作业）�
 
 后端 `pytest` **960 passed / 0 failed**；前端 `test:lib` **131 项**全绿（新增 17 项）。
 手工判据见 `paperProgress.spec.ts` 的用例名（每条对应一个用户可见行为）。
+
+---
+
+## D-109 M10 收口：验收套件扩到七套 + **容器陈旧这个坑**（R4-M10）
+
+### 新增两套验收（`run_all.py` 现在跑七套）
+
+| 脚本 | 覆盖 |
+|---|---|
+| `verify_qa_modes.py` | 需求 C：三个默认问题 × 两篇论文，断言 mode 落在新取值表、`abstained` 不出现、置信度合法、正文非空、final 存在 |
+| `verify_upload_progress.py` | 需求 F：`manifest.capabilities` 是进度真相；阻塞域不停在 pending；`active_job` 形态正确；exhibits 与 manifest 同源 |
+
+`verify_metrics_live.py` 的断言按 D-105 改写：旧规则"金标集未人工确认 → overall_score 必须不可用"
+已随人工维度删除；新规则 = 不可用时不填 0、可用时必须标 `ai_generated`。
+
+### 顺带修掉的一个**真撒谎**（投影层）
+
+`schemas/adapters.to_legacy_evaluation` 在 `overall_score` 有值时输出
+`overall_score_basis = "human_annotated"` —— 决策 3 之后人工维度已删除，
+继续这么说等于**声称分数经过人工评审**。已改为透传报告里的
+`overall_score_basis`（`"ai_generated"`），并加验收断言锁死。
+
+### ⚠️ 本轮最重要的踩坑：**验收测了一小时的旧代码**
+
+R4 期间实测：`docker-compose.yml` **不挂载 backend/frontend 源码** —— 代码烘进镜像。
+而 `researchlens-backend-1` 容器比首个 R4 提交**早 1 小时**启动，于是：
+
+- 单测（跑本地源码）全绿；
+- HTTP 层验收（打 `:8002`）**全在测 R4 之前的代码** —— 而且看起来也"通过"
+  （因为它测的是旧行为，旧断言自然也通过）。
+
+发现方式：新写的 `verify_qa_modes.py` 报 `mode=abstained` —— 一个**已从契约删除**的取值。
+顺着查才发现容器里的 `AnswerMode` 仍有 `abstained`。
+
+**修复动作**：`docker-compose build backend worker frontend && up -d`，
+自检判据 `abstained present = False`，且容器启动时间必须晚于 `git log -1 --format=%ci`。
+已写进 `scripts/acceptance/README.md` 的强制动作段。
+
+### 实测结果（**在真正的新代码上**）
+
+`python scripts/acceptance/run_all.py` → **7/7 pass**，其中：
+
+- `verify_metrics_live.py`：`overall_score available=True basis='ai_generated'`
+  —— 用户报的"自动评测全显示未评测"在线上**真的修好了**（此前主分恒为 null）；
+- `verify_qa_modes.py`：6/6 条回答均为新 mode，无 `abstained`；历史缓存行
+  （paper 2 那条旧的 `abstained/Low`）现在走 `extractive/High`；
+- `verify_qa_stability.py`：空答案 **0/9**（未回归）。
+
+后端 `pytest` **970 passed / 0 failed**；前端 `test:lib` **132 项**全绿。

@@ -56,3 +56,32 @@ R3 方案 §M11-2 写的是"**每脚本**输出统一 JSON 行"。当前实现�
 （各脚本保持原有的人读输出与退出码不变）。偏离原因：逐脚本改尾部输出结构的收益低、
 而失败风险（改坏一套已验证的脚本）不成比例。若后续需要每脚本独立 JSON，
 再在各脚本尾部加一行 `print(json.dumps(...))` 即可，run_all 无需改动。
+
+## R4-M10 新增两套（共七套）
+
+| 脚本 | 覆盖 |
+|---|---|
+| `verify_qa_modes.py` | 需求 C：**没有拒答** —— 三个默认问题 × 两篇论文，断言 mode 落在新取值表、`abstained` 不出现、置信度合法、正文非空、final 存在 |
+| `verify_upload_progress.py` | 需求 F：`manifest.capabilities` 是进度真相，阻塞域（pdf/text/media/claims）不停在 pending，`active_job` 形态正确，exhibits 与 manifest 同源 |
+
+两档跑法：
+- **默认档**（CI 无解析凭据也能跑）：核对**已导入**论文的进度语义；
+- **深档**：`RL_ACCEPT_DEEP=1 RL_PAPER_ID=<id> python verify_upload_progress.py`，
+  触发 `/rebuild-derived` 并观察 capabilities 的渐进变化（需要后端有解析凭据）。
+
+## ⚠️ 跑验收前必须确认容器不是旧镜像（R4 实测教训）
+
+`docker-compose.yml` **不挂载 backend/frontend 源码** —— 代码是**烘进镜像**的。
+R4 期间实测踩到：容器比首个 R4 提交早 1 小时启动，于是所有 HTTP 层验收都在测
+**R4 之前的代码**（`AnswerMode` 里还留着 `abstained`），而单测全绿 —— 两边看起来都"通过"。
+
+**跑验收前的强制动作**：
+
+```powershell
+docker-compose build backend worker frontend
+docker-compose up -d backend worker frontend
+# 自检：必须输出 abstained present = False
+docker exec researchlens-backend-1 python -c "from app.contracts.qa import AnswerMode; import typing; print('abstained present =', 'abstained' in typing.get_args(AnswerMode))"
+```
+
+**判据**：容器启动时间必须晚于 `git log -1 --format=%ci`。

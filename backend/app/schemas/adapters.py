@@ -482,12 +482,16 @@ def to_legacy_evaluation(report: EvaluationReport) -> EvaluationOut:
             metrics[entry.name] = value.value
     canonical = report.overall_score
     metrics["overall_score_available"] = canonical is not None
-    metrics["ai_overall_score"] = report.ai_overall_score
-    metrics["ai_overall_score_available"] = report.ai_overall_score is not None
+    # R4-M5（ADR D-105）：`overall_score` 就是**主分「AI 质量评分（自动）」**。
+    # 旧代码在这里输出 `"human_annotated"` —— 决策 3 之后人工维度已删除，
+    # 继续这么说等于**声称分数经过人工评审**（那是假话）。现在只可能有 AI 口径。
     metrics["overall_score_basis"] = (
-        "human_annotated" if canonical is not None
-        else ("ai_judge" if report.ai_overall_score is not None else None)
+        getattr(report, "overall_score_basis", None)
+        or ("ai_generated" if canonical is not None else None)
     )
+    #: 已废弃：与主分同值，保留一个版本周期供旧消费方过渡。
+    metrics["ai_overall_score"] = canonical
+    metrics["ai_overall_score_available"] = canonical is not None
     metrics["not_evaluated"] = not_evaluated_names
     metrics["not_evaluated_reasons"] = not_evaluated_reasons
     metrics["proxy"] = proxy_names
