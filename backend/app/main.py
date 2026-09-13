@@ -25,14 +25,14 @@ async def lifespan(app: FastAPI):
     # 直接抛 DomainError 使服务 readiness 失败，绝不静默降级到未知 schema。
     run_migrations()
     check_schema(strict=True)
-    # Docker-only 部署：若数据库为空且非 DEMO 模式，后台自举「真实中文论文」
+    # Docker-only 部署：若数据库为空则后台自举「真实中文论文」
     # （含 LLM 抽取，较慢；后台线程不阻塞健康检查）。
-    if not settings.demo_mode:
-        try:
-            from app.modules.pipeline.seed_real import start_real_provision_thread
-            start_real_provision_thread()
-        except Exception:  # noqa: BLE001
-            import traceback; traceback.print_exc()
+    # R4：**不再有 DEMO_MODE 门禁** —— 启动就一定自举，产品永远走完整链路。
+    try:
+        from app.modules.pipeline.seed_real import start_real_provision_thread
+        start_real_provision_thread()
+    except Exception:  # noqa: BLE001
+        import traceback; traceback.print_exc()
     yield
 
 
@@ -62,4 +62,4 @@ async def _domain_error_handler(_req: Request, exc: DomainError) -> JSONResponse
 
 @app.get("/")
 def root():
-    return {"app": settings.app_name, "docs": "/docs", "demo_mode": settings.demo_mode}
+    return {"app": settings.app_name, "docs": "/docs"}

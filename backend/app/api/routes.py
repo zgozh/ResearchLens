@@ -42,7 +42,7 @@ router = APIRouter(prefix="/api")
 # ------------------------------------------------------------------ health
 @router.get("/health", response_model=HealthOut)
 def health():
-    return HealthOut(status="ok", demo_mode=settings.demo_mode, version=settings.version)
+    return HealthOut(status="ok", version=settings.version)
 
 
 # ------------------------------------------------------------------ demo
@@ -261,8 +261,6 @@ async def paper_upload(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    if settings.demo_mode:
-        raise HTTPException(400, "DEMO_MODE=true — 请使用 /api/demo 选择内置论文；上传需 DEMO_MODE=false")
     data = await file.read()
     if len(data) > settings.max_upload_mb * 1024 * 1024:
         raise HTTPException(413, "file too large")

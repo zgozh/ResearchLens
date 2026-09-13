@@ -25,7 +25,6 @@ class LegacyModel(BaseModel):
 
 class HealthOut(LegacyModel):
     status: str
-    demo_mode: bool
     version: str
     # --- 可选扩展（§5.11：可新增 dependencies/warnings）---
     dependencies: Dict[str, Any] = Field(default_factory=dict)

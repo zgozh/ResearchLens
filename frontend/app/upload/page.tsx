@@ -12,6 +12,25 @@ import { Btn, GlassCard, Kicker } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 const EXAMPLE_PAPERS = [
+  // R4：把项目里**已有的三篇真实中文论文**放进来（软件学报，开放获取 PDF）。
+  // 为什么放中文：演示场景下中文论文的图表题注、章节名、问答都更容易看懂，
+  // 而且这三篇**已经在库里验证过整条链路**（导入 → 解析 → 断言 → 证据 → 问答 → 评测），
+  // 别人点一下就能复现同样的结果。
+  {
+    label: '基于 Haar 小波域指标自适应选择载体的 JPEG 隐写（中文）',
+    url: 'https://www.jos.org.cn/josen/article/pdf/5281',
+    note: '软件学报 · 中文 · 已验证',
+  },
+  {
+    label: '数据驱动的移动应用用户接受度建模与预测（中文）',
+    url: 'https://www.jos.org.cn/josen/article/pdf/6106',
+    note: '软件学报 · 中文 · 已验证',
+  },
+  {
+    label: '基于软件度量的 Solidity 智能合约缺陷预测方法（中文）',
+    url: 'https://www.jos.org.cn/josen/article/pdf/6550',
+    note: '软件学报 · 中文 · 已验证',
+  },
   {
     label: 'Attention Is All You Need',
     url: 'https://arxiv.org/pdf/1706.03762',
@@ -189,7 +208,15 @@ export default function UploadPage() {
             <div>
               <div className="text-sm font-medium text-amber-200">处理失败</div>
               <p className="mt-1 text-[12px] text-slate-300/80">{error}</p>
-              <p className="mt-1 text-[12px] text-slate-400/70">请确认 DEMO_MODE=false 并已配置 DashScope/LLM。</p>
+              {/* R4：DEMO_MODE 已删除，别再让用户去改一个不存在的开关。
+                  这里改成**按错误类型给可操作建议**，而不是一句笼统的猜测。 */}
+              <p className="mt-1 text-[12px] text-slate-400/70">
+                {/failed to fetch|networkerror|load failed/i.test(error)
+                  ? '看起来是网络没连上后端：确认后端容器在运行（docker-compose ps），再重试一次。'
+                  : /大|too large|413/i.test(error)
+                    ? '文件超过大小上限，换一个更小的 PDF。'
+                    : '若反复失败，检查后端日志：docker-compose logs --tail=50 backend。'}
+              </p>
             </div>
           </motion.div>
         )}

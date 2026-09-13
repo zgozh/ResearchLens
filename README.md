@@ -28,7 +28,7 @@ ResearchLens 把一篇科研论文自动转换成**证据驱动的可交互科�
 
 ## 🖼 现场演示（Demo Mode）
 
-`DEMO_MODE=true` 时**无需任何 API Key**即可完整演示：
+配好 DashScope（`LLM_API_KEY`）后，**整条链路都是真实模型**：
 先拖入/选择一篇 Demo 论文 → 自动生成 Paper Map → 点击 Method 看算法动画 →
 点击实验结果看 Claim→Evidence→Page → 打开 Research Graph 图谱 → AI Presenter 讲解 →
 提问「这篇论文哪里最值得质疑？」系统基于 Discussion 证据作答。
@@ -37,11 +37,11 @@ ResearchLens 把一篇科研论文自动转换成**证据驱动的可交互科�
 
 ## 🔬 Live 模式（接入真实 LLM · 已接 DashScope）
 
-> 演示无 key 也能跑（DEMO_MODE=true 读内置 seed）；若要「真实抽取链路」，切到 Live。
+> R4 起已**删除 DEMO_MODE 开关**：产品只有一条链路。没配 Key 时是**运行期降级**
+> （`has_llm=False` → 抽取式作答），不是另一种"演示模式"。
 
 ```bash
 # .env 中：
-DEMO_MODE=false
 LLM_API_KEY=<你的 DashScope/百炼 API-KEY>
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL=qwen-plus
@@ -83,7 +83,7 @@ docker compose up --build
 
 打开 `http://localhost:3000`。
 
-> 默认 `DEMO_MODE=true`，无需 API Key 即可完整体验。
+> 需要 `.env` 里配好 `LLM_API_KEY` 与 `MINERU_TOKEN`（真实解析 + 真实问答）。
 
 ## 🧩 本地开发
 

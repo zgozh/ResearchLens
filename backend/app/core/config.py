@@ -1,6 +1,6 @@
 """M00 — 全局配置（REFACTOR_SPEC §5.10 Settings + 现有 `.env` 兼容）。
 
-- 保留原有全部字段（demo_mode / llm_* / mineru_* / tts_* / max_upload_mb ...），
+- 保留原有全部字段（llm_* / mineru_* / tts_* / max_upload_mb ...），
   现有调用方 `from app.core.config import settings` 继续可用。
 - 新增 canonical 字段：data_dir / max_download_bytes / allowed_source_hosts /
   public_deployment / admin_token_configured / job_lease_seconds / qa_deadline_ms /
@@ -54,7 +54,11 @@ def _env_list(key: str, default: str = "") -> List[str]:
 @dataclass
 class Settings:
     # --- mode ---
-    demo_mode: bool = _env_bool("DEMO_MODE", True)
+    # R4：**DEMO_MODE 开关已彻底删除**（用户要求"让整个项目都是完整模型"）。
+    # 留着双态开关的坏处：`cp .env.example .env` 后忘了改 → 上传被 400 拦掉，
+    # 而界面提示只在失败之后才出现，用户看到的是"处理失败"。
+    # 真值只有一个：有 LLM 就调 LLM；没配就**运行期降级**（`has_llm=False` 走抽取式），
+    # 后者是降级能力，不是"演示模式"，两者不是一回事。
     app_name: str = _env("APP_NAME", "ResearchLens API")
     version: str = _env("VERSION", "1.0.0")
 
@@ -121,10 +125,6 @@ class Settings:
     )
 
     # ------------------------------------------------------------ derived
-    @property
-    def is_live(self) -> bool:
-        return not self.demo_mode
-
     @property
     def has_llm(self) -> bool:
         return bool(self.llm_api_key)

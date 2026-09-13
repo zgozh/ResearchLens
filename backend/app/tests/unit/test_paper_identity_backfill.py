@@ -71,6 +71,19 @@ class TestPlaceholderDetection:
     def test_uploaded_paper_default_is_placeholder(self):
         assert self._is_placeholder("Uploaded Paper", "")
 
+    def test_filename_as_title_is_placeholder(self):
+        """**文件名当标题**也是占位（上传路径就是这么写的，实测 `upload-test.pdf`）。
+
+        它描述的是"这个文件叫什么"，不是"这篇论文叫什么" —— 解析出真标题后应当覆盖。
+        """
+        assert self._is_placeholder("upload-test.pdf", "")
+        assert self._is_placeholder("5281.pdf", "")
+        assert self._is_placeholder("PAPER.PDF", "")
+
+    def test_real_title_containing_pdf_word_is_not_placeholder(self):
+        """标题里出现 'pdf' 但不是以 `.pdf` 结尾 → 是真标题，不许覆盖。"""
+        assert not self._is_placeholder("A Survey of PDF Malware Detection", "真实摘要")
+
     def test_empty_both_is_placeholder(self):
         assert self._is_placeholder("", "")
 

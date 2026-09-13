@@ -43,7 +43,9 @@ def test_health(client):
     r = client.get("/api/health")
     assert r.status_code == 200
     body = r.json()
-    assert "status" in body and "demo_mode" in body and "version" in body
+    # R4：`demo_mode` 已从对外契约删除（DEMO_MODE 开关整个删掉了）
+    assert "status" in body and "version" in body
+    assert "demo_mode" not in body, body
 
 
 def test_demo_list(client):
@@ -158,17 +160,14 @@ def test_jobs_404(client):
 
 
 def test_upload(client):
-    # §5.11：demo_mode=true 保留 400；live 模式返回 paper_id 并**直接进入 processing**
-    # （ADR-0066：上传改走 canonical ingest，服务端自己跑完整 pipeline，
+    # R4 改写：原先这里按 `settings.demo_mode` 分叉（true → 400）。
+    # DEMO_MODE 开关已彻底删除，所以上传**只有一个结果**：
+    # 返回 paper_id 并直接进入 processing。
+    # （ADR-0066：上传走 canonical ingest，服务端自己跑完整 pipeline，
     #  不再只建一行 legacy GenerationJob —— 那行没有任何消费者，论文会永远 pending）
-    from app.core.config import settings
-
     r = client.post("/api/papers/upload",
                     files={"file": ("x.pdf", b"%PDF-1.4 fake", "application/pdf")})
-    if settings.demo_mode:
-        assert r.status_code == 400
-    else:
-        assert r.status_code == 200
-        body = r.json()
-        assert "paper_id" in body
-        assert body.get("status") in ("processing", "pending"), body
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "paper_id" in body
+    assert body.get("status") in ("processing", "pending"), body

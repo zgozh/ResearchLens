@@ -186,7 +186,7 @@ export default function Home() {
           <span>第二届「庆园杯」· 主题三 开放创新探索</span>
           <span className="flex items-center gap-1.5">
             <Sparkles className="h-3 w-3" />
-            演示模式 · 无需 API Key 即可体验
+            真实抽取链路 · 配好 LLM_API_KEY 即可完整运行
           </span>
         </footer>
       </section>

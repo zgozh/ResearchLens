@@ -58,11 +58,20 @@ _NOT_TITLE_RE = re.compile(
 
 
 def is_placeholder_title(title: Optional[str]) -> bool:
-    """当前标题是不是**占位值**（可以安全覆盖）。"""
+    """当前标题是不是**占位值**（可以安全覆盖）。
+
+    两类都算占位：
+
+    1. 已知脏默认值（`Real Paper` / `Uploaded Paper` / `Untitled` / 空）；
+    2. **文件名当标题**（`xxx.pdf`）—— 上传路径在没有更好的来源时就用 `file.filename`，
+       那描述的是"这个文件叫什么"，不是"这篇论文叫什么"（实测 `upload-test.pdf`）。
+    """
     text = (title or "").strip()
     if not text:
         return True
-    return text.lower() in PLACEHOLDER_TITLES
+    if text.lower() in PLACEHOLDER_TITLES:
+        return True
+    return bool(re.fullmatch(r".+\.pdf", text, flags=re.I))
 
 
 def is_placeholder_abstract(abstract: Optional[str]) -> bool:

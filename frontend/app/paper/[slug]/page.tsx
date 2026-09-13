@@ -364,7 +364,9 @@ export default function Workspace() {
 
   const title = manifest?.paper?.title || detail?.title || '';
   const domain = manifest?.paper?.domain || detail?.domain || '';
-  const modeLabel = isUpload ? '实时抽取' : '演示模式';
+  // R4：'演示模式' 这个词随 DEMO_MODE 一起退休 —— 它描述的是一个已不存在的模式。
+  // 现在只区分「这篇是从上传/网址导入的」与「库内自带论文」。
+  const modeLabel = isUpload ? '实时抽取' : '库内论文';
 
   return (
     <div className="grid-bg min-h-screen">

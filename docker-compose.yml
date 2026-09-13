@@ -6,7 +6,6 @@
 # 宿主端口 4002/8002（容器内部仍 3000/8000）；LLM 默认 DashScope/qwen-plus。
 
 x-backend-env: &backend-env
-  DEMO_MODE: ${DEMO_MODE:-true}
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-researchlens}:${POSTGRES_PASSWORD:-researchlens}@db:5432/${POSTGRES_DB:-researchlens}
   CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-4002},http://127.0.0.1:${FRONTEND_PORT:-4002}
   LLM_API_KEY: ${LLM_API_KEY:-}

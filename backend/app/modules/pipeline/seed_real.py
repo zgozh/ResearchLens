@@ -39,10 +39,6 @@ def provision_real_papers() -> None:
     - 按标题幂等（同标题不重复建论文）；
     - 不要求 LLM 健康才能入队；无 LLM 时解析/原始文本仍可读。
     """
-    if settings.demo_mode:
-        log.info("seed_real: DEMO_MODE=true — 跳过真实论文入队")
-        return
-
     try:
         report = seed_catalog("real")
         log.info("seed_real: 入队 %d 篇，跳过 %d 篇", len(report.get("job_ids", [])),

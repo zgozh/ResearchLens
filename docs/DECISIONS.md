@@ -2416,3 +2416,87 @@ R4-M8 的规划里写了"迁移前 grep 每个待搬符号的引用点"——我
 3. `verify_upload_progress.py` 的**深档**（`RL_ACCEPT_DEEP=1`）未跑（需解析凭据）；
 4. **前端视觉/手工验证**未做（tsc + 单测 + bundle 检查已覆盖，但"用眼睛看"这一层
    只有用户能做 —— 尤其 M2 的滚动手感、M5 的主卡观感、M7 的进度界面）。
+
+---
+
+## D-113 删除 DEMO_MODE 开关 + 示例网址换成三篇真实中文论文
+
+### 谁要求的
+
+> "请确认 DEMO_MODE=false 并已配置 DashScope/LLM。应该直接把这个 demo 模式删掉，应该让整个
+>  项目都是完整模型不需要 demo 模型。……粘贴网址下面那里给出的示例网址加上一些中文论文网址，
+>  因为到时候演示最好是用中文的，最好把目前项目里的那 3 篇真实中文论文地址放上示例那里。"
+
+### ① 实测："处理失败 / Failed to fetch" 的真相
+
+先查证，结论与界面提示**不一致**，如实记录：
+
+- `.env` 里 `DEMO_MODE=false` **本来就是对的**，`LLM_API_KEY` 与 `MINERU_TOKEN` 都配好了；
+- 上传端点实测可用（无文件 → 422；带真实 PDF → `{"paper_id":N,"status":"processing"}` HTTP 200）；
+- CORS 预检正常（`access-control-allow-origin: http://localhost:4002`）；
+- **后端容器日志显示它当时刚启动**（`alembic` 迁移时间戳就在用户报错前后）——
+  也就是说，那次 `Failed to fetch` 是**浏览器打在一个正在重启的后端上**造成的
+  （R4 收尾期间我反复重建/重启容器，窗口期正好被撞上）。
+
+**但用户要删 DEMO_MODE 的诉求本身是对的**，理由与这次的偶发故障无关（见下）。
+
+### ② 为什么删开关而不是"把默认值改成 false"
+
+`DEMO_MODE` 是**双态开关**，留着有三种坏结果：
+
+1. `cp .env.example .env` 后忘了改 → 上传被 400 拦掉，而界面提示**只在失败之后**出现，
+   用户看到的是"处理失败"却不知道该改哪儿；
+2. 部署形态分叉（demo 栈 vs live 栈），排查问题前得先问"你哪套模式"；
+3. 产品定位被稀释 —— 这是个**真实抽取**的产品，不需要一条"读内置 seed"的旁路。
+
+**改法**：删掉开关本身。真值只有一个：有 LLM 就调 LLM；没配就**运行期降级**
+（`has_llm=False` 走抽取式作答）。**后者是降级能力，不是"演示模式"，两者不是一回事** ——
+所以 `has_llm` / `has_mineru` 保留，只删 `demo_mode` 与它的马甲 `is_live`。
+
+删除面（全仓库**代码行**零命中，注释里允许说明"为什么删的"）：
+
+| 位置 | 改动 |
+|---|---|
+| `core/config.py` | 删 `demo_mode` 字段与 `is_live` 属性 |
+| `api/routes.py` | 上传端点删 400 分支；`/api/health` 不再宣告 |
+| `main.py` | 启动**无条件**自举真实论文；根端点不再宣告 |
+| `modules/pipeline/seed_real.py` | 删跳过门禁 |
+| `schemas/schemas.py` | `HealthOut` 删 `demo_mode` 字段 |
+| `docker-compose.yml` / `.env` / `.env.example` / `README.md` | 删配置与说明 |
+| 前端 | 报错提示改为**按错误类型给可操作建议**（不再让用户去改一个不存在的开关）；首页页脚与工作台徽标里"演示模式"的措辞一并退休 |
+
+新增门禁 `test_no_demo_mode.py`（10 条）：settings 无该属性、HealthOut 无该字段、上传无 demo 分支、
+启动无 demo 门禁、**代码行零命中**（逐行扫描，跳过 docstring 与行尾注释）。
+
+### ③ 示例网址：加入三篇真实中文论文
+
+取自库里已有的三篇（`source_documents.source_url`，均为**开放获取的软件学报 PDF**，实测可下载）：
+
+| 论文 | 网址 | 实测 |
+|---|---|---|
+| 基于 Haar 小波域指标自适应选择载体的 JPEG 隐写 | `https://www.jos.org.cn/josen/article/pdf/5281` | 200 · PDF · 1.1MB |
+| 数据驱动的移动应用用户接受度建模与预测 | `https://www.jos.org.cn/josen/article/pdf/6106` | 200 · PDF · 1.8MB |
+| 基于软件度量的 Solidity 智能合约缺陷预测方法 | `https://www.jos.org.cn/josen/article/pdf/6550` | 200 · PDF · 11MB |
+
+**为什么放中文**：演示场景下中文论文的题注、章节名、问答都更容易看懂；而且这三篇
+**已经在库里跑通过整条链路**，别人点一下就能复现同样的结果。已确认三个地址进入前端构建产物。
+
+### ④ 顺带发现并修掉的两件事
+
+1. **文件名当标题也算占位**：上传路径用 `file.filename` 当标题（实测 `upload-test.pdf`），
+   它描述的是"文件叫什么"而不是"论文叫什么"。`is_placeholder_title` 增加"以 `.pdf` 结尾"判据
+   （`A Survey of PDF Malware Detection` 这类真标题不受影响，有测试）。回填后库里两篇
+   旧上传恢复了真标题（`Generative Adversarial Nets`）。
+2. 清掉了 R4 期间我为排查创建的两篇探针论文（`probe.pdf`），保持演示列表干净。
+
+### ⑤ 如实说明：一个我没擅自处理的东西
+
+**paper 8**（`upload-test.pdf`，`pdf=unavailable reason="无源文件"`）是一次失败的旧导入，
+**没有源文件也没有 revision**，回填无从下手，它会以一篇打不开的空论文形式出现在列表里。
+删除它需要连带清 35 张子表的记录（我已做成脚本），但那是**用户数据**，
+我没擅自删 —— 你说一声我就清掉。
+
+### 验收
+
+后端 `pytest` **1005 passed / 0 failed**；前端 `tsc` 干净、`test:lib` 全绿；
+`run_all.py` **7/7 pass**；`/api/health` 与 `/` 实测已无 `demo_mode`；上传实测 200。
