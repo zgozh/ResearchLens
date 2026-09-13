@@ -5,7 +5,9 @@
 // 优先走流式 POST /papers/{id}/qa/stream：先 citation 事件，再 verified_sentence，
 // 最后唯一 final/error；UI 逐句渲染，每个经验证的句子可点击跳到证据（onNavigate）。
 // 非流式 api.qa() 作为降级路径（SSE 不可用时），语义与结构保持一致（§551）。
-// 无证据 → 拒答，不允许编造。
+//
+// R4-M4（ADR D-104）：产品里**没有"拒答"这一档** —— 每个问题都会得到回答 + 置信度；
+// 连接层异常就按连接层异常呈现（恢复/重试），**不伪装成一个带置信度的回答**。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
@@ -38,6 +40,16 @@ interface Msg {
   citations?: EvidenceRecord[];
   /** 是否来自流式 */
   streamed?: boolean;
+  /**
+   * R4-M4：**连接层异常**的如实提示。
+   *
+   * 为什么单独一个字段：以前这种情况被写成一条 `mode:'interrupted'`、
+   * `confidence:'Low'` 的"回答"，在界面上和真实回答长得一样 ——
+   * 用户读成"论文问答被中断了"。连接异常不是回答，**不挂置信度、不显示 mode 徽标**。
+   */
+  transportError?: string;
+  /** R4-M4：可重试的原问题（渲染「重试」按钮）。 */
+  retryQuestion?: string;
 }
 
 export function QAView({ scope, accent, detail, onNavigate, messages, onMessagesChange }: {
@@ -65,23 +77,34 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
   });
   const streamDoneRef = useRef(false);
 
+  /**
+   * 非流式兜底（SSE 不可用时，或恢复链的第 ② 步）。
+   *
+   * R4-M4：返回**是否成功**，并新增 `silent`（恢复链自己负责渲染失败提示，
+   * 避免同一条链上出现两条消息）。失败时不再伪造一条带 `confidence:'Low'` 的"回答"，
+   * 而是标 `transportError` —— 界面上它与真实回答之间不存在歧义。
+   */
   const askFallback = useCallback(
-    async (q: string) => {
-      if (!scope) return;
+    async (q: string, opts?: { silent?: boolean }): Promise<boolean> => {
+      if (!scope) return false;
       setFallbackLoading(true);
       try {
         const r = await api.qa(scope.paper_id, q);
         setMsgs([...msgs, { role: 'user', text: q }, { role: 'assistant', text: r.answer, resp: r }]);
+        return true;
       } catch {
+        if (opts?.silent) return false;
         setMsgs([
           ...msgs,
           { role: 'user', text: q },
           {
             role: 'assistant',
-            text: '出错了，请稍后再试。',
-            resp: { answer: '', grounded: false, confidence: 'Low', evidence: [], note: '问答服务不可用' },
+            text: '',
+            transportError: '连接异常，这次没能取回回答（已保留你的问题）。',
+            retryQuestion: q,
           },
         ]);
+        return false;
       } finally {
         setFallbackLoading(false);
       }
@@ -90,6 +113,10 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
   );
 
   // 流式结束时把结果落成一条消息（含逐句 + 引用）
+  //
+  // R4-M4：**结果锁**取代旧的一次性锁。旧实现在"没拿到 final"时就把锁置上并把
+  // 「回答被中断 · 置信度 Low」写进消息 —— 一个像业务结论的连接层异常，而且永远不再更新。
+  // 现在：只有"真的拿到结果"或"恢复成功"才落消息；recovering 期间迟到的 final 仍可采纳。
   useEffect(() => {
     if (!streamQuestion) return;
     const finalEv = stream.events.find((e) => e.type === 'final');
@@ -129,48 +156,21 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
       ]);
       setStreamQuestion('');
     }
-    if (stream.state === 'failed' && !streamDoneRef.current) {
-      streamDoneRef.current = true;
-      // 失败也要**先按 answer_id 取回**（服务端在发 final 前就落库了，连接断了不代表答案没了），
-      // 取不回再降级到非流式 POST /qa —— 最后才提示可重试。
-      const meta = stream.events.find((e) => e.type === 'meta');
-      const failedAnswerId = (meta?.data as QAMeta | undefined)?.answer_id;
-      const q = streamQuestion;
-      if (failedAnswerId && scope) {
-        setStreamQuestion('');
-        void api
-          .qaAnswer(scope.paper_id, failedAnswerId)
-          .then((r) => {
-            if (r.status === 'completed' && r.legacy) {
-              setMsgs([
-                ...msgs,
-                { role: 'user', text: q },
-                {
-                  role: 'assistant',
-                  text: r.legacy.answer,
-                  resp: { ...r.legacy, note: '连接中断，已从服务端取回完整结果。' },
-                  streamed: true,
-                },
-              ]);
-              return;
-            }
-            void askFallback(q);
-          })
-          .catch(() => void askFallback(q));
-        return;
-      }
-      setStreamQuestion('');
-      void askFallback(q);
-    }
-    // **流结束却没有 final**（ADR-0069 / REFACTOR_PLAN M6）：
-    // 以前这里什么都不做 → 用户看到"转圈转了一会儿就没反应"。
-    // 现在分两步：① 若已拿到 meta.answer_id，就按它去后端**取回已落库的结果**
-    // （服务端在发 final 之前就持久化了，网络断了不代表答案没了）；② 取不回来才退回
-    // "已生成的部分 + 可重试"提示，绝不静默。
-    if (stream.state === 'completed' && !finalEv && !streamDoneRef.current) {
+    // ---- 恢复链（R4-M4）----
+    // 触发条件：传输层失败（`failed`）**或**流读完却没有 final（`recovering`）。
+    // 两者在旧实现里被区别对待：前者走恢复、后者被当成"完成"并写死一条
+    // 「回答被中断 · 置信度 Low」的**假回答**。现在合并为同一条链：
+    //   ① 有 answer_id → 按它取回服务端已落库的结果（服务端在发 final 前就持久化了）；
+    //   ② 取不回 → 非流式 POST /qa 兜底；
+    //   ③ 都失败 → **如实报"连接异常、可重试"**，绝不伪装成带置信度的回答。
+    if (
+      (stream.state === 'recovering' || stream.state === 'failed') &&
+      !streamDoneRef.current
+    ) {
       streamDoneRef.current = true;
       const meta = stream.events.find((e) => e.type === 'meta');
       const answerId = (meta?.data as QAMeta | undefined)?.answer_id;
+      const q = streamQuestion;
       const sentences = stream.events
         .filter((e) => e.type === 'sentence')
         .map((e) => {
@@ -180,14 +180,36 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
       const citations = stream.events
         .filter((e) => e.type === 'citation')
         .map((e) => (e.data as QACitation).evidence);
-      const partial = sentences.map((s) => s.text).join(' ').trim();
 
-      const finish = (resp: AskResponse, note: string) => {
+      const recoverNote = `连接中断，已从服务端取回完整结果${stream.droppedFrames > 0 ? `（丢弃 ${stream.droppedFrames} 个无法解析的帧）` : ''}。`;
+
+      const finishRecovered = (resp: AskResponse) => {
         setMsgs([
           ...msgs,
-          { role: 'user', text: streamQuestion },
-          { role: 'assistant', text: resp.answer, resp: { ...resp, note, mode: resp.mode ?? 'cached' },
-            sentences, citations, streamed: true },
+          { role: 'user', text: q },
+          {
+            role: 'assistant',
+            text: resp.answer,
+            resp: { ...resp, note: recoverNote },
+            sentences, citations, streamed: true,
+          },
+        ]);
+        setStreamQuestion('');
+      };
+
+      const giveUp = async () => {
+        const ok = await askFallback(q, { silent: true });
+        if (ok) return;
+        // ③ 如实报连接异常：text 给一句可读说明，但**不挂 resp**（没有回答、没有置信度）。
+        setMsgs([
+          ...msgs,
+          { role: 'user', text: q },
+          {
+            role: 'assistant',
+            text: '',
+            transportError: '连接异常，这次没能取回回答（已保留你的问题）。',
+            retryQuestion: q,
+          },
         ]);
         setStreamQuestion('');
       };
@@ -197,53 +219,21 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
           .qaAnswer(scope.paper_id, answerId)
           .then((r) => {
             if (r.status === 'completed' && r.legacy) {
-              finish(r.legacy, '连接中断，已从服务端取回完整结果。');
+              finishRecovered(r.legacy);
               return;
             }
-            fallbackPartial();
+            void giveUp();
           })
-          .catch(() => fallbackPartial());
+          .catch(() => void giveUp());
         return;
       }
-      fallbackPartial();
-
-      function fallbackPartial() {
-        setMsgs([
-          ...msgs,
-          { role: 'user', text: streamQuestion },
-          {
-            role: 'assistant',
-            text: partial,
-            resp: {
-              answer: partial,
-              grounded: false,
-              confidence: 'Low',
-              evidence: citations.map((c) => ({
-                page: c.source_page,
-                region: c.source_region?.[0]?.page_label ?? c.anchor_id,
-                region_type: 'anchor',
-                text: c.source_text,
-                quote: c.source_text,
-                confidence: c.confidence ?? 0,
-              })),
-              note: partial
-                ? '这次连接中断了（未收到完整结果），以上是已生成的部分；已为你保留。'
-                : '这次没能拿到完整结果，已保留你的问题，可以点「重试」再问一次。',
-              mode: 'interrupted',
-            },
-            sentences,
-            citations,
-            streamed: true,
-          },
-        ]);
-        setStreamQuestion('');
-      }
+      void giveUp();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream.state, stream.events, streamQuestion]);
 
   const streaming = streamQuestion !== '' &&
-    (stream.state === 'connecting' || stream.state === 'streaming');
+    (stream.state === 'connecting' || stream.state === 'streaming' || stream.state === 'recovering');
   const loading = streaming || fallbackLoading;
 
   const ask = (q: string) => {
@@ -326,7 +316,9 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
                   <FileText className="h-6 w-6" style={{ color: accent }} />
                 </div>
                 <p className="text-sm text-slate-400">向论文提问，回答将绑定证据与置信度。</p>
-                <p className="mt-1 font-mono text-[11px] text-slate-600">无证据 → 拒绝编造</p>
+                <p className="mt-1 font-mono text-[11px] text-slate-600">
+                  每个问题都会得到回答；低置信度会说明原因
+                </p>
               </div>
             </div>
           )}
@@ -339,17 +331,38 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
                 </div>
               ) : (
                 <div className="w-full">
+                  {m.transportError ? (
+                    // R4-M4：连接层异常如实呈现 —— 没有置信度、没有 mode 徽标、不是"回答"。
+                    <div className="flex items-start gap-2 rounded-2xl rounded-bl-md border border-rose-500/30 bg-rose-500/[0.07] px-4 py-3 text-[13px] text-rose-200">
+                      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                      <div className="min-w-0">
+                        <div>{m.transportError}</div>
+                        {m.retryQuestion && (
+                          <button
+                            type="button"
+                            onClick={() => ask(m.retryQuestion!)}
+                            className="mt-1.5 rounded-lg border border-rose-400/30 px-2 py-0.5 text-[11px] text-rose-100 transition hover:bg-rose-500/15"
+                          >
+                            重试
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                  <>
                   <div className="mb-1.5 flex items-center gap-2">
                     {m.resp?.mode === 'not_mentioned' ? (
                       <Badge tone="slate"><SearchX className="h-3 w-3" /> 论文未提及</Badge>
                     ) : m.resp?.mode === 'general' ? (
                       <Badge tone="cyan"><MessageCircle className="h-3 w-3" /> 通用回答 · 未用论文证据</Badge>
-                    ) : m.resp?.mode === 'interrupted' ? (
-                      <Badge tone="amber"><ShieldAlert className="h-3 w-3" /> 回答被中断</Badge>
+                    ) : m.resp?.mode === 'unavailable' ? (
+                      <Badge tone="slate"><Info className="h-3 w-3" /> 模型暂不可用 · 如实说明</Badge>
+                    ) : m.resp?.mode === 'extractive' ? (
+                      <Badge tone="violet"><Quote className="h-3 w-3" /> 原文抽取作答</Badge>
                     ) : m.resp?.grounded ? (
                       <Badge tone="emerald"><ShieldCheck className="h-3 w-3" /> 有据可依</Badge>
                     ) : (
-                      <Badge tone="amber"><ShieldAlert className="h-3 w-3" /> 无证据支持</Badge>
+                      <Badge tone="amber"><ShieldAlert className="h-3 w-3" /> 低置信回答</Badge>
                     )}
                     {m.streamed && <span className="font-mono text-[10px] text-slate-600">流式</span>}
                     {m.resp && <span className="font-mono text-[10px] text-slate-500">置信度 · {m.resp.confidence}</span>}
@@ -408,12 +421,16 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
                     </div>
                   )}
                   {m.resp && !m.resp.grounded && (
-                    <div className="mt-2 text-[11px] text-amber-400/80">{m.resp.note || '检索到的证据不足以支撑回答，已拒答。'}</div>
+                    <div className="mt-2 text-[11px] text-amber-400/80">
+                      {m.resp.note || '该回答未通过完整证据校验，置信度较低。'}
+                    </div>
                   )}
                   {m.resp && m.resp.mode === 'general' && (
                     <div className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-sky-500/25 bg-sky-500/10 px-2 py-1 text-[10px] text-sky-200/90">
                       <Info className="h-3 w-3" /> 通用回答（非论文内容，未使用原文证据）
                     </div>
+                  )}
+                  </>
                   )}
                 </div>
               )}

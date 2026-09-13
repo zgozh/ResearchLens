@@ -1049,4 +1049,12 @@ export type StreamState =
   | 'streaming'
   | 'completed'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  /**
+   * R4-M4：**流读完了但没有 `final`**。
+   *
+   * 以前这种情况被无条件写成 `completed`，于是"没有结果"看起来像"有结果"，
+   * 调用方把它渲染成「回答被中断 · 置信度 Low」——一个像业务结论的连接层异常。
+   * 现在它是一个独立状态：调用方走恢复链（按 answer_id 取回 → 非流式兜底 → 如实报错）。
+   */
+  | 'recovering';
