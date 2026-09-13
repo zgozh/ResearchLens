@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { ArrowLeft, FileUp, FileText, Loader2, CheckCircle2, AlertTriangle, Sparkles, Globe } from 'lucide-react';
 import { api } from '@/lib/api';
+import { workspaceQuery } from '@/lib/paperProgress';
 import { Logo } from '@/components/Logo';
 import { Btn, GlassCard, Kicker } from '@/components/ui';
 import { cn } from '@/lib/cn';
@@ -49,8 +50,12 @@ export default function UploadPage() {
   const [error, setError] = useState<string>();
   const [ok, setOk] = useState(false);
 
+  // R4-M7：跳转**必须带上 job_id**（旧实现只带 paper_id，于是 `useJobEvents({job_id: 0})`
+  // 永不连接 SSE，页面既没有进度也没有阶段细粒度），并且**立即跳转**
+  // —— 那 900ms 的 setTimeout 没有任何作用（响应里 job_id 已经有了，
+  // 目标页本来就要处理"作业刚开始"的 pending 态）。
   const goToPaper = (paperId: number, jobId?: number) => {
-    router.push(`/paper/upload?paper_id=${paperId}${jobId ? `&job_id=${jobId}` : ''}`);
+    router.push(`/paper/upload?${workspaceQuery(paperId, jobId)}`);
   };
 
   const handleFile = useCallback(async (file?: File | null) => {
@@ -62,8 +67,8 @@ export default function UploadPage() {
       // 服务端现在**自己**跑完整 ingest（与"粘贴网址"同一条 canonical 链路，ADR-0066），
       // 因此不再调 /process —— 否则整条 pipeline 会跑两遍（双倍模型开销）。
       setOk(true);
-      setStage('已上传，正在后台完整抽取（结构/断言/场景/图表）…');
-      setTimeout(() => goToPaper(up.paper_id), 900);
+      setStage('已创建任务，正在进入工作台…');
+      goToPaper(up.paper_id, up.job_id);
     } catch (e: any) {
       setError(e?.message || '上传失败');
       setStage('');
@@ -76,12 +81,12 @@ export default function UploadPage() {
     const u = url.trim();
     if (!u) return;
     setBusy(true); setOk(false); setError(undefined);
-    setStage('正在下载真实论文并在后台抽取…');
+    setStage('正在下载真实论文…');
     try {
       const up = await api.paperFromUrl(u);
       setOk(true);
-      setStage('已下载，正在后台完整抽取（结构/断言/场景/图表）…');
-      setTimeout(() => goToPaper(up.paper_id), 900);
+      setStage('已创建任务，正在进入工作台…');
+      goToPaper(up.paper_id);
     } catch (e: any) {
       setError(e?.message || '处理失败');
       setStage('');

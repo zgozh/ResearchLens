@@ -2160,3 +2160,66 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
 隐含假设 `segment.rect` 存在且**与 expected 独立**。实测两端都不成立（生产者原先不存在；
 存在之后两者同源）。本 ADR 按**实测**定案，不按方案的假设实施 ——
 否则产出的会是一个恒为 100% 的假指标。
+
+---
+
+## D-108 成果页可观测：**`manifest.capabilities` + `active_job` 是唯一进度真相**（R4-M7）
+
+### 用户报的现象
+
+> "点了处理之后他就直接跳转到成果那里了，但是一开始什么都没解析出，所以是一片空白，
+> 我还要等一会然后手动刷新才能看到解析出的东西。"
+
+### 根因（四条独立缺陷叠加，逐条读代码 + 实测确认）
+
+1. `usePaperWorkspace.refresh()`：无 revision 时 `return` → `exhibits` 永远停在
+   `{status:'idle', data:null}` 且**不重试**；
+2. `paper/[slug]/page.tsx` 的"实时模式"门禁要求 `exhibits` 非空 → 恒为 null →
+   **那段写死的 40×2.5s 轮询根本不会启动**；
+3. `upload/page.tsx` 跳转时**丢掉 `job_id`** → `useJobEvents({job_id:0})` 永不连接
+   （SSE 与 jobStatus 两条路都被挡掉）；
+4. **页面早就拿得到进度真相却没人用**：`GET /manifest` 返回
+   `capabilities[{name,state,reason}]` 与 `active_job`。实测全仓库只有 `fixtures.ts`
+   与 `contracts.ts` 提到 `capabilities`，**没有任何组件消费它**。
+
+### 改法
+
+- 新增 `frontend/lib/paperProgress.ts`（纯函数，17 条单测）：
+  `deriveProgress(capabilities, activeJob, elapsedMs)` → `{phase, domains, pending,
+  currentReason, ratio, failureMessage, shouldPoll}`；
+  三终态 `failed / unavailable / timeout`，以及 `extracting / ready`；
+- **阻塞域 vs 非阻塞域**（实测发现的设计点）：真实库里 paper 11 的 `qa` 域**长期**
+  `pending`（问答底库按需构建）。若"有 pending 就轮询"，每打开一篇已完成论文都会空转
+  8 分钟 —— 那是轮询风暴。因此 `shouldPoll` 只在**有活跃作业**或
+  **阻塞域（pdf/text/media/claims）未就绪**时为真；非阻塞域的 pending 照常显示。
+- `LoadStateStatus` 新增 `'pending'`（"解析尚未产出 revision"是**正常中间态**，不是 idle）；
+- `upload/page.tsx`：跳转带 `job_id`，**删除 900ms `setTimeout`**（它没有任何作用 ——
+  响应里 job_id 已经有了，目标页本来就要处理 pending 态）；
+- `page.tsx`：写死的轮询换成退避轮询（作业活跃 2s；空闲 1s→2s→5s 封顶；
+  预算 8 分钟；页面隐藏时降频）；未就绪时渲染**分域进度 + 原因 + 三终态卡**，不再是空白。
+
+### `stage_started` 现场核对（欠账 3，用库里真实作业事件）
+
+```
+job_id | stage    | starts       job_id 8..11（M12 修复后创建的作业）：
+-------+----------+-------        无任何 stage 出现 2 次
+     7 | acquire  |     2
+     7 | claims   |     2
+     6 | acquire  |     2         job 1..7（修复前创建）：
+     6 | claims   |     2         acquire ×2（多为入队 emit 与领取 emit 各一次），
+     6 | exhibits |     2         个别还有 claims / exhibits ×2
+     5 | acquire  |     2
+     4 | acquire  |     2
+     3 | acquire  |     2
+     2 | acquire  |     2
+     1 | acquire  |     2
+```
+
+**结论（如实）**：M12 的"抑制连续重复 `stage_started`"在真实导入中**生效**——
+修复后创建的作业（8/9/10/11）一次重复都没有；1–7 号作业是修复前留下的历史记录，
+仍保留 2 次。**不修历史数据**（那是当时真实发生的记录）。
+
+### 验收
+
+后端 `pytest` **960 passed / 0 failed**；前端 `test:lib` **131 项**全绿（新增 17 项）。
+手工判据见 `paperProgress.spec.ts` 的用例名（每条对应一个用户可见行为）。

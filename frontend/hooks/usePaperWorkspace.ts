@@ -28,7 +28,9 @@ export function usePaperWorkspace({ paper_id }: { paper_id: PaperId }): {
   const refresh = useCallback(async () => {
     const seq = ++seqRef.current;
     setManifest((s) => ({ ...s, status: 'loading', error: null }));
-    setExhibits({ status: 'idle', data: null, error: null });
+    // R4-M7：不预设 `exhibits` 为 idle —— 那会让"还没解析出 revision"看起来像
+    // "什么都没发生"（调用方拿不到信号 → 白屏）。
+    setExhibits((s) => ({ ...s, status: 'loading', error: null }));
 
     let m: PaperManifest;
     try {
@@ -36,13 +38,21 @@ export function usePaperWorkspace({ paper_id }: { paper_id: PaperId }): {
     } catch (e) {
       if (seq !== seqRef.current) return;
       setManifest({ status: 'error', data: null, error: toDomainError(e) });
+      // manifest 都取不到时 exhibits 也标 error（不许停在 loading 转圈）
+      setExhibits((s) => ({ ...s, status: 'error', error: toDomainError(e) }));
       return;
     }
     if (seq !== seqRef.current) return;
     setManifest({ status: 'ready', data: m, error: null });
 
     const rev = m.revision?.id;
-    if (!rev) return; // 暂无可读 revision
+    if (!rev) {
+      // R4-M7 关键修复：以前这里是 `return`（exhibits 永远停在 idle、且不重试）。
+      // 现在显式标 `pending`：调用方据此显示"正在解析"并**继续轮询**，
+      // 而不是给用户一片空白。
+      setExhibits({ status: 'pending', data: null, error: null });
+      return;
+    }
 
     setExhibits((s) => ({ ...s, status: 'loading' }));
     try {

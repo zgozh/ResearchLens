@@ -1039,7 +1039,9 @@ export interface ExhibitBundle {
 
 /* ============ §5.13 前端运行时状态类型 ============ */
 
-export type LoadStateStatus = 'idle' | 'loading' | 'ready' | 'error';
+// R4-M7：新增 pending —— 「解析尚未产出 revision」是一个**正常中间态**，不是 idle。
+// 旧实现让它停在 idle，调用方拿不到任何信号，页面就是一片空白。
+export type LoadStateStatus = 'idle' | 'loading' | 'pending' | 'ready' | 'error';
 
 export interface LoadState<T> {
   status: LoadStateStatus;

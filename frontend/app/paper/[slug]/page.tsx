@@ -6,6 +6,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, LayoutGrid, Workflow, FileSearch, Share2, Mic, MessageCircle, Gauge, BookOpen, ChevronRight,
+  ShieldAlert,
 } from 'lucide-react';
 import { api, sleep } from '@/lib/api';
 import type {
@@ -17,6 +18,10 @@ import type {
 import { usePaperWorkspace } from '@/hooks/usePaperWorkspace';
 import { useEvidenceNavigation } from '@/hooks/useEvidenceNavigation';
 import { useJobEvents } from '@/hooks/useJobEvents';
+import {
+  deriveProgress,
+  nextPollDelay,
+} from '@/lib/paperProgress';
 import { JobProgress } from '@/components/jobs/JobProgress';
 import { AgentTrace } from '@/components/jobs/AgentTrace';
 import { Logo } from '@/components/Logo';
@@ -96,7 +101,6 @@ export default function Workspace() {
   const [qaMessages, setQaMessages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [processing, setProcessing] = useState(false);
   const [stageLabel, setStageLabel] = useState<string>();
   // PDF 阅读器定位结果（D13：只有真正画出区域才报已高亮）
   const [locateNotice, setLocateNotice] = useState<{ status: string; page?: number | null; anchorId?: string } | null>(null);
@@ -256,33 +260,55 @@ export default function Workspace() {
     return [];
   }, [canonicalClaims, statementsById, validationsByStatement]);
 
-  // 实时模式：canonical 无断言且存在 job → 轮询旧 claims（降级）
+  // ---- R4-M7：进度真相 = manifest.capabilities + active_job（不再是"exhibits 非空"）----
+  //
+  // 旧实现在这里判定 `exhibits && canonicalClaims.length === 0 && source_mode === 'upload'`，
+  // 而 `exhibits` 在"还没有 revision"时恒为 null → **那段 40×2.5s 轮询根本不会启动** →
+  // 页面一片空白，用户只能手动刷新。现在由 `deriveProgress` 统一推导：
+  // 分域进度、三终态、是否继续轮询、退避间隔。
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const progress = useMemo(
+    () => deriveProgress({
+      capabilities: manifest?.capabilities ?? null,
+      activeJob: manifest?.active_job ?? null,
+      elapsedMs,
+    }),
+    [manifest?.capabilities, manifest?.active_job, elapsedMs],
+  );
+  // 进度驱动轮询（指数退避 + 预算上限 + 页面隐藏时暂停）
   useEffect(() => {
-    if (!resolvedPaperId || processing) return;
-    if (exhibits && canonicalClaims.length === 0 && detail?.source_mode === 'upload') {
-      setProcessing(true);
-    }
-  }, [resolvedPaperId, exhibits, canonicalClaims.length, detail?.source_mode, processing]);
-
-  useEffect(() => {
-    if (!processing || !resolvedPaperId) return;
-    if (exhibits && canonicalClaims.length > 0) {
-      setProcessing(false);
-      return;
-    }
+    if (!resolvedPaperId || !progress.shouldPoll) return;
     let cancelled = false;
-    (async () => {
-      for (let i = 0; i < 40 && !cancelled; i++) {
-        await sleep(2500);
-        await workspace.refresh();
-        if (cancelled) break;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      if (cancelled) return;
+      if (typeof document !== 'undefined' && document.hidden) {
+        // 页面不可见时降频（不空转），可见后自动恢复
+        timer = setTimeout(tick, 5000);
+        return;
       }
-    })();
+      setElapsedMs((v) => v + 1000);
+      await workspace.refresh();
+      if (cancelled) return;
+      timer = setTimeout(tick, nextPollDelay(elapsedMs, !!manifest?.active_job));
+    };
+    timer = setTimeout(tick, nextPollDelay(elapsedMs, !!manifest?.active_job));
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
+    // elapsedMs 有意不进依赖：它由 tick 自己推进，进依赖会形成重建循环
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [processing, resolvedPaperId, exhibits, canonicalClaims.length]);
+  }, [resolvedPaperId, progress.shouldPoll, manifest?.active_job, workspace.refresh]);
+
+  /** 还没到"可看内容"的状态：显示分域进度与终态，而不是空白。 */
+  const notReady = progress.phase !== 'ready' && (
+    !exhibits
+    || workspace.exhibits.status === 'pending'
+    || workspace.exhibits.status === 'loading'
+  );
+  // 兼容旧变量名：`processing` 现在由进度真相驱动（供阶段 E 的事件流区块复用）
+  const processing = progress.shouldPoll;
 
   // ---- 阶段 E：job 事件流（SSE），jobStatus 轮询作降级 ----
   const jobEvents = useJobEvents({ job_id: jobId ? Number(jobId) : 0 });
@@ -438,6 +464,99 @@ export default function Workspace() {
                   </div>
                 )}
               </div>
+            )}
+
+            {/* R4-M7：**`manifest.capabilities` 驱动的分域进度**。
+                以前这里什么都没有 —— 用户看到一片空白，只能手动刷新。
+                现在：每个域一行（含后端给的原因），三终态各有界面。 */}
+            {notReady && (
+              <GlassCard className="mb-4 p-5">
+                {progress.phase === 'failed' ? (
+                  <div className="flex items-start gap-2 text-rose-200">
+                    <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div>
+                      <div className="text-sm font-medium">处理失败</div>
+                      <div className="mt-1 text-[12px] text-rose-300/80">
+                        {progress.failureMessage}
+                      </div>
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          onClick={() => void workspace.refresh()}
+                          className="rounded-lg border border-rose-400/30 px-2.5 py-1 text-[11px] transition hover:bg-rose-500/15"
+                        >
+                          重新检查状态
+                        </button>
+                        <Link href="/upload" className="rounded-lg border border-[var(--line)] px-2.5 py-1 text-[11px] text-slate-300 transition hover:bg-white/[0.06]">
+                          重新上传
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                ) : progress.phase === 'unavailable' ? (
+                  <div className="flex items-start gap-2 text-amber-200">
+                    <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div>
+                      <div className="text-sm font-medium">该论文没有可用的源文件</div>
+                      <ul className="mt-1.5 space-y-0.5 text-[12px] text-amber-300/80">
+                        {progress.domains.filter((d) => d.reason).map((d) => (
+                          <li key={d.name}>· {d.label}：{d.reason}</li>
+                        ))}
+                      </ul>
+                      <Link href="/upload" className="mt-2 inline-block rounded-lg border border-amber-400/30 px-2.5 py-1 text-[11px] transition hover:bg-amber-500/15">
+                        重新上传论文
+                      </Link>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="mb-3 flex items-center gap-2">
+                      <Spinner className="h-4 w-4" />
+                      <span className="text-sm font-medium text-white">
+                        {progress.phase === 'timeout'
+                          ? '处理时间超出预期，仍在后台继续'
+                          : '正在解析这篇论文…'}
+                      </span>
+                      <span className="ml-auto font-mono text-[11px] text-slate-500">
+                        {Math.round(progress.ratio * 100)}%
+                      </span>
+                    </div>
+                    <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                      <div
+                        className="h-full rounded-full bg-indigo-400 transition-all duration-500"
+                        style={{ width: `${Math.round(progress.ratio * 100)}%` }}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-4">
+                      {progress.domains.map((d) => (
+                        <div key={d.name} className="flex items-center gap-1.5 text-[11px]">
+                          <span
+                            className={
+                              d.state === 'ready'
+                                ? 'h-1.5 w-1.5 rounded-full bg-emerald-400'
+                                : d.state === 'unavailable'
+                                  ? 'h-1.5 w-1.5 rounded-full bg-amber-400'
+                                  : 'h-1.5 w-1.5 animate-pulse rounded-full bg-slate-500'
+                            }
+                          />
+                          <span className={d.state === 'ready' ? 'text-slate-300' : 'text-slate-500'}>
+                            {d.label}
+                          </span>
+                          {d.reason && d.state !== 'ready' && (
+                            <span className="truncate text-slate-600" title={d.reason}>
+                              {d.reason}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {progress.phase === 'timeout' && (
+                      <p className="mt-3 text-[11px] text-slate-500">
+                        后台仍在继续；你也可以手动刷新查看最新进度（不必反复刷新）。
+                      </p>
+                    )}
+                  </div>
+                )}
+              </GlassCard>
             )}
 
             <AnimatePresence mode="wait">
