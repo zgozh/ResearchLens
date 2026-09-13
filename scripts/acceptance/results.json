@@ -1,23 +1,44 @@
 {
   "base_url": "http://127.0.0.1:8002",
   "frontend_url": "http://127.0.0.1:4002",
-  "total": 2,
-  "passed": 2,
+  "total": 5,
+  "passed": 5,
   "failed": 0,
   "results": [
     {
       "script": "verify_route_a.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 1114,
+      "elapsed_ms": 1022,
       "tail": "  [OK  ] 前端首页 200 — 13702 bytes\n\n总计失败断言：0"
+    },
+    {
+      "script": "verify_graph.py",
+      "status": "pass",
+      "failures": 0,
+      "elapsed_ms": 548,
+      "tail": "  [OK  ] exhibits.graph 里图谱告警可见 — ['evidence_bindings_derived']\n\n总计失败断言：0"
     },
     {
       "script": "verify_e2e_extra.py",
       "status": "pass",
       "failures": 0,
-      "elapsed_ms": 14867,
+      "elapsed_ms": 14719,
       "tail": "  [OK  ] bundle 含「另有」（PresenterView 未解析引用提示） — /app/.next/server/app/paper/[slug]/page.js\n\n总计失败断言：0"
+    },
+    {
+      "script": "verify_metrics_live.py",
+      "status": "pass",
+      "failures": 0,
+      "elapsed_ms": 738,
+      "tail": "  [OK  ] overall_score 未假装可用（金标集未人工确认 → available=false） — available=False score=None\n\n总失败断言：0"
+    },
+    {
+      "script": "verify_qa_stability.py",
+      "status": "pass",
+      "failures": null,
+      "elapsed_ms": 123559,
+      "tail": "paper 3 round 3: answer_len=423 mode=generated grounded=True citation=7 sentence=7 OK\n\n空答案次数：0/9"
     }
   ]
 }
