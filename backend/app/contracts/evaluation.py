@@ -48,6 +48,14 @@ class NavigationCheck(ContractModel):
     page_correct: bool = False
     region_iou: Optional[Score] = None
     latency_ms: int = 0
+    # R4-M6 / ADR D-107（expand-first，全部可空）：把区域比对的两个矩形**显式留存**。
+    # 为什么要留：`region_iou` 现在恒为 None（原因见 `region.region_iou_or_none`），
+    # 但没有这两个字段的话，"为什么算不了"就只能靠读代码。留住它们，排查时能直接看到
+    # 是"没有矩形"还是"两个矩形同源"。
+    expected_rect: Optional[Rect] = None
+    actual_rect: Optional[Rect] = None
+    #: 两个矩形所在的空间。当前装配产出 `unit_0_1`（本项目 Rect 契约）。
+    rect_units: str = ""
 
 
 class GoldenClaim(ContractModel):

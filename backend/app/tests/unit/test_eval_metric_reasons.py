@@ -51,12 +51,21 @@ class TestNotEvaluatedCarriesReason:
 
 class TestSpecificMetricsGetTheirCode:
     def test_anchor_region_hit_rate_says_why_it_cannot_be_measured(self):
+        """R4-M6 / ADR D-107：原因码更正。
+
+        原断言 ``source_pdf_has_no_coordinate_rects``（"原文 PDF 未提供坐标矩形"）。
+        实测七篇论文的块 bbox **覆盖率 100%**，所以那个归因是**假的**；真实原因是
+        "缺少独立的区域真值来源"（锚点矩形与期望区域同源，算 IoU 恒为 1.0）。
+        """
         from app.modules.evaluation import metrics as M
 
-        entry = M.anchor_region_hit_rate([])  # 原文没有坐标矩形
+        entry = M.anchor_region_hit_rate([])
         assert entry.value.status == "not_evaluated"
         assert entry.value.value is None
-        assert entry.value.reason == "source_pdf_has_no_coordinate_rects", entry.value.reason
+        assert entry.value.reason == "no_independent_region_truth", entry.value.reason
+        assert entry.value.reason != "source_pdf_has_no_coordinate_rects", (
+            "该码把'我们缺少独立真值'错说成'原文没有坐标'"
+        )
 
     def test_token_metrics_without_usage_says_usage_missing(self):
         from app.modules.evaluation import metrics as M

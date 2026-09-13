@@ -199,7 +199,10 @@ def build_candidates(
             source_text=span.source_text,
             anchor_id=gate.anchor_of_block.get(block.id, ""),
             media_ids=([citation.media_id] if citation.media_id in gate.allowed_media else []),
-            rect=None,
+            # R4-M6（ADR D-107）：块有已知单位的 bbox 时带上矩形 ——
+            # 锚点从 page-only 升级为 region，阅读器才能真的画出区域高亮。
+            # 无 bbox / 单位未知 → 仍为 None（page-only，契约不变）。
+            rect=block_rect(block),
             quads=[],
         )
         if relocated:
@@ -257,6 +260,44 @@ def _relocate_quote(
 
 def candidate_media_is_untrusted(citation: CitationCandidate, gate: GateInput) -> bool:
     return bool(citation.media_id) and citation.media_id not in gate.allowed_media
+
+
+def block_rect(block) -> Optional[List[float]]:
+    """从块的 `raw_ref` 取**可用于定位的矩形**（R4-M6，**单位已对齐到 0..1**）。
+
+    实测（ADR D-107）：真实库里块的 bbox 覆盖率 **100%**，但候选的 `rect` 一直硬写
+    ``None`` → 锚点永远 page-only → 阅读器**永远画不出区域**。这里把缺的那一环补上。
+
+    **单位对齐是最容易错的地方**（实测当场被契约拦下）：
+    MinerU 的 ``bbox_units="normalized"`` 是 **0–1000 网格**，而 `AnchorSegment.rect`
+    的契约是 **0..1**（`contracts.common.validate_rect`）。不换算会直接抛
+    "必须归一化到 0..1" —— 失败得很响，比静默算错好得多。
+
+    ``point`` 单位要换算必须知道页宽/高，而 gate 这一层拿不到页尺寸 → 返回 ``None``
+    （宁缺勿造）。``unknown`` / 字段缺失 / 退化矩形 / 越界值同样返回 ``None``。
+    """
+    ref = getattr(block, "raw_ref", None)
+    if ref is None:
+        return None
+    units = (getattr(ref, "bbox_units", "") or "").strip().lower()
+    values = getattr(ref, "bbox_values", None)
+    if not values or len(values) < 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(v) for v in values[:4])
+    except (TypeError, ValueError):
+        return None
+    if units == "normalized":
+        rect = [x0 / 1000.0, y0 / 1000.0, x1 / 1000.0, y1 / 1000.0]
+    elif units == "unit_0_1":
+        rect = [x0, y0, x1, y1]
+    else:
+        return None
+    if not (rect[0] < rect[2] and rect[1] < rect[3]):
+        return None          # 零宽/零高：不是矩形
+    if min(rect) < -0.001 or max(rect) > 1.001:
+        return None          # 越界说明单位理解错了，不裁剪、不猜
+    return rect
 
 
 def page_only_candidate(page_ref: locator.PageRef, *, anchor_id: str = "") -> CandidateEvidence:
@@ -679,4 +720,5 @@ __all__ = [
     "build_evidence_record",
     "build_anchor",
     "semantic_unavailable_code",
+    "block_rect",
 ]

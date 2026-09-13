@@ -172,7 +172,12 @@ check('8d. 旧报告的 ai_overall_score 仍能读到（过渡期兼容）', () 
 });
 
 check('9. 原因码翻人话；缺原因时说"原因未记录"而不是留空', () => {
-  assert.ok(reasonText('source_pdf_has_no_coordinate_rects').includes('设计上不可测'));
+  // R4-M6 / ADR D-107：`anchor_region_hit_rate` 的原因码已更正。
+  // 旧文案「原文 PDF 未提供坐标矩形（拒绝编造 IoU）」是**错误归因** ——
+  // 实测块 bbox 覆盖率 100%，真实原因是"缺少独立的区域真值来源"。
+  const region = reasonText('no_independent_region_truth');
+  assert.ok(region.includes('独立'), `原因要指向真正的问题：${region}`);
+  assert.ok(!region.includes('未提供坐标'), '不许再说是原文没有坐标');
   assert.strictEqual(reasonText(undefined), '原因未记录');
   assert.strictEqual(reasonText('some_new_code'), 'some_new_code');
 });

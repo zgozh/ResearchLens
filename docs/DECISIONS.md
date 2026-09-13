@@ -2101,3 +2101,62 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
   前端 `test:lib` **96 项**全绿。
 - **兼容**：`ai_overall_score` 字段保留一个版本周期（与主分同值，deprecated），
   前端 `parseOverall` 仍能读旧报告；`is_tuning` DB 列保留（删列需要迁移，且已无行为影响）。
+
+---
+
+## D-107 `anchor_region_hit_rate` 口径更正：**不是"原文没有坐标"，而是"缺少独立区域真值"**（R4-M6）
+
+### 实测覆盖率（真实库，2026-09-13，逐篇 SQL 跑出）
+
+| paper | blocks | with_bbox | bbox_units |
+|---|---|---|---|
+| 1 | 156 | **156** | normalized |
+| 2 | 267 | **267** | normalized |
+| 3 | 400 | **400** | normalized |
+| 7 | 180 | **180** | normalized |
+| 9 | 122 | **122** | normalized |
+| 10 | 122 | **122** | normalized |
+| 11 | 258 | **258** | normalized |
+
+锚点 `segments[0].rect` 非空率：**0/258、0/100、0/144、0/15、0/9、0/9、0/16**。
+
+### 断言被推翻的部分
+
+- **旧结论**（D-52 遗留、R3 计划、UI 文案）："原文 PDF 没有坐标矩形，拒绝编造 IoU（设计上不可测）"。
+  **前半个断言是假的** —— 块 bbox 覆盖率 100%。
+- **真实原因有两条，条目各自成立**：
+  1. **生产链缺一环**：`CandidateEvidence` 的两个构造点（引用定位、`page_only_candidate`）
+     都硬写 `rect=None` → 锚点永远 page-only → 阅读器**永远画不出区域**（D13 的"不谎称已高亮"
+     因此从来没有机会变成"真的高亮了"）。R4-M6 已补上这一环。
+  2. **更关键的一条：即使补上，也没有独立真值**。证据锚点的矩形就是**引用块的 bbox**
+     （`gate.block_rect` → `candidate_to_segment`），而"期望区域"同样是引用块的 bbox。
+     两者**同源** → IoU 恒为 1.0 → 一个自证的满分，**比"未评测"更糟**（那是编造数字）。
+
+### 本轮改了什么
+
+1. **新增 rect 生产链**：`gate.block_rect(block)` 从 `raw_ref` 取 bbox 并**换算到契约空间**，
+   候选与锚点带真实矩形 → 阅读器**首次具备画出区域高亮的能力**。
+   实测被契约当场拦下：MinerU 的 `bbox_units="normalized"` 是 **0–1000 网格**，
+   而 `AnchorSegment.rect` 的契约是 **0..1**（`validate_rect`）—— 必须除以 1000，否则直接抛错。
+   `point` 单位需要页尺寸而 gate 层拿不到 → **返回 None**（宁缺勿造）。
+2. **新增 `modules/evaluation/region.py`**：`normalize_rect`（三种单位 → 0..1）、
+   `rect_iou`、`region_iou_or_none(expected, actual, *, independent)`。
+   把"单位对齐"与"来源是否独立"变成**显式参数** —— 不声明就不算。
+3. **装配点声明 `independent=False`**：`evaluation/legacy._navigation_checks` 现在填
+   `expected_rect` / `actual_rect` / `rect_units`（`NavigationCheck` 新增三个可空字段，expand-first），
+   但**拒绝产出 `region_iou`** —— 并配测试锁死这条纪律。
+4. **原因码更正**：`source_pdf_has_no_coordinate_rects` → **`no_independent_region_truth`**；
+   前端 `REASON_TEXT` 与新归因同步（旧文案"原文 PDF 未提供坐标矩形／拒绝编造 IoU"删除）。
+
+### 仍然出不了值的（如实告知，不编造）
+
+`anchor_region_hit_rate` 维持 `not_evaluated`。**要让它可测，需要第二个独立来源** ——
+可行的具体做法是：同一份 PDF **同时**用 MinerU 与 PyMuPDF 解析（两者给出独立的区域估计），
+再交叉比对区域。这是产品决策（多一次解析成本），留给用户拍板，本轮不动。
+
+### 与规划的分歧（如实记录）
+
+`docs/REFACTOR_PLAN_R4.md` 的 M6 写的是"expected=引用块矩形并集，actual=锚点 segment.rect"，
+隐含假设 `segment.rect` 存在且**与 expected 独立**。实测两端都不成立（生产者原先不存在；
+存在之后两者同源）。本 ADR 按**实测**定案，不按方案的假设实施 ——
+否则产出的会是一个恒为 100% 的假指标。

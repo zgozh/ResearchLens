@@ -156,19 +156,27 @@ def _navigation_checks(scope: Scope):
     from app.core.db import session_scope
     from app.models.artifacts import AnchorORM, BlockORM, PageORM
     from app.modules.evidence import repository as ev_repo
+    from app.modules.evaluation.region import (
+        normalize_rect_from_block,
+        region_iou_or_none,
+    )
 
     out = []
     try:
         with session_scope() as db:
-            block_page = {
-                row[0]: int(row[1] or 0)
-                for row in db.execute(
-                    select(BlockORM.id, PageORM.pdf_page_index)
-                    .outerjoin(PageORM, PageORM.id == BlockORM.page_id)
-                    .where(BlockORM.revision_id == scope.revision_id)
-                ).all()
-            }
+            block_page = {}
+            block_rect = {}
+            for row in db.execute(
+                select(BlockORM.id, PageORM.pdf_page_index, BlockORM.raw_ref)
+                .outerjoin(PageORM, PageORM.id == BlockORM.page_id)
+                .where(BlockORM.revision_id == scope.revision_id)
+            ).all():
+                block_page[row[0]] = int(row[1] or 0)
+                rect = normalize_rect_from_block(row[2])
+                if rect is not None:
+                    block_rect[row[0]] = rect
             anchor_page = {}
+            anchor_rect = {}
             for row in db.execute(
                 select(AnchorORM).where(AnchorORM.revision_id == scope.revision_id)
             ).scalars().all():
@@ -177,6 +185,9 @@ def _navigation_checks(scope: Scope):
                     index = segments[0].get("pdf_page_index")
                     if index is not None:
                         anchor_page[row.id] = int(index)
+                    rect = segments[0].get("rect")
+                    if isinstance(rect, list) and len(rect) >= 4:
+                        anchor_rect[row.id] = [float(v) for v in rect[:4]]
             for row in ev_repo.list_evidence_rows(db, scope.revision_id):
                 if not row.anchor_id or row.anchor_id not in anchor_page:
                     continue
@@ -188,15 +199,44 @@ def _navigation_checks(scope: Scope):
                 if expected is None:
                     continue
                 actual = anchor_page[row.anchor_id]
+                # ---- 区域真值（R4-M6 / ADR D-107）----
+                # `expected_rect` = 引用块矩形并集；`actual_rect` = 锚点 segment.rect。
+                # **但两者的来源不独立**：证据锚点就是由这个引用块的 bbox 派生出来的
+                # （`gate.block_rect` → `candidate_to_segment`），据此算 IoU 恒为 1.0。
+                # 那是一张自证的满分，比"未评测"更糟 —— 所以这里显式传
+                # `independent=False`，`region_iou` 保持 None，指标如实标
+                # `no_independent_region_truth`。要让它可测，需要**第二个独立来源**
+                # （例如同一 PDF 同时用 MinerU 与 PyMuPDF 解析再交叉比对区域）。
+                expected_rects = [block_rect[b] for b in block_ids if b in block_rect]
+                expected_rect = _union_rect(expected_rects)
+                actual_rect = anchor_rect.get(row.anchor_id)
                 out.append(NavigationCheck(
                     anchor_id=row.anchor_id,
                     page_correct=(actual == expected),
-                    region_iou=None,      # 块没有矩形就不给 IoU（宁缺勿造）
+                    region_iou=region_iou_or_none(
+                        expected=expected_rect, actual=actual_rect, independent=False,
+                    ),
+                    expected_rect=expected_rect,
+                    actual_rect=actual_rect,
+                    rect_units="unit_0_1" if (expected_rect or actual_rect) else "",
                     latency_ms=0,
                 ))
     except Exception:  # noqa: BLE001  评测输入装配失败不得让评测 500
         return []
     return out
+
+
+def _union_rect(rects: List[List[float]]) -> Optional[List[float]]:
+    """矩形并集（用于"引用块矩形并集"）。空输入返回 ``None``（不造矩形）。"""
+    if not rects:
+        return None
+    x0 = min(r[0] for r in rects)
+    y0 = min(r[1] for r in rects)
+    x1 = max(r[2] for r in rects)
+    y1 = max(r[3] for r in rects)
+    if not (x0 < x1 and y0 < y1):
+        return None
+    return [x0, y0, x1, y1]
 
 
 def _input_for(scope: Scope, *, ai_judge: Optional[AiJudgeResult] = None):

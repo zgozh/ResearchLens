@@ -272,7 +272,11 @@ export function reasonText(code?: string): string {
 }
 
 export const REASON_TEXT: Record<string, string> = {
-  source_pdf_has_no_coordinate_rects: '原文 PDF 未提供坐标矩形，该指标设计上不可测（拒绝编造 IoU）',
+  no_independent_region_truth:
+    '缺少独立的区域真值来源：锚点矩形与期望区域同源（都由引用块的 bbox 派生），'
+    + '据此算 IoU 恒为 1.0，是自证的满分而不是测量',
+  source_pdf_has_no_coordinate_rects:
+    '该样本的原文块没有可用的坐标矩形（缺少 bbox 或单位未知）',
   usage_missing_in_answer_rows: '作答记录里没有 token / 时延用量',
   no_golden_truth: '缺少参考断言（AI 从原文构造或句子挑选均可）',
   no_ai_judge: 'AI 裁判本次未给出结论（不以 0 冒充）',

@@ -313,9 +313,23 @@ def anchor_page_accuracy(checks: Sequence[NavigationCheck]) -> MetricEntry:
 
 
 def anchor_region_hit_rate(checks: Sequence[NavigationCheck]) -> MetricEntry:
+    """锚点区域命中率。
+
+    R4-M6 / ADR D-107 —— **原因码更正**。旧码 ``source_pdf_has_no_coordinate_rects``
+    声称"原文 PDF 未提供坐标矩形"，但实测（七篇论文）**块 bbox 覆盖率 100%**，
+    这个归因是假的。真实原因是：**缺少独立的区域真值来源** ——
+    锚点矩形与"期望区域"都由同一个引用块的 bbox 派生，算出来的 IoU 恒为 1.0，
+    那是一个自证的满分，不是测量。
+
+    所以本指标仍为 ``not_evaluated``，但给出的原因必须是真的、可操作的：
+    要让它可测，需要**第二个独立来源**（例如同一 PDF 同时用 MinerU 与 PyMuPDF 解析，
+    再交叉比对区域）。
+    """
     with_iou = [c for c in checks if c.region_iou is not None]
     if not with_iou:
-        return not_evaluated("anchor_region_hit_rate", method="无区域 IoU 样本", unit="ratio")
+        return not_evaluated(
+            "anchor_region_hit_rate", reason="no_independent_region_truth", unit="ratio",
+        )
     hit = sum(1 for c in with_iou if (c.region_iou or 0.0) >= 0.5)
     return ratio_entry("anchor_region_hit_rate", hit, len(with_iou),
                        method="iou>=0.5 / checks_with_iou")
