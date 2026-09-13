@@ -97,13 +97,13 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
                 <Expand className="h-3 w-3" /> 查看
               </span>
             </div>
-            <p className="mb-2.5 text-[11px] text-slate-500">{t.caption}</p>
+            <MathText text={t.caption} className="mb-2.5 block text-[11px] text-slate-500" />
             <div className="overflow-hidden rounded-lg border border-[var(--line)] p-1">
               <TableRender table={t} className="rl-table text-[12px]" />
             </div>
             {t.key_finding && (
               <div className="mt-2.5 rounded-lg border-l-2 border-emerald-400 bg-emerald-500/5 px-3 py-2 text-[12px] text-emerald-100/90">
-                关键结论：{t.key_finding}
+                关键结论：<MathText text={t.key_finding} className="inline" />
               </div>
             )}
           </GlassCard>
@@ -123,8 +123,8 @@ export function ClaimView({ detail, claims, selectedClaimId, onSelect }: {
               <div className="overflow-hidden rounded-lg border border-[var(--line)] bg-[#0F172A] p-1">
                 <FigureImage image_url={f.image_url} image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
               </div>
-              <p className="mt-2 text-[11px] text-slate-500">{f.caption}</p>
-              {f.description && <p className="mt-1 text-[11px] text-slate-600">{f.description}</p>}
+              <MathText text={f.caption} className="mt-2 block text-[11px] text-slate-500" />
+              {f.description && <MathText text={f.description} className="mt-1 block text-[11px] text-slate-600" />}
             </GlassCard>
           ))}
         </div>

@@ -530,10 +530,19 @@ def stage_publish(scope: Scope, spec: Dict[str, Any], ctx: CallContext) -> Stage
     幂等：若该 revision 已是 published，直接成功（重跑场景不触发 CAS 冲突）。
     """
     from app.modules import papers as papers_mod
+    from app.modules.papers import identity as identity_mod
 
     quality = spec.get("publish_quality") or "partial"
     digest = spec.get("artifact_digest") or _digest(scope.revision_id)
     paper = papers_mod.get_paper(scope.paper_id)
+
+    # R4：把解析产物里的**真实标题/摘要**回填到 paper 行。
+    # 用户实测：从 arXiv 导入的 BERT 论文在界面上叫「Real Paper」、摘要是那串 URL ——
+    # 因为导入端点写死了占位值，而解析出来的真数据**一直没人回填**。
+    # 放在 publish 之前：即便发布 CAS 失败，用户也能看到正确的论文名。
+    # `backfill_identity` 内部只覆盖占位值，且失败不影响主流程（展示信息，非事实层）。
+    identity_mod.backfill_identity(scope)
+
     if paper.published_revision_id == scope.revision_id:
         # 已是当前发布版本（重跑幂等），不重复 CAS
         return _ok("publish", artifact_ids=[scope.revision_id], digest=digest)

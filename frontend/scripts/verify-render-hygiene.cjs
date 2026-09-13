@@ -39,7 +39,13 @@ function walk(value, pathParts, out) {
 
 async function scanPaper(paperId) {
   const found = [];
-  for (const ep of ['', '/claims', '/statements', '/presentation', '/graph']) {
+  // R4 追加 `/media` 与 `/manifest`：题注（caption）**只在这两个端点里**，
+  // 之前不扫它们 → 用户看到的 `<sup>†</sup>` 与 `$\mathbf { B E R T ... }$`
+  // 一直是门禁盲区（门禁只报了"零残留"，因为根本没看到这些文本）。
+  for (const ep of [
+    '', '/claims', '/statements', '/presentation', '/graph',
+    '/media', '/manifest',
+  ]) {
     const url = `${BASE}/api/papers/${paperId}${ep}`;
     try {
       const res = await fetch(url);

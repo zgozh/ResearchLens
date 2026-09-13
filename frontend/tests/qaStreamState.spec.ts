@@ -246,4 +246,26 @@ check('QAView 不再产出 mode=interrupted 的假回答', () => {
   assert.ok(source.includes('transportError'), '连接异常要用独立字段如实呈现');
 });
 
+check('QA 恢复链成功时也清掉 streamQuestion（否则回答下面一直挂转圈）', () => {
+  // 实测现象：回答已经出来了，下面还留着"正在检索并逐句校验…"的转圈；
+  // 切到别的视图再切回来就好了 —— 因为组件卸载把本地 state 重置了。
+  // 根因：恢复链里非流式兜底**成功**时直接 return，没清 `streamQuestion`，
+  // 于是 `streamQuestion !== '' && state === 'recovering'` 恒为真 → streaming 恒为真。
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const file = path.resolve(process.cwd(), 'components/views/QAView.tsx');
+  const source = fs.readFileSync(file, 'utf8');
+  const start = source.indexOf('const giveUp = async () => {');
+  assert.ok(start > 0, '找不到 giveUp（恢复链的兜底分支）');
+  const body = source.slice(start, source.indexOf('};', start));
+  const clearAt = body.indexOf("setStreamQuestion('')");
+  const earlyReturn = body.indexOf('if (ok) return;');
+  assert.ok(clearAt >= 0, 'giveUp 必须清掉 streamQuestion');
+  assert.ok(earlyReturn >= 0, 'giveUp 应保留"兜底成功就返回"的分支');
+  assert.ok(
+    clearAt < earlyReturn,
+    '清 streamQuestion 必须在"成功就 return"**之前**，否则成功路径会留着转圈',
+  );
+});
+
 console.log(`\nqaStreamState: ${passed} 项全部通过`);

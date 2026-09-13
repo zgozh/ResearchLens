@@ -199,6 +199,11 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
 
       const giveUp = async () => {
         const ok = await askFallback(q, { silent: true });
+        // R4 修 bug：**每一条终态路径都必须清掉 `streamQuestion`**。
+        // 之前成功这里直接 `return`，于是 `streamQuestion` 留着 + `state='recovering'`
+        // → `streaming` 恒为真 → 回答已经出来了，下面还挂着"正在检索并逐句校验…"的转圈。
+        // 切走再切回来之所以会好，只是因为组件卸载把本地 state 重置了（用户看到的现象）。
+        setStreamQuestion('');
         if (ok) return;
         // ③ 如实报连接异常：text 给一句可读说明，但**不挂 resp**（没有回答、没有置信度）。
         setMsgs([
@@ -211,7 +216,6 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
             retryQuestion: q,
           },
         ]);
-        setStreamQuestion('');
       };
 
       if (answerId && scope) {

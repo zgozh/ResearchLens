@@ -175,7 +175,7 @@ export function MapView({ detail, accent, onOpenSection }: {
               <div className="overflow-hidden rounded-md border border-[var(--line)] bg-[#0F172A]">
                 <FigureImage image_url={f.image_url} image_b64={f.image_b64} glyph_svg={f.glyph_svg} caption={f.caption} />
               </div>
-              <p className="mt-2 line-clamp-2 text-[11px] text-slate-500">{f.caption}</p>
+              <MathText text={f.caption} className="mt-2 line-clamp-2 block text-[11px] text-slate-500" />
             </GlassCard>
           ))}
         </div>
@@ -194,7 +194,7 @@ export function MapView({ detail, accent, onOpenSection }: {
                     <span className="inline-flex items-center gap-0.5 rounded-md bg-white/[0.04] px-1 py-0.5 text-slate-500 transition group-hover:text-indigo-300"><Expand className="h-3 w-3" /></span>
                   </span>
                 </div>
-                <p className="mb-2 text-[11px] text-slate-500">{t.caption}</p>
+                <MathText text={t.caption} className="mb-2 block text-[11px] text-slate-500" />
                 <div className="overflow-hidden rounded-md border border-[var(--line)]">
                   <TableRender table={t} className="text-[11px]" />
                 </div>

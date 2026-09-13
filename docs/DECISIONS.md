@@ -2272,3 +2272,64 @@ R4 期间实测：`docker-compose.yml` **不挂载 backend/frontend 源码** —
 - `verify_qa_stability.py`：空答案 **0/9**（未回归）。
 
 后端 `pytest` **970 passed / 0 failed**；前端 `test:lib` **132 项**全绿。
+
+---
+
+## D-110 用户报的三个显示/数据缺陷（标题摘要、题注未转义、QA 残留转圈）
+
+### ① 论文名与摘要错（从 URL 导入）
+
+**现象**：arXiv 1810.04805（BERT）在界面上叫「Real Paper」，摘要就是那串地址；
+Attention Is All You Need 同样。
+
+**根因**（`api/routes.py::paper_from_url`）：导入端点**写死占位值**，之后**从不回填** ——
+
+```python
+title = body.title.strip() or "Real Paper"
+abstract = "真实公开论文 · " + body.url
+```
+
+而解析产物里**真实数据一直都有**（实测）：第一页 `ordinal=0` 的 paragraph 块就是标题
+（`BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding`），
+`structure.sections` 里 `heading="Abstract"` 那一节的正文就是摘要。
+**不是解析不出来，是解析出来了没人回填。**
+
+**修复**：新增 `modules/papers/identity.py`（纯函数决策 + 一次 I/O），
+并接在两处：pipeline 的 `publish` 阶段（以后导入自动正确）与
+`POST /rebuild-derived` 的 `identity` 步（存量回填，默认开启，不调 LLM）。
+
+**纪律**：只覆盖**占位值**（`Real Paper`/`Uploaded Paper`/空/以「真实公开论文 ·」开头的摘要）；
+用户显式给的标题绝不覆盖；解析不出就保持原样 —— **绝不拿 URL 去"补"摘要**（那是占位换占位）。
+实测回填后：paper 11 → `BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding`；
+paper 7 标题已是真值（未被覆盖）、摘要被填成真摘要。新增 21 条测试。
+
+### ② 图表题注里的 `<sup>†</sup>` 与 `$\mathbf { B E R T _ { B A S E } }$` 原样显示
+
+**根因不是 kernel 不认**（实测 kernel 对 `<sup>/<sub>/i/b/...` 与稀疏 LaTeX 都处理正确），
+而是**这几个展示点根本没走 kernel**：`ClaimView.tsx` 的 `{t.caption}` / `{f.caption}` 是裸插值，
+且 `ClaimView` / `MapView` **不在门禁白名单里** → 卫生门禁**看不见它们**，
+所以一直报"零残留"（它只扫它知道的那 8 个文件）。
+
+**修复**（系统性，不是只补这一处）：
+1. 裸插值改走 `<MathText>`（门禁一次列出 4 处，全部修掉）；
+2. `ClaimView` / `MapView` / `FigureImage` **登记进 `check-text-paths.cjs` 白名单**（11 个展示点）；
+3. **实时卫生扫描补上 `/media` 与 `/manifest`** —— 题注只在这两个端点里，不扫它们就是盲区。
+
+实测：库里三条真实题注（含 `<sup>†</sup>`、`$\mathbf { B E R T _ { B A S E } }$`、
+`$$\operatorname{Attention}...\tag{1}$$`）经 kernel 渲染后**零残留**，且正确产出 KaTeX。
+
+### ③ 回答生成后仍残留"正在检索并逐句校验…"的转圈
+
+**根因**：`QAView` 恢复链的兜底分支 `giveUp()` 在**非流式兜底成功**时直接 `return`，
+没清 `streamQuestion` → `streamQuestion !== '' && state === 'recovering'` 恒为真 →
+`streaming` 恒为真 → 回答已经渲染出来了，下面还挂着转圈。
+**切走再切回来就好了**，只是因为组件卸载把本地 state 重置了（正是用户描述的现象）。
+
+**修复**：`giveUp()` 的**每一条终态路径**都先清 `streamQuestion` 再决定后续。
+新增一条源码级回归断言：清空语句必须出现在"成功就 return"**之前**。
+
+### 验收
+
+后端 `pytest` **991 passed / 0 failed**；前端 `test:lib` **133 项**全绿；
+`verify_upload_progress.py` 新增 3 条身份断言（两篇论文实测通过）；
+真实语料卫生扫描（含题注）**零残留**。

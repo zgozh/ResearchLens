@@ -25,6 +25,12 @@ const TARGETS = [
   { file: 'components/views/PresenterView.tsx', what: '讲解分镜引文/正文' },
   { file: 'components/evidence/EvidenceDrawer.tsx', what: '证据抽屉原文' },
   { file: 'components/source/SourceMedia.tsx', what: '媒体题注' },
+  // R4 追加：这两处此前**不在白名单里**，于是 `{t.caption}` / `{f.caption}` 的裸插值
+  // 一直没被门禁发现 —— 用户看到的就是 `<sup>†</sup>` 与 `$\mathbf { B E R T ... }$`
+  // 原样显示（题注没走富文本内核）。把文件登记进来，门禁才会真的扫它们。
+  { file: 'components/views/ClaimView.tsx', what: '证据链：表格/图表题注与关键结论' },
+  { file: 'components/views/MapView.tsx', what: '论文地图：图表题注' },
+  { file: 'components/FigureImage.tsx', what: '图表图片与题注' },
   { file: 'components/views/PaperView.tsx', what: '结构化导读 / 全文原文' },
   { file: 'components/LongText.tsx', what: '长文段落' },
   { file: 'components/TableRender.tsx', what: '表格单元格' },

@@ -577,6 +577,10 @@ class RebuildDerivedBody(BaseModel):
     bindings: bool = True
     # 模型快照回填：早期导入的 revision 没登记快照 → 问答退化成"无模型"（ADR-0067）
     snapshot: bool = True
+    # 论文身份回填（R4）：把解析产物里的**真实标题/摘要**写回 paper 行。
+    # 用户实测：从 arXiv 导入的 BERT 论文在界面上叫「Real Paper」、摘要是那串 URL。
+    # 确定性、不调 LLM，且只覆盖占位值 → 默认开启。
+    identity: bool = True
     structure: bool = False  # 结构/论文地图/方法步骤——**会调用 LLM**，故默认关闭
 
 
@@ -637,6 +641,19 @@ def rebuild_derived(
             result["snapshot"] = {"model_snapshot_id": snapshot_id, "backfilled": True}
         except Exception as exc:  # noqa: BLE001  回填失败不得让重建整体失败
             result["snapshot"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    if body.identity:
+        # R4：论文身份回填（真实标题/摘要）。只覆盖占位值，失败不影响重建整体。
+        try:
+            from app.modules.papers import identity as identity_mod
+
+            plan = identity_mod.backfill_identity(scope)
+            result["identity"] = {
+                "updated": sorted(plan.keys()) if plan else [],
+                "title": plan.get("title") if plan else None,
+            }
+        except Exception as exc:  # noqa: BLE001  展示信息回填失败不得让重建整体失败
+            result["identity"] = {"error": f"{type(exc).__name__}: {exc}"}
 
     if body.bindings:
         # 绑定规则升级后的**回填入口**（ADR-0059）：方法步骤的图表引用来自这些绑定，

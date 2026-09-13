@@ -110,6 +110,20 @@ if rev:
     _check("structure" in bundle, "exhibits 含 structure")
     _check("capabilities" in bundle, "exhibits 也带 capabilities（两处同源）")
 
+# ---- 4b. 论文身份（真实标题/摘要）
+# R4 修复：导入端点曾写死 `Real Paper` 与「真实公开论文 · {url}」，且**从不回填** ——
+# 于是从 arXiv 导入的 BERT 论文在界面上叫「Real Paper」、摘要是那串地址。
+_paper = manifest.get("paper") or {}
+_title = (_paper.get("title") or "").strip()
+_abstract = (_paper.get("abstract") or "").strip()
+_PLACEHOLDER_TITLES = {"real paper", "uploaded paper", "untitled", "paper", ""}
+_check(_title.lower() not in _PLACEHOLDER_TITLES,
+       "论文标题不是占位值（`Real Paper` / `Uploaded Paper`）", _title[:70])
+_check(not _abstract.startswith("真实公开论文"),
+       "摘要不是「真实公开论文 · {url}」占位", _abstract[:70])
+if _title:
+    _check(len(_title) >= 8, "标题长度合理（不是单字标签）", str(len(_title)))
+
 # ---- 5. 深档：观察 capabilities 的渐进（需要解析凭据）
 if deep:
     print("  （深档）触发 /rebuild-derived 并观察 60s 内的状态变化…")
