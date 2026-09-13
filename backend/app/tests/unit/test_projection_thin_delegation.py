@@ -15,14 +15,18 @@ from pathlib import Path
 APP = Path(__file__).resolve().parents[2]
 
 #: (文件, 函数名) —— 这些位置的投影**必须**只是委托。
-#: 注意：这里列的是**非权威侧**。权威实现在 CONTRACT.md 里（graph→modules/graph/legacy、
-#: evaluation→schemas/adapters、qa→schemas/adapters、scene→modules/scene/legacy）。
+#: 注意：这里列的是**非权威侧**。R4-M8 之后权威实现在 `app/projection/`
+#: （`CONTRACT.md` 里有完整清单）；graph 与 scene 也在本清单里了 ——
+#: 它们的实现已搬进 projection，原位置退化为薄委托。
 DELEGATING = [
     ("modules/qa/legacy.py", "to_legacy_answer"),
     ("modules/evaluation/legacy.py", "to_legacy_evaluation"),
-    ("schemas/adapters.py", "to_legacy_graph"),
-    ("schemas/adapters.py", "to_legacy_presentation"),
+    ("modules/graph/legacy.py", "to_legacy_graph"),
+    ("modules/scene/legacy.py", "to_legacy_presentation"),
 ]
+#: R4-M8：`schemas/adapters.py` 的两项**已从清单移除** —— 它现在是纯 re-export 门面，
+#: 一个 `def to_legacy_` 都没有（清单留着它就会红："找不到 def"）。
+#: 实现全在 `app/projection/`（graph/scene 两个域模块 + dto 门面）。
 
 #: 委托体允许的最大行数（含签名与 docstring）。超过就说明"又长出逻辑了"。
 MAX_BODY_LINES = 45

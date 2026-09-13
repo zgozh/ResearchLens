@@ -2333,3 +2333,29 @@ paper 7 标题已是真值（未被覆盖）、摘要被填成真摘要。新增
 后端 `pytest` **991 passed / 0 failed**；前端 `test:lib` **133 项**全绿；
 `verify_upload_progress.py` 新增 3 条身份断言（两篇论文实测通过）；
 真实语料卫生扫描（含题注）**零残留**。
+
+---
+
+## D-111 M8 物理迁移完成：`app/projection/` 成为投影的唯一家
+
+- **承接**：D-101（`modules/*/legacy` 与 `schemas/adapters` 各自持有权威）、
+  D-102（薄委托门禁）登记的待办："逻辑上唯一实现，物理上不在同一个包里"。
+- **做了什么**：
+  1. `modules/graph/legacy.to_legacy_graph`、`modules/scene/legacy.to_legacy_presentation`
+     的实现搬入 `app/projection/{graph,scene}.py`（函数体逐字搬，`_dedup_ints` 随迁）；
+  2. `schemas/adapters.py` **整体搬入 `app/projection/dto.py`**（`git mv`），
+     原路径改为**纯 re-export 门面**（一个 `def to_legacy_` 都没有）；
+     四个原位置（graph/scene/evaluation/qa 的 legacy 模块）全部退化为薄委托。
+- **新增门禁**：`test_authorities_live_in_projection` —— 除登记过的薄委托外，
+  任何 `def to_legacy_` **必须**在 `projection/` 下。这条把"迁移还差多少"从一句待办
+  变成可执行断言（新搬一块，非 projection 的命中就少一块）。
+- **⚠️ 迁移中真实踩到的坑**：`schemas.adapters.to_legacy_graph` 原返回 **`GraphOut`**，
+  而 `projection/graph.py` 返回 **dict**。门面若直接从 `projection.graph` 再导出，
+  **返回类型会悄悄改变** —— 双读一致性测试当场抓到（`'dict' object has no attribute
+  'model_dump'`）。正确做法是再导出 `projection/dto.py` 里的**包装版**。
+  **教训：搬迁不得改变对外契约，哪怕只是"顺手少包一层"。** 已写进 `CONTRACT.md`。
+- **没做（如实登记，纯非功能）**：`projection/dto.py` 按域拆成
+  `projection/{papers,claims,qa,evaluation}.py`。拆分需先把 `to_legacy_evidence` 挪到
+  `projection/claims.py` 以避免 `dto ↔ qa` 循环导入。**纯文件组织、零行为变化**。
+- **验收**：后端 `pytest` **992 passed / 0 failed**（含双读一致性五域 + 两条静态门禁 +
+  薄委托门禁）；`run_all.py` 见 D-112。

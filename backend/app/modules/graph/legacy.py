@@ -32,43 +32,15 @@ def get_graph(db: Session, paper_id: int) -> Dict[str, List[dict]]:
 
 
 def to_legacy_graph(artifact) -> Dict[str, List[dict]]:
-    """``GraphArtifact → GraphOut``：字段名与旧前端契约保持一致。
+    """``GraphArtifact → GraphOut``：**R4-M8 后委托唯一实现**（薄委托，不再有逻辑）。
 
-    **投影层不许静默丢字段**（ADR-0058）：此前 props 白名单里没有 ``media_id``，
-    于是前端"图表节点"分支永远拿不到 id —— 用户看到的就是"图表节点没有给出具体的图表"。
-    这与 D-48（``_legacy_step`` 丢掉 ``figure_refs``）是同一类缺陷：**白名单式投影**
-    一旦漏字段，API 表面看不出任何异常，但功能整块失效。现在补回 ``media_id``，
-    并把节点自带的展示事实（``props``）一并透传。
+    实现已搬到 `app/projection/graph.py` —— 投影只有一个家（`projection/`），
+    本处只做转发。**别把逻辑写回这里**：`test_projection_thin_delegation.py`
+    会以"≤45 行且必须有转发调用"把它拦下（D-102 的守卫）。
     """
-    nodes = [
-        {
-            "id": n.id,
-            "label": (n.label.text if n.label else ""),
-            "kind": n.kind,
-            "props": {
-                "status": n.status,
-                "claim_id": n.claim_id,
-                "evidence_id": n.evidence_id,
-                # 图表节点必须有 media_id，前端才能取图/定位（用户实测反馈）
-                "media_id": n.media_id,
-                "anchor_ids": list(n.anchor_ids or []),
-                **(dict(getattr(n, "props", None) or {})),
-            },
-        }
-        for n in artifact.nodes
-    ]
-    edges = [
-        {
-            "id": e.id,
-            "source": e.source,
-            "target": e.target,
-            "label": (e.label.text if e.label else e.relation),
-            "relation": e.relation,
-            "status": e.status,
-        }
-        for e in artifact.edges
-    ]
-    return {"nodes": nodes, "edges": edges}
+    from app.projection.graph import to_legacy_graph as _projection
+
+    return _projection(artifact)
 
 
 def _readable_revision(db: Session, paper_id: int) -> Optional[str]:

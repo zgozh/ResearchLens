@@ -25,15 +25,45 @@ SCOPE = Scope(paper_id=7, revision_id="rev-proj")
 
 APP = Path(__file__).resolve().parents[2]  # backend/app
 
-#: 允许出现 `def to_legacy_` 的位置。合并完成后这里应只剩 "projection" 一项。
-#: 每加一项都等于承认"这里还有一份副本"——所以它只能变小、不能变大。
+#: 允许出现 `def to_legacy_` 的位置。
+#:
+#: **两种角色要分清**（R4-M8 澄清）：
+#: - **权威**（实现住在这）→ 只能在本包的 `projection/` 下；
+#: - **委托**（只是转发）→ 原位置保留同名函数做转发，仍会命中 `^def to_legacy_`，
+#:   因此也必须登记（它们由 `test_projection_thin_delegation.py` 保证"薄 + 真的转发"）。
+#:
+#: 每加一项都等于承认"这里还有一份非权威侧"——所以它只能变小、不能变大。
 ALLOWED_PROJECTION_FILES = {
-    "schemas/adapters.py",
-    "modules/graph/legacy.py",
-    "modules/scene/legacy.py",
+    "projection/graph.py",
+    "projection/scene.py",
+    "projection/dto.py",
     "modules/evaluation/legacy.py",
     "modules/qa/legacy.py",
+    "modules/graph/legacy.py",
+    "modules/scene/legacy.py",
 }
+
+#: **非权威侧**（薄委托）——与 `test_projection_thin_delegation.DELEGATING` 的模块部分一致。
+#: 用来把"权威"和"委托"分开：除这些之外，任何 `def to_legacy_` 都必须在 `projection/` 下。
+#:
+#: R4-M8 后 `schemas/adapters.py` **已从这里消失**：它现在只是 re-export 门面，
+#: 一个 `def to_legacy_` 都没有（实现全在 `projection/dto.py`）。
+DELEGATE_FILES = {
+    "modules/evaluation/legacy.py",
+    "modules/qa/legacy.py",
+    "modules/graph/legacy.py",
+    "modules/scene/legacy.py",
+}
+
+#: 迁移完成的目标：**权威只住在 projection/**。当前已达成的部分：graph / scene / dto。
+#: 仍可继续做的**纯整理**（非功能）：把 `projection/dto.py` 按域拆成
+#: `projection/{papers,claims,qa,evaluation}.py` —— 不影响任何行为，随时可做。
+AUTHORITY_PREFIX = "projection/"
+
+#: 迁移完成的目标：**权威只住在 projection/**。当前还差 evaluation/qa（在 adapters 里）
+#: 与 paper/claims 投影（也在 adapters 里）—— 差距由 `test_authorities_live_in_projection`
+#: 写成可执行断言，而不是一句"待办"。
+AUTHORITY_PREFIX = "projection/"
 
 
 def _answer_record():
@@ -119,7 +149,7 @@ class TestDualReadConsistency:
 
 
 class TestProjectionStaticGate:
-    """静态门禁：`def to_legacy_` 不得在白名单之外再生。"""
+    """静态门禁：`def to_legacy_` 不得在白名单之外再生；**权威只许住在 `projection/`**。"""
 
     def test_no_projection_copies_outside_allowlist(self):
         found: list[str] = []
@@ -134,6 +164,29 @@ class TestProjectionStaticGate:
         assert not extra, (
             "在白名单之外发现了新的投影副本："
             f"{extra}\nM10 的目标是**收敛**，不是再复制一份；请改调既有实现。"
+        )
+
+    def test_authorities_live_in_projection(self):
+        """**R4-M8 的核心不变量**：除登记过的薄委托外，`def to_legacy_` 必须在本包 `projection/` 下。
+
+        这条把"迁移还差多少"变成可执行断言：搬走一块，非 `projection/` 的命中就少一块。
+        当前剩下的都在 `schemas/adapters.py`（evaluation / qa 与 paper/claims 投影）。
+        """
+        offenders: list[str] = []
+        for path in APP.rglob("*.py"):
+            rel = path.relative_to(APP).as_posix()
+            if rel.startswith("tests/"):
+                continue
+            text = path.read_text(encoding="utf-8")
+            if not re.search(r"^def to_legacy_", text, flags=re.M):
+                continue
+            if rel in DELEGATE_FILES:
+                continue          # 薄委托（由 thin-delegation 门禁保证它确实是转发）
+            if not rel.startswith(AUTHORITY_PREFIX):
+                offenders.append(rel)
+        assert not offenders, (
+            "这些位置既不是登记过的薄委托、也不在 `projection/` 下 —— "
+            f"它们是**还没搬家的权威实现**：{sorted(set(offenders))}"
         )
 
     def test_allowlist_has_no_stale_entries(self):

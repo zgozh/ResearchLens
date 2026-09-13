@@ -60,3 +60,44 @@ API 表面没有异常，但某个功能整块失效，而且**只有用户会�
 不在投影层做白名单筛选 —— 白名单式投影漏字段时 API 表面看不出异常，
 但功能会整块失效（ADR-0058 / D-48 的真实前科：`props.support_status` 曾被丢掉）。
 新增 props 字段**只需在 service 层装配 + 在此登记**，投影层无需改动。
+---
+
+## R4-M8 物理迁移完成记录（迁移后的权威清单）
+
+**迁移前**：逻辑上唯一，物理上散在三处（`modules/graph|scene/legacy.py`、
+`schemas/adapters.py`），由两层门禁防漂移。
+**迁移后**：**全部权威实现住在 `app/projection/`**。
+
+| 文件 | 角色 | 内容 |
+|---|---|---|
+| `projection/graph.py` | **权威** | `to_legacy_graph`（dict 形态，props 整体透传） |
+| `projection/scene.py` | **权威** | `to_legacy_presentation`（dict 形态，含 `_dedup_ints`） |
+| `projection/dto.py` | **权威（门面）** | `to_legacy_paper/detail/evidence/claim/claim_summary`，以及 graph/presentation 的 **Pydantic 包装版**（返回 `GraphOut`/`PresentationOut`） |
+| `schemas/adapters.py` | **re-export 门面** | 一行逻辑都没有；保留导入路径免得几十个调用点同时改名 |
+| `modules/graph/legacy.py` | 薄委托 | `to_legacy_graph` → `projection.graph` |
+| `modules/scene/legacy.py` | 薄委托 | `to_legacy_presentation` → `projection.scene` |
+| `modules/evaluation/legacy.py` | 薄委托 | `to_legacy_evaluation` → `projection.dto` |
+| `modules/qa/legacy.py` | 薄委托 | `to_legacy_answer` → `projection.dto` |
+
+### 门禁（三条，全部可执行）
+
+1. **`test_no_projection_copies_outside_allowlist`**：`def to_legacy_` 不得在清单之外再生；
+2. **`test_authorities_live_in_projection`**（R4-M8 新增）：除登记过的薄委托外，
+   任何 `def to_legacy_` **必须**在 `projection/` 下 —— 这条把"还差多少"变成断言；
+3. **`test_delegating_projections_are_thin`**：薄委托 ≤45 行且必须有转发调用。
+
+### ⚠️ 迁移时踩到的坑（下次搬东西请先看这条）
+
+`schemas.adapters.to_legacy_graph` 原本返回 **`GraphOut`（Pydantic）**，而
+`projection/graph.py` 的实现返回 **dict**。如果 re-export 门面直接从
+`projection.graph` 再导出，**返回类型会悄悄改变** —— 双读一致性测试当场抓到
+（`'dict' object has no attribute 'model_dump'`）。
+
+正确做法：门面必须再导出 `projection/dto.py` 里的**包装版**（它内部委托 dict 实现并包成
+Pydantic）。**搬迁不得改变对外契约**，哪怕只是"顺手少包一层"。
+
+### 仍可继续做的纯整理（非功能，不影响任何行为）
+
+`projection/dto.py` 还可以按域拆成 `projection/{papers,claims,qa,evaluation}.py`
+（方案原文的目录形态）。当前拆分：拆分需要先把 `to_legacy_evidence` 挪到
+`projection/claims.py` 以避免 `dto ↔ qa` 循环导入。**纯文件组织，无行为变化，随时可做。**

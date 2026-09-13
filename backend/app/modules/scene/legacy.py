@@ -33,65 +33,14 @@ def get_presentation(db: Session, paper_id: int) -> Dict[str, List[dict]]:
 
 
 def to_legacy_presentation(artifact, media_by_id: Optional[Dict[str, object]] = None) -> Dict:
-    """``PresentationArtifact → PresentationOut`` 兼容投影。"""
-    media_by_id = media_by_id or {}
-    scenes: List[dict] = []
+    """``PresentationArtifact → PresentationOut``：**R4-M8 后委托唯一实现**。
 
-    for scene in artifact.scenes:
-        linked: List[dict] = []
-        figure_refs: List[int] = []
-        table_refs: List[int] = []
+    实现已搬到 `app/projection/scene.py`（连同 `_dedup_ints`）—— 投影只有一个家。
+    本处只做转发；**别把逻辑写回这里**（薄委托门禁会拦下）。
+    """
+    from app.projection.scene import to_legacy_presentation as _projection
 
-        for mid in scene.media_ids:
-            row = media_by_id.get(mid)
-            if row is None:
-                continue
-            kind = getattr(row, "kind", "figure")
-            label = getattr(row, "original_label", None)
-            legacy_no = getattr(row, "legacy_no", None)
-            caption = getattr(row, "caption", "") or ""
-            linked.append({
-                "type": "media" if kind == "figure" else kind,
-                "media_id": mid,
-                "label": label or "",
-                "caption": caption,
-            })
-            # 旧前端读整数编号：只在持久化 legacy_no 存在时给出（不重编）
-            if isinstance(legacy_no, int):
-                if kind == "table":
-                    table_refs.append(legacy_no)
-                elif kind == "figure":
-                    figure_refs.append(legacy_no)
-
-        narration = scene.narration
-        scenes.append({
-            "order": scene.order,
-            "title": scene.title.text if scene.title else "",
-            "kind": scene.kind,
-            "summary": scene.summary.text if scene.summary else "",
-            "steps": list(scene.step_ids or []),
-            "evidence_refs": list(scene.statement_ids or []),
-            "figure_refs": _dedup_ints(figure_refs),
-            "table_refs": _dedup_ints(table_refs),
-            "narration": {
-                "script": narration.script.text if narration else "",
-                "tts_text": narration.tts_text.text if narration else "",
-                "audio_url": (narration.audio_url if narration else None),
-                "subtitle": [
-                    {
-                        "id": cue.id,
-                        "start_ms": cue.start_ms,
-                        "end_ms": cue.end_ms,
-                        "text": cue.text.text,
-                    }
-                    for cue in (narration.subtitle_cues if narration else [])
-                ],
-            },
-            "linked": linked,
-            "media_ids": list(scene.media_ids or []),
-        })
-
-    return {"scenes": scenes}
+    return _projection(artifact, media_by_id)
 
 
 def _media_index(db: Session, revision_id: str) -> Dict[str, object]:
