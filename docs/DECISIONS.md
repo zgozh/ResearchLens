@@ -2680,7 +2680,8 @@ tick → status='loading' → notReady=true  → 进度卡出现（把下方内�
 - **真实空库实测**（容器内对全新 SQLite 跑一次自举，`.scratch/probe_fresh_seed.py`）：
   `papers = 1 [(1, 'haar-jpeg', 'real', 'pending')]`、`jobs = 1 [(1, 1, 'ingest', 'queued')]`
   —— 只自动导入 1 篇，且就是 Haar 那篇；
-- 后端全量 pytest **1028 passed / 0 failed**（较上轮 +5，全部来自新增模块）；
+- 后端全量 pytest **1028 passed / 0 failed**（较上轮 +5，全部来自新增模块；本轮结束时的
+  最终总数见 D-117 —— 加上日志那条修复是 **1032**）；
   前端 `test:lib` 全绿（含 11 个展示点的文本路径门禁）；`run_all.py` **7/7**：
   `verify_route_a` / `verify_graph` / `verify_e2e_extra` / `verify_qa_modes`（6 条回答）/
   `verify_upload_progress` / `verify_metrics_live` / `verify_qa_stability`（空答案 0/9）
@@ -2696,4 +2697,69 @@ tick → status='loading' → notReady=true  → 进度卡出现（把下方内�
    论文地图 / 方法动画 / 证据链 / 论文阅读，**图谱 / 讲解 / 自动评测为空**。
    （demo seed 是否要接入 canonical 流水线以获得完整 8 视图，是**待用户决策**的独立议题，
    本次不做。）
+
+## D-117 应用日志**一条都打不出来**：`env.py` 从不读 `configure_logger`，`fileConfig` 把 logger 全禁了
+
+### 怎么发现的（顺手验证，不是猜）
+
+修 D-116 的日志键名时，我想顺手确认"改对了没有"——于是去看 `docker logs`，结果发现：
+
+- `docker logs researchlens-backend-1`：**一条 `researchlens.*` 都没有**；
+- `docker logs researchlens-worker-1`：总共只有 **9 行**，全是 alembic 的插件/迁移行，
+  连 `worker … 启动` 都没有。
+
+也就是说：**不只是那一条日志的键名错了，整个应用日志根本进不了容器 stdout。**
+
+### 根因（三处合起来才成立）
+
+1. `migrations/env.py` 在模块级**无条件**调用 `fileConfig(config.config_file_name)`；
+2. `alembic.ini` 的 `[logger_root] level = WARN`；
+3. `fileConfig` 默认 **`disable_existing_loggers=True`** —— 它把**已存在**的
+   `researchlens.*` logger 全部置 `disabled=True`，并把 root 抬到 WARN。
+
+而启动顺序是 `logging.basicConfig(INFO)` → `run_migrations()` → 之后**所有**应用日志
+（worker 主循环、seed 自举、pipeline 阶段）都挂在被禁用的 logger 上，永远打不出来。
+
+**最讽刺的地方**：`app/core/db.py` **早就写了防线和注释** ——
+
+```python
+# 不让 alembic 的 fileConfig 覆盖调用方的 logging 配置：
+# 否则 disable_existing_loggers 会吞掉 worker/backend 自己的 log（曾导致 worker 日志全空）。
+cfg.attributes["configure_logger"] = False
+```
+
+—— 但 `env.py` **从来没读这个属性**：防线是死代码，注释里那个"曾经"其实一直没好。
+
+### 修法（一行）
+
+```python
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
+```
+
+读属性 → 程序化启动（`db.run_migrations()`）时不配置日志；`False` → 命令行
+`alembic upgrade` 时也不会吞掉应用 logger。
+
+### 实测（关键证据）
+
+| | 修前 | 修后 |
+|---|---|---|
+| backend 容器 | 无任何 `researchlens.*` | `INFO researchlens.seed_real: seed_real: 入队 0 篇，跳过 1 篇` |
+| worker 容器 | 9 行（只有 alembic） | `INFO researchlens.worker worker 84abdb2ba646:1 启动（lease=60s heartbeat=20s）` |
+
+两条都是在 `docker logs` 里**真的出现**了才写下来的（不是"应该会打印"）。
+
+### 测试
+
+`backend/app/tests/unit/test_logging_not_clobbered.py`（3 条）：env.py 必须读
+`configure_logger`、必须传 `disable_existing_loggers=False`、**行为级**判据
+"basicConfig(INFO) → run_migrations() 之后 root 仍是 INFO 且 `researchlens.*` 仍 enabled"。
+
+**因果已证**：把 `env.py` 的改动 stash 掉，这 3 条立刻全红；恢复后全绿。
+（行为断言刻意写成"迁移**没有改动**调用方配置"，而不是"≤ INFO" —— pytest 自己的 root
+默认是 WARNING，写后者会被测试框架带偏，测不出真问题。）
+
+**本轮收尾**：后端全量 pytest **1032 passed / 0 failed**；`run_all.py` **7/7**
+（四套脚本改成按 `source_mode=real` 挑论文后仍全绿）。
+
 

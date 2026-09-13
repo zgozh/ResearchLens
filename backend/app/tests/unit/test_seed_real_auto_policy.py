@@ -71,6 +71,21 @@ class TestAutoSeedSubset:
 
 
 class TestProvisionEnqueuesOnlyAutoSubset:
+    def test_log_reads_the_key_the_report_actually_returns(self):
+        """日志键名必须与 `seed_catalog` 的返回形状一致。
+
+        实测踩到过：日志读 `report.get("skipped")`，而 `seed_catalog` 返回的是
+        `skipped_keys` —— 于是**永远打印"跳过 0 篇"**。运维看到"入队 0、跳过 0"
+        会以为自举没跑，实际是"已经导过、被正确跳过了"（`skipped_keys=1`）。
+        """
+        src = (ROOT / "backend" / "app" / "modules" / "pipeline" / "seed_real.py").read_text(
+            encoding="utf-8"
+        )
+        assert 'report.get("skipped_keys"' in src, (
+            "日志必须读 skipped_keys —— 读 skipped 会恒定显示 0，把'已跳过'伪装成'没跑'"
+        )
+        assert 'report.get("skipped"' not in src
+
     def test_provision_enqueues_exactly_one_job(self, monkeypatch):
         """**行为级**：真的调用一次自举，数它入队了几个 job、是不是那一篇。
 

@@ -57,8 +57,11 @@ def provision_real_papers() -> None:
     """
     try:
         report = seed_catalog("real")
+        # 注意键名：seed_catalog 返回的是 `skipped_keys`（不是 `skipped`）。
+        # 这里曾读错键 → 日志永远打印"跳过 0 篇"，运维看到会以为
+        # "既没入队也没跳过"，而实际是"已经导过、被正确跳过了"。
         log.info("seed_real: 入队 %d 篇，跳过 %d 篇", len(report.get("job_ids", [])),
-                 len(report.get("skipped", [])))
+                 len(report.get("skipped_keys", [])))
     except Exception as exc:  # noqa: BLE001
         log.warning("seed_real: 入队失败 %s", exc)
 
