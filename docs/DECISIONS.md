@@ -1856,3 +1856,30 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
 - **如实说明（未做的验证）**：本次**没有**再跑一次完整导入（约 4 分钟 LLM 时间）来现场看
   新 job 的事件序列 —— 重复抑制由 4 条单元测试覆盖，但"真实导入一次、确认新 job 里
   acquire/claims 只出现一次"这一步留待下次真实导入时顺带确认。
+
+## D-98 M12 收尾②：断点续跑**决策层** + `GET /papers/{id}/resume-plan`
+
+- **先查再动的结论**：管线**已经有**阶段幂等键（`job_stage_keys`）与"产物 digest 命中就
+  `skipped`"（D-94 已核实），**唯独没有任何入口**能问"这篇论文续跑该从哪起" ——
+  这正是方案 §M12-4 的缺口。
+- **做了什么**：
+  - `modules/pipeline/resume.py`：`plan_resume(succeeded, from_stage)` 是**纯函数**
+    （无 DB、无副作用），`resolve_start_stage(scope, from_stage)` 只是薄薄一层 DB 读取；
+  - `GET /papers/{id}/resume-plan?from_stage=`：返回 `start_stage / skipped / reason / stages`。
+  - 规则：不传 → 从**第一个未成功**的阶段起（默认安全）；传 → 从指定阶段起（之前的跳过）；
+    **非法 `from_stage` 视同没传**并把"已忽略"写进 reason（不猜、不报错）；全部完成 →
+    `start_stage=null` + 原因。
+- **实测（真实 paper 7，重建后端后）**：
+  ```
+  默认                  → start=claims     skipped=5  从第一个未完成阶段 claims 开始
+  ?from_stage=evaluate  → start=evaluate   skipped=6  按指定起点从 evaluate 开始（之前的阶段跳过）
+  ?from_stage=bogus     → start=claims     skipped=5  未知起点 'bogus' 已忽略；从…claims 开始
+  ```
+  前两条正是"**不重复烧 AI 阶段**"的证据：paper 7 的 claims 已完成，默认续跑不会再跑它。
+- **测试**：`test_pipeline_resume.py` 9 条（空历史→acquire、worker 在 index 后崩→从 claims 起、
+  中间有缺口→从缺口起、全部完成→null、脏阶段名被忽略、显式起点优先、
+  显式起点时未成功的前置阶段不计入 skipped、非法起点回落、起点就是首阶段）。
+  后端全量 **896 passed / 0 failed**（+9）。
+- **如实说明（仍未做）**：这个端点只回答"**该**从哪起"，**还没有**把它接进
+  `POST /process` 的入参（即"按计划真的从该阶段起跑"仍需在 ingest 入口接 `from_stage`）。
+  本轮交付的是决策层 + 可查询入口，**不声称端到端续跑已完成**。

@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from app.contracts.artifacts import ByteRange
 from app.contracts.common import Budget, Scope, Warning, new_ctx
 from app.contracts.evidence import ReviewRequest, VerifiedStatement
-from app.contracts.jobs import JobEvent
+from app.contracts.jobs import STAGE_ORDER, JobEvent
 from app.contracts.qa import QARequest
 from app.core.config import settings
 from app.core.db import get_db
@@ -416,6 +416,35 @@ async def qa_stream(paper_id: int, body: QARequest, revision_id: Optional[str] =
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/papers/{paper_id}/resume-plan")
+def resume_plan(
+    paper_id: int,
+    from_stage: Optional[str] = None,
+    revision_id: Optional[str] = None,
+):
+    """断点续跑计划（M12）：告诉调用方"重跑会从哪个阶段开始、哪些阶段会被跳过"。
+
+    为什么需要：管线**已经**有阶段幂等键（`job_stage_keys`）与"产物 digest 命中就 skipped"，
+    但**没有任何入口**能问"这篇论文续跑该从哪起"。手工从 `acquire` 重跑会重烧一遍
+    AI 阶段（claims 起草 / 题库作答 / evaluate 裁判）——那是真金白银。
+
+    - 不传 `from_stage` → 从**第一个未成功**的阶段起（默认安全）；
+    - 传 `from_stage` → 从指定阶段起（之前的一律跳过）；
+    - 全部已完成 → `start_stage=null` + 原因。
+    """
+    scope, _rev = _resolve_scope(paper_id, revision_id)
+    from app.modules.pipeline import resume as resume_mod
+
+    plan = resume_mod.resolve_start_stage(scope, from_stage)
+    return {
+        "scope": {"paper_id": scope.paper_id, "revision_id": scope.revision_id},
+        "start_stage": plan.start_stage,
+        "skipped": plan.skipped,
+        "reason": plan.reason,
+        "stages": list(STAGE_ORDER),
+    }
 
 
 @router.get("/papers/{paper_id}/qa/stream-audit")
