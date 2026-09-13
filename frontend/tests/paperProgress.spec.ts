@@ -8,7 +8,11 @@ import assert from 'assert';
 import {
   POLL_BUDGET_MS,
   deriveProgress,
+  derivedTargetsFor,
   exhibitsStatusFor,
+  isProgressVisible,
+  newlyReadyDomains,
+  nextLoadStatus,
   nextPollDelay,
   workspaceQuery,
 } from '../lib/paperProgress';
@@ -190,6 +194,169 @@ check('activeJob 为 running 时有进度语义（阶段细粒度可用）', () 
   });
   assert.strictEqual(p.phase, 'extracting');
   assert.ok(p.shouldPoll);
+});
+
+// ------------------------------------- R4-M7b：实时进度（消除闪烁 + 内容自动上屏）
+
+check('**silent 刷新不许重置加载状态**（闪烁的根因就在这）', () => {
+  // 实测：refresh() 每次开头把 status 置 'loading'，而进度卡可见性又绑了它
+  // → 每个轮询 tick 必然走一遍「出现 → 消失」。
+  assert.strictEqual(nextLoadStatus('ready', true), 'ready', 'silent 时必须保持原状态');
+  assert.strictEqual(nextLoadStatus('pending', true), 'pending');
+  assert.strictEqual(nextLoadStatus('error', true), 'error', 'silent 刷新也不该把错误态刷成加载中');
+  // 非 silent（首帧）：确实还没有数据，置 loading 是对的
+  assert.strictEqual(nextLoadStatus('idle', false), 'loading');
+  assert.strictEqual(nextLoadStatus('ready', false), 'loading');
+});
+
+check('进度卡可见性**只看 phase**（不看会被轮询重置的加载状态）', () => {
+  assert.strictEqual(isProgressVisible('extracting'), true);
+  assert.strictEqual(isProgressVisible('timeout'), true);
+  assert.strictEqual(isProgressVisible('failed'), true);
+  assert.strictEqual(isProgressVisible('unavailable'), true);
+  assert.strictEqual(isProgressVisible('ready'), false);
+});
+
+check('跃迁：从非 ready 变 ready 才算"刚就绪"', () => {
+  const prev = [cap('claims', 'pending'), cap('graph', 'pending'), cap('media', 'ready')];
+  const next = [cap('claims', 'ready'), cap('graph', 'pending'), cap('media', 'ready')];
+  assert.deepStrictEqual(newlyReadyDomains(prev as never, next as never), ['claims']);
+});
+
+check('跃迁：首次拿到快照（prev 为 null）**不算**跃迁（首帧本来就会全量加载）', () => {
+  const next = [cap('claims', 'ready'), cap('graph', 'ready')];
+  assert.deepStrictEqual(newlyReadyDomains(null, next as never), []);
+  assert.deepStrictEqual(newlyReadyDomains(undefined, next as never), []);
+});
+
+check('跃迁：已 ready 且仍 ready → 不重复（幂等，不反复拉重端点）', () => {
+  const caps = [cap('claims', 'ready')];
+  assert.deepStrictEqual(newlyReadyDomains(caps as never, caps as never), []);
+});
+
+check('跃迁：上一轮没有的域不误判为"刚就绪"', () => {
+  const prev = [cap('claims', 'pending')];
+  const next = [cap('claims', 'pending'), cap('brand_new', 'ready')];
+  assert.deepStrictEqual(newlyReadyDomains(prev as never, next as never), []);
+});
+
+check('跃迁：一轮里多个域同时就绪 → 全部返回（顺序跟随 next）', () => {
+  const prev = [cap('claims', 'pending'), cap('graph', 'pending'), cap('presentation', 'pending')];
+  const next = [cap('claims', 'ready'), cap('graph', 'ready'), cap('presentation', 'ready')];
+  assert.deepStrictEqual(
+    newlyReadyDomains(prev as never, next as never),
+    ['claims', 'graph', 'presentation'],
+  );
+});
+
+check('域 → 派生数据映射：claims/media/text 都吃 detail', () => {
+  assert.deepStrictEqual(derivedTargetsFor(['claims']), ['detail']);
+  assert.deepStrictEqual(derivedTargetsFor(['media']), ['detail']);
+  assert.deepStrictEqual(derivedTargetsFor(['graph']), ['graph']);
+  assert.deepStrictEqual(derivedTargetsFor(['presentation']), ['presentation']);
+  assert.deepStrictEqual(derivedTargetsFor(['evaluation']), ['evaluation']);
+});
+
+check('域 → 派生数据映射：多域去重、未知域不产生目标', () => {
+  const t = derivedTargetsFor(['claims', 'media', 'graph', 'graph', 'qa' as never]);
+  assert.deepStrictEqual([...t].sort(), ['detail', 'graph']);
+  assert.deepStrictEqual(derivedTargetsFor([]), []);
+});
+
+check('进度卡的可见性不再依赖 exhibits 加载状态（源码级回归）', () => {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const file = path.resolve(process.cwd(), 'app/paper/[slug]/page.tsx');
+  const source = fs.readFileSync(file, 'utf8');
+  const m = /const notReady = ([^;]+);/.exec(source);
+  assert.ok(m, '找不到 notReady 的定义');
+  assert.ok(
+    !/exhibits\.status|status === 'loading'|status === 'pending'/.test(m[1]!),
+    `notReady 不许再看加载状态（那会被轮询重置 → 闪烁）：${m[1]}`,
+  );
+  assert.ok(/progress\.phase/.test(m[1]!), `notReady 应当只看进度真相：${m[1]}`);
+});
+
+check('轮询调用 refresh 时必须带 silent（源码级回归）', () => {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const file = path.resolve(process.cwd(), 'app/paper/[slug]/page.tsx');
+  const source = fs.readFileSync(file, 'utf8');
+  assert.ok(
+    /workspace\.refresh\(\s*\{\s*silent:\s*true\s*\}\s*\)/.test(source),
+    '轮询必须用 silent 刷新，否则每个 tick 都会把状态刷成 loading → 闪',
+  );
+});
+
+check('切视图必须保留 job_id（源码级回归：丢了就断流）', () => {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const file = path.resolve(process.cwd(), 'app/paper/[slug]/page.tsx');
+  const source = fs.readFileSync(file, 'utf8');
+  const m = /const changeView = useCallback\([\s\S]*?\n  \);/.exec(source);
+  assert.ok(m, '找不到 changeView');
+  assert.ok(
+    /params\.set\(\s*'job_id'/.test(m[0]),
+    'changeView 必须把 job_id 写回 URL —— 否则切一次视图就断掉进度流',
+  );
+  assert.ok(
+    /\[slug, resolvedPaperId, router, jobId\]/.test(m[0]),
+    'jobId 必须进依赖数组，否则闭包里拿到的是旧值',
+  );
+});
+
+check('分域跃迁会触发派生数据刷新（源码级回归：内容要自动上屏）', () => {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const file = path.resolve(process.cwd(), 'app/paper/[slug]/page.tsx');
+  const source = fs.readFileSync(file, 'utf8');
+  assert.ok(
+    /newlyReadyDomains\(capsRef\.current, caps\)/.test(source),
+    '必须用状态跃迁判断（不是每 tick 全量重取）',
+  );
+  assert.ok(
+    /refreshDerived\(derivedTargetsFor\(justReady\)\)/.test(source),
+    '跃迁后要真的去拉对应的派生数据',
+  );
+  for (const t of ['paperDetail', 'api.graph', 'api.presentation', 'api.evaluation']) {
+    assert.ok(source.includes(t), `派生数据刷新覆盖 ${t}`);
+  }
+});
+
+check('派生数据刷新失败必须保留旧数据（silent 语义）', () => {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const file = path.resolve(process.cwd(), 'app/paper/[slug]/page.tsx');
+  const source = fs.readFileSync(file, 'utf8');
+  const m = /const refreshDerived = useCallback\([\s\S]*?\n  \}, \[resolvedPaperId\]\);/.exec(source);
+  assert.ok(m, '找不到 refreshDerived');
+  assert.ok(!/setDetail\(undefined\)|setGraph\(\{\}\)|setLoading\(true\)/.test(m[0]),
+    'silent 刷新不许把数据清空或触发骨架屏');
+  assert.ok(/catch/.test(m[0]), '必须有 catch：失败保留旧数据');
+});
+
+check('**真实导入快照**驱动：跃迁序列与派生数据拉取顺序（回归锁）', () => {
+  // 这三帧是 2026-09-13 从真实导入的轮询里抓下来的 capabilities 快照（paper 18, 软件学报）。
+  // 用真数据而不是合成数据，锁住"内容依次自动上屏"的时序。
+  const S1 = [cap('pdf', 'ready'), cap('text', 'ready'), cap('media', 'ready'),
+              cap('claims', 'pending'), cap('graph', 'pending'), cap('presentation', 'pending')];
+  const S2 = [cap('pdf', 'ready'), cap('text', 'ready'), cap('media', 'ready'),
+              cap('claims', 'ready'), cap('graph', 'pending'), cap('presentation', 'pending')];
+  const S3 = [cap('pdf', 'ready'), cap('text', 'ready'), cap('media', 'ready'),
+              cap('claims', 'ready'), cap('graph', 'ready'), cap('presentation', 'ready')];
+
+  // 首帧：prev=null → 不算跃迁（loadLegacy 已经在挂载时全量拉过）
+  assert.deepStrictEqual(newlyReadyDomains(null, S1 as never), []);
+  // 第二帧：claims 刚就绪 → 只需重取 detail（地图/方法/证据链右栏/阅读都吃它）
+  const d2 = newlyReadyDomains(S1 as never, S2 as never);
+  assert.deepStrictEqual(d2, ['claims']);
+  assert.deepStrictEqual(derivedTargetsFor(d2), ['detail']);
+  // 第三帧：graph + presentation 同时就绪 → 各拉一次
+  const d3 = newlyReadyDomains(S2 as never, S3 as never);
+  assert.deepStrictEqual(d3, ['graph', 'presentation']);
+  assert.deepStrictEqual([...derivedTargetsFor(d3)].sort(), ['graph', 'presentation']);
+  // 第四帧：全部仍 ready → 不再拉（幂等，不打断正在看的内容）
+  assert.deepStrictEqual(newlyReadyDomains(S3 as never, S3 as never), []);
 });
 
 console.log(`\npaperProgress: ${passed} 项全部通过`);

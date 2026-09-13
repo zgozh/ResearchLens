@@ -2564,3 +2564,73 @@ abstract: 为了解决目前图像纹理复杂度建模的隐写载体选择指�
 ### 验收
 
 后端 `pytest` **1023 passed / 0 failed**；`run_all.py` 见报告。
+
+---
+
+## D-115 导入进度**闪烁**与**解析结果不自动上屏**：三条根因与改法
+
+### 谁报的
+
+> "导入之后的解析过程动画还是有很大的显示问题，就是那个表解析过程动画一闪一闪，一会显示
+>  一会又没了，然后那些解析成功的内容又不会实时推送上去直接覆盖，导致我依旧要进行手动刷新。"
+
+### 根因（三条，逐条在代码里核实）
+
+**R1 闪烁 —— 进度卡的可见性绑在「轮询自己每次都会重置的状态」上**
+
+`page.tsx` 的 `notReady` 判定里有一条 `workspace.exhibits.status === 'loading'`，
+而 `usePaperWorkspace.refresh()` **每次开头**都 `setExhibits({status:'loading'})`。
+于是每个轮询 tick 必然走一遍：
+
+```
+tick → status='loading' → notReady=true  → 进度卡出现（把下方内容顶下去）
+返回 → status='ready'   → notReady=false → 进度卡消失（内容跳回来）
+下个 tick → 又出现 …
+```
+
+**不是动画在抖，是卡片按轮询间隔反复挂载/卸载**，轮询 1–5s 一次，视觉上非常明显。
+
+**R2 内容不自动出现 —— 只刷新了 canonical，没刷新 legacy 派生数据**
+
+`loadLegacy()`（取 `detail` / `graph` / `presentation` / `evalData`）**只有一个调用点**，
+依赖只有 `resolvedPaperId` → **整篇论文只跑一次**；而轮询调的是 `workspace.refresh()`
+（只更新 manifest + exhibits）。
+
+各视图实测数据来源：论文地图 / 方法动画 / 证据链右栏图表 / 论文阅读吃 `detail`，
+研究图谱吃 `graph`，讲解吃 `presentation`，评测吃 `evalData` —— **这些永远不会被轮询更新**，
+所以解析完成后必须手动刷新。
+
+**R3 切视图即断流 —— `changeView` 丢掉 `job_id`**
+
+`changeView` 构造的查询串是 `paper_id=..&view=..`，**没有 `job_id`** → URL 一变
+`jobId` 变 `null` → `useJobEvents({job_id: 0})` 命中 `setEvents([])` →
+**阶段列表被清空、退回通用转圈**，而且切完再也接不上进度。
+
+### 改法（4 个模块）
+
+| | 模块 | 要点 |
+|---|---|---|
+| M1 | **静默刷新** | 新增 `nextLoadStatus(current, silent)`：silent 时**保持 status 不变**；轮询一律 `refresh({silent:true})`；`notReady` 改为 `isProgressVisible(phase)` —— **只看进度真相** |
+| M2 | **分域跃迁拉数据** | 新增 `newlyReadyDomains(prev, next)`（只在 pending→ready **跃迁**时返回，首帧与幂等都不算）+ `derivedTargetsFor(domains)`；在页面里按跃迁**只拉一次**对应派生数据，全部 silent、失败保留旧数据 |
+| M3 | **保住 `job_id`** | `changeView` 用 `URLSearchParams` 保留 `job_id`，并把 `jobId` 加进依赖数组 |
+| M4 | **完成不瞬闪** | phase 变 ready 后进度卡**多留 1.2s** 再淡出，让用户看到"完成"而不是瞬间消失 |
+
+### 与后端/数据的关系（用户专门问过，如实回答）
+
+- **数据完全不动**：无 schema 改动、无迁移、无写入 —— 新增的只有**只读 GET**；
+- **项目结构不动**：只改 3 个前端文件 + 测试 + 1 条 ADR；
+- **不是"单纯动画"**：有两处**行为**变化 —— 进度卡的显示规则（这是修闪烁的必然），
+  以及 URL 会多带一个 `job_id`（老链接不带它照样能用）。
+
+### 验收
+
+- 纯函数测试：`silent` 不改 status、可见性只看 phase、跃迁函数幂等/首帧不计、
+  **用真实导入快照**（paper 18 的三帧 capabilities）驱动断言拉取时序；
+- 源码级回归：`notReady` 不许引用加载状态、轮询必须带 `silent`、`changeView` 必须保留 `job_id`、
+  派生刷新失败不许清空数据；
+- 前端 `tsc` 干净、`test:lib` **136 项**全绿、`run_all.py` **7/7**。
+
+### 人工判据（我做不了，需用户看）
+
+导入过程中进度卡**不闪**、内容不被上下顶动；解析完成后**不刷新**图谱/讲解/评测/图表依次出现；
+解析期间切视图阶段列表不丢。

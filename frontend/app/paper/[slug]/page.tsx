@@ -13,14 +13,18 @@ import type {
   ClaimOut, ClaimSummary, EvaluationOut, GraphOut, PaperDetail, PaperOut, PresentationOut, ViewMode,
 } from '@/lib/types';
 import type {
-  ClaimRecord, ExhibitBundle, MediaIndexEntry, NavigationTarget, Scope,
+  Capability, ClaimRecord, ExhibitBundle, MediaIndexEntry, NavigationTarget, Scope,
 } from '@/lib/contracts';
 import { usePaperWorkspace } from '@/hooks/usePaperWorkspace';
 import { useEvidenceNavigation } from '@/hooks/useEvidenceNavigation';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import {
   deriveProgress,
+  derivedTargetsFor,
+  isProgressVisible,
+  newlyReadyDomains,
   nextPollDelay,
+  type DerivedTarget,
 } from '@/lib/paperProgress';
 import { JobProgress } from '@/components/jobs/JobProgress';
 import { AgentTrace } from '@/components/jobs/AgentTrace';
@@ -179,11 +183,16 @@ export default function Workspace() {
   const changeView = useCallback(
     (v: ViewMode) => {
       setView(v);
-      const pid = resolvedPaperId;
-      const qs = pid ? `paper_id=${pid}&view=${v}` : `view=${v}`;
-      if (slug) router.replace(`/paper/${slug}?${qs}`, { scroll: false });
+      const params = new URLSearchParams();
+      if (resolvedPaperId) params.set('paper_id', String(resolvedPaperId));
+      params.set('view', v);
+      // R4-M7b：**必须保留 `job_id`**。旧实现只写 `paper_id` + `view`，于是切一次视图
+      // 就把 job_id 从 URL 里抹掉 → `useJobEvents({job_id: 0})` → SSE 被 abort、
+      // 事件数组被清空 → 阶段列表退回通用转圈，**而且再也接不上进度**。
+      if (jobId) params.set('job_id', jobId);
+      if (slug) router.replace(`/paper/${slug}?${params.toString()}`, { scroll: false });
     },
-    [slug, resolvedPaperId, router],
+    [slug, resolvedPaperId, router, jobId],
   );
 
   /** D29：论文地图点「阅读该章节正文」→ 用本节**页锚点**定位到原件正文页。
@@ -288,7 +297,9 @@ export default function Workspace() {
         return;
       }
       setElapsedMs((v) => v + 1000);
-      await workspace.refresh();
+      // **silent**：后台轮询不许把加载状态刷成 loading —— 那会让进度卡
+      // 跟着轮询周期出现/消失（用户报的"一闪一闪"）。
+      await workspace.refresh({ silent: true });
       if (cancelled) return;
       timer = setTimeout(tick, nextPollDelay(elapsedMs, !!manifest?.active_job));
     };
@@ -301,14 +312,63 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedPaperId, progress.shouldPoll, manifest?.active_job, workspace.refresh]);
 
-  /** 还没到"可看内容"的状态：显示分域进度与终态，而不是空白。 */
-  const notReady = progress.phase !== 'ready' && (
-    !exhibits
-    || workspace.exhibits.status === 'pending'
-    || workspace.exhibits.status === 'loading'
-  );
+  /**
+   * 还没到"可看内容"的状态：显示分域进度与终态，而不是空白。
+   *
+   * R4-M7b：**只看进度真相**，不再看 `exhibits.status` ——
+   * 那个值会被轮询自己重置（见 `usePaperWorkspace.refresh`），
+   * 把它当判据等于让卡片跟着轮询闪烁。
+   */
+  const notReady = isProgressVisible(progress.phase);
   // 兼容旧变量名：`processing` 现在由进度真相驱动（供阶段 E 的事件流区块复用）
   const processing = progress.shouldPoll;
+
+  // ---- R4-M7b：分域就绪 → 拉对应派生数据（解析结果**实时上屏**）----
+  //
+  // 为什么需要：轮询只刷新 manifest + exhibits，而各视图消费的是 legacy 派生数据
+  // （detail / graph / presentation / evaluation）—— 那些原先**整篇论文只加载一次**，
+  // 所以解析完成后图谱/讲解/评测/图表永远不会自动出现，用户必须手动刷新。
+  //
+  // 只在**状态跃迁**（pending→ready）时拉，且走 silent：`detail` 是较重的聚合端点，
+  // 周期性重取会打断正在看的图表/讲解；失败时**保留旧数据**。
+  const capsRef = useRef<Capability[] | null>(null);
+
+  const refreshDerived = useCallback(async (targets: DerivedTarget[]) => {
+    if (!resolvedPaperId || targets.length === 0) return;
+    try {
+      if (targets.includes('detail')) setDetail(await api.paperDetail(resolvedPaperId));
+      if (targets.includes('graph')) setGraph(await api.graph(resolvedPaperId));
+      if (targets.includes('presentation')) setPresentation(await api.presentation(resolvedPaperId));
+      if (targets.includes('evaluation')) setEvalData(await api.evaluation(resolvedPaperId));
+    } catch (e) {
+      console.warn('[live] 派生数据刷新失败，保留旧数据：', e);
+    }
+  }, [resolvedPaperId]);
+
+  useEffect(() => {
+    const caps = manifest?.capabilities ?? null;
+    const justReady = newlyReadyDomains(capsRef.current, caps);
+    capsRef.current = caps;
+    if (justReady.length > 0) {
+      void refreshDerived(derivedTargetsFor(justReady));
+    }
+  }, [manifest?.capabilities, refreshDerived]);
+
+  // 完成后让进度卡多留 1.2s 再淡出（让用户看到"完成"，而不是瞬间消失）
+  const [holdProgress, setHoldProgress] = useState(false);
+  const prevPhaseRef = useRef(progress.phase);
+  useEffect(() => {
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = progress.phase;
+    if (prev !== 'ready' && progress.phase === 'ready') {
+      setHoldProgress(true);
+      const t = setTimeout(() => setHoldProgress(false), 1200);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [progress.phase]);
+
+  const showProgress = notReady || holdProgress;
 
   // ---- 阶段 E：job 事件流（SSE），jobStatus 轮询作降级 ----
   const jobEvents = useJobEvents({ job_id: jobId ? Number(jobId) : 0 });
@@ -471,7 +531,7 @@ export default function Workspace() {
             {/* R4-M7：**`manifest.capabilities` 驱动的分域进度**。
                 以前这里什么都没有 —— 用户看到一片空白，只能手动刷新。
                 现在：每个域一行（含后端给的原因），三终态各有界面。 */}
-            {notReady && (
+            {showProgress && (
               <GlassCard className="mb-4 p-5">
                 {progress.phase === 'failed' ? (
                   <div className="flex items-start gap-2 text-rose-200">

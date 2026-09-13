@@ -182,3 +182,90 @@ export function workspaceQuery(paperId: number, jobId?: number | null): string {
   const base = `paper_id=${paperId}`;
   return jobId && jobId > 0 ? `${base}&job_id=${jobId}` : base;
 }
+
+// ------------------------------------------------------------- 实时进度（R4-M7b）
+
+/**
+ * **轮询时不许重置加载状态**（消除"一闪一闪"的根因）。
+ *
+ * 实测现象：进度卡按轮询周期反复出现/消失。根因不是动画，而是
+ * `usePaperWorkspace.refresh()` **每次开头**都把 `status` 置成 `'loading'`，
+ * 而进度卡的可见性又绑了这个 status —— 于是每个 tick 必然走一遍
+ * 「loading → 卡片出现 → ready → 卡片消失」。
+ *
+ * 规则：
+ * - `silent=false`（首帧加载）：置 `'loading'` —— 此时确实还没有任何数据；
+ * - `silent=true`（后台轮询）：**保持当前 status 不变**，直接替换 data，
+ *   这样页面不会因为"后台刷新"而闪。
+ */
+export function nextLoadStatus(
+  current: 'idle' | 'loading' | 'pending' | 'ready' | 'error',
+  silent: boolean,
+): 'idle' | 'loading' | 'pending' | 'ready' | 'error' {
+  if (silent) return current;
+  return 'loading';
+}
+
+/**
+ * 进度卡是否应当显示 —— **只看进度真相，不看加载状态**。
+ *
+ * 为什么不能看 `exhibits.status`：那个值会被轮询自己重置（见 `nextLoadStatus`），
+ * 把它当判据等于让卡片跟着轮询闪烁。
+ */
+export function isProgressVisible(phase: ProgressPhase): boolean {
+  return phase !== 'ready';
+}
+
+/** `capabilities` 里的域名。 */
+export type DomainName = Capability['name'];
+
+/**
+ * 算出本轮**刚刚变为 ready** 的域（状态跃迁），用于"只拉一次对应派生数据"。
+ *
+ * 为什么需要：轮询只刷新 manifest + exhibits，而各视图消费的是 legacy 派生数据
+ * （`detail` / `graph` / `presentation` / `evaluation`）—— 那些**整篇论文只加载一次**，
+ * 所以解析完成后图谱/讲解/评测/图表永远不会自动出现，用户必须手动刷新。
+ *
+ * 只在**跃迁**时拉（而不是每 tick 全拉）的理由：`detail` 是较重的聚合端点，
+ * 周期性重取会打断正在看的图表/讲解。
+ *
+ * 语义：
+ * - 上一轮不是 `ready`、这一轮是 `ready` → 计入；
+ * - 首次拿到快照（`prev` 为 null）→ **不计入**（首帧本来就会全量加载）；
+ * - 已经在 `ready` 且仍然 `ready` → 不计入（幂等，不重复拉）。
+ */
+export function newlyReadyDomains(
+  prev: Capability[] | null | undefined,
+  next: Capability[] | null | undefined,
+): DomainName[] {
+  if (!prev || !next) return [];
+  const prevState = new Map(prev.map((c) => [c.name, c.state]));
+  const out: DomainName[] = [];
+  for (const cap of next) {
+    if (cap.state !== 'ready') continue;
+    const before = prevState.get(cap.name);
+    if (before === undefined) continue;   // 上一轮没有这个域 → 不算跃迁
+    if (before !== 'ready') out.push(cap.name);
+  }
+  return out;
+}
+
+/**
+ * 一个刚就绪的域需要重取哪些 legacy 派生数据（读取端在 `page.tsx`）。
+ *
+ * 映射依据（实测各视图的数据来源）：
+ * - `claims` / `media` → `detail`：论文地图、方法动画、证据链右栏图表、论文阅读都吃它；
+ * - `graph` → `api.graph`；`presentation` → `api.presentation`；`evaluation` → `api.evaluation`。
+ */
+export type DerivedTarget = 'detail' | 'graph' | 'presentation' | 'evaluation';
+
+export function derivedTargetsFor(domains: DomainName[]): DerivedTarget[] {
+  const out = new Set<DerivedTarget>();
+  for (const d of domains) {
+    if (d === 'claims' || d === 'media' || d === 'text') out.add('detail');
+    else if (d === 'graph') out.add('graph');
+    else if (d === 'presentation') out.add('presentation');
+    else if (d === 'evaluation') out.add('evaluation');
+  }
+  return [...out];
+}
