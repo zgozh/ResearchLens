@@ -14,7 +14,8 @@
     "test:graph": "tsc lib/graphLayout.ts tests/graphLayout.spec.ts --outDir .tmp/graph-test --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck && node .tmp/graph-test/tests/graphLayout.spec.js",
     "test:media": "tsc lib/mediaView.ts tests/mediaView.spec.ts --outDir .tmp/media-test --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck && node .tmp/media-test/tests/mediaView.spec.js",
     "test:policy": "tsc lib/sourcePolicy.ts tests/sourcePolicy.spec.ts --outDir .tmp/policy-test --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck && node .tmp/policy-test/tests/sourcePolicy.spec.js",
-    "test:lib": "npm run test:rich && npm run test:graph && npm run test:media && npm run test:policy",
+    "test:lib": "npm run test:rich && npm run test:graph && npm run test:media && npm run test:policy && npm run test:eval",
+    "test:eval": "tsc lib/evalMetrics.ts tests/evalMetrics.spec.ts --outDir .tmp/eval-test --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck && node .tmp/eval-test/tests/evalMetrics.spec.js",
     "test:hygiene": "npm run test:rich && node scripts/verify-render-hygiene.cjs"
   },
   "dependencies": {
