@@ -1708,3 +1708,31 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
   `events` 只含类型名（不含正文）、异常路径记 `exception_type`、DomainError 记 `error_code`、
   **客户端断开记 `terminal='none'`**、`audit.record` 自己吞掉写库异常。
   后端全量 **827 passed / 0 failed**（较上轮 +6）。
+
+## D-91 M11 验收套件入库：验收不再依赖「我这台机器上恰好有那几个脚本」
+
+- **动机**：五套端到端验收脚本一直躺在 `.scratch/`（**被 gitignore**）。也就是说
+  干净克隆根本跑不了验收 —— 每一轮"验收通过"都建立在一个无法复现的前提上。
+- **做了什么**：迁移进 `scripts/acceptance/`（`verify_route_a / verify_graph /
+  verify_e2e_extra / verify_metrics_live / verify_qa_stability`）+ 新增 `run_all.py`
+  与 `README.md`：
+  - `run_all.py` 一条命令跑全：**前置健康检查**（后端/前端不可达 → 打印
+    `backend unreachable at {url}`、退出码 **2**，**绝不**把后续检查标成"跳过=通过"）、
+    逐脚本串行执行、每套输出一行 JSON（`{script,status,failures,elapsed_ms,tail}`）、
+    汇总写 `results.json`；退出码 0/1/2；
+  - 脚本可独立跑（`python scripts/acceptance/verify_graph.py <base> [frontend]`）；
+  - `.scratch/` 里这 5 个原文件已删除（其余一次性诊断脚本按方案要求不动）。
+- **实测**：`python scripts/acceptance/run_all.py` → 5/5 pass；
+  指向错误端口 → `backend unreachable at http://127.0.0.1:9`、**退出码 2**（假 pass 被堵死）。
+- **迁移中踩到并修掉的两个真问题（值得记）**：
+  1. **子进程输出编码**：Windows 上子脚本写 GBK、CI 上写 UTF-8；只按一种解码会让中文
+     全变替换字符，连"失败断言：N"都正则不出来（`failures` 恒为 `null`），
+     而且把 `U+FFFD` 打到 GBK 控制台还会直接抛 `UnicodeEncodeError` 把 runner 打挂。
+     现在按 `utf-8 → gbk → mbcs` 依次尝试解码，并把 stdout/stderr 重配为 UTF-8。
+  2. **失败计数行的真实文案是「总计失败断言：N」/「总失败断言：N」**，不是我最初以为的
+     "失败数：N" —— 正则写错时 `failures` 会**静默为 null**（状态仍靠退出码判定，
+     所以不会造成假绿，但机读字段是空的）。已按实测文案修正。
+- **一处如实记录的偏离**：方案 §M11-2 要求"**每脚本**输出统一 JSON 行"；当前由
+  `run_all` 统一汇总输出（各脚本保持原有人读输出与退出码）。理由：逐脚本改尾部输出结构
+  收益低、改坏已验证脚本的风险不成比例；如需再补，只需在各脚本尾部加一行 `print(json.dumps(...))`。
+  已写进 `scripts/acceptance/README.md`。
