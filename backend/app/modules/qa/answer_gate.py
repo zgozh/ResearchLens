@@ -127,7 +127,7 @@ def assess(
 
     decision.grounded = True
     decision.reason = "所有事实句均有通过验证的证据，且无未支持推断"
-    decision.confidence = _confidence(decision)
+    decision.confidence = _confidence(decision, mode)
     return decision
 
 
@@ -170,12 +170,33 @@ def _has_evidence(st: VerifiedStatement, known: dict) -> bool:
     return all(eid in known for eid in ids)
 
 
-def _confidence(decision: GateDecision) -> str:
-    if not decision.grounded:
-        return "Low"
-    if decision.fact_count >= 2 and decision.inference_count == 0:
-        return "High"
-    return "Medium"
+def _confidence(decision: GateDecision, mode: str = "generated") -> str:
+    """置信度三档（R4-M3，ADR D-104）——**判据确定，不靠感觉**。
+
+    为什么改：此前 `grounded=False` 一律 ``Low``，而"不 grounded"过去等价于"拒答"。
+    决策 1 之后不再有拒答，低置信度回答会真的交付给用户，所以必须能区分
+    "逐字原文但未过整句校验"（``extractive``，Medium）与"通用回答"（``general``，Low）。
+
+    判据（自上而下）：
+
+    - ``High``：grounded **且** ≥2 条事实句 **且** 无推断混入；
+    - ``Medium``：grounded 的其余情形；或 ``mode=extractive`` 且事实句**全部**有证据
+      （逐字原文、无编造空间，但未整体通过 gate）；
+    - ``Low``：其余一切（``general`` / ``unavailable`` / 无据可依）。
+
+    **红线**：本函数只决定"多可信"，绝不放宽 `assess` 的 grounded 判据。
+    """
+    if decision.grounded:
+        if decision.fact_count >= 2 and decision.inference_count == 0:
+            return "High"
+        return "Medium"
+    if (
+        mode == "extractive"
+        and decision.fact_count > 0
+        and decision.supported_facts == decision.fact_count
+    ):
+        return "Medium"
+    return "Low"
 
 
 __all__ = [

@@ -157,12 +157,16 @@ async def stream(
         mode_seen = mode  # M7 审计：本次回答最终落到哪个模式
         if mode in ("general",):
             stage, message = "drafting", "通用回答（未使用论文证据）"
-        elif mode in ("abstained", "not_mentioned"):
-            stage, message = "degraded", "论文中没有可支撑回答的证据，按如实说明返回"
+        elif mode == "unavailable":
+            stage, message = "degraded", "生成模型不可用，按如实说明返回（可重试）"
+        elif mode == "not_mentioned":
+            stage, message = "degraded", "论文未提及所问对象，按如实说明返回"
+        elif mode == "extractive":
+            stage, message = "degraded", "按论文原文抽取作答（逐字原文）"
         elif record.grounded:
             stage, message = "verifying", "正在逐句核验证据"
         else:
-            stage, message = "degraded", "按拒答返回"
+            stage, message = "degraded", "未整体通过证据校验，按低置信回答返回"
         yield encoder.encode(_event(
             encoder.next_id(), request_id, "status", QAStatus(stage=stage, message=message),
         ))

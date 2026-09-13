@@ -145,11 +145,13 @@ class TestNeverEmptyInvariant:
         empty = AnswerRecord(
             scope=rec.scope, id="x", question=rec.question,
             text=ArtifactText(text="", spans=[]), statements=[], evidence=[],
-            grounded=False, confidence="Low", note="", mode="abstained",
+            grounded=False, confidence="Low", note="", mode="unavailable",
         )
         filled = qs._ensure_readable(empty, "这篇论文提到量子计算了吗？", [])
         assert filled.text.text.strip(), "不变量必须补出正文"
-        assert filled.mode in ("not_mentioned", "general", "abstained"), filled.mode
+        # R4-M3：兜底也不再产 `abstained`（已从 AnswerMode 删除）。
+        assert filled.mode in ("not_mentioned", "extractive", "general", "unavailable"), \
+            filled.mode
 
     def test_invariant_is_not_triggered_when_text_exists(self, real_scope):
         from app.contracts.evidence import ArtifactText
@@ -171,7 +173,7 @@ class TestNeverEmptyInvariant:
         rec = AnswerRecord(
             scope=real_scope, id="x", question="这篇论文提到量子计算了吗？",
             text=ArtifactText(text="", spans=[]), statements=[], evidence=[],
-            grounded=False, confidence="Low", note="", mode="abstained",
+            grounded=False, confidence="Low", note="", mode="unavailable",
         )
         out = qs._ensure_readable(rec, "这篇论文提到量子计算了吗？", []).text.text
         assert "没有生成内容" not in out

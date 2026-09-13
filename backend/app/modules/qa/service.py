@@ -44,8 +44,19 @@ from . import answer_gate as gate, repository as repo
 #: 生成算法版本（进入评测版本）
 ALGORITHM_VERSION = "rl.qa/2"
 
-#: 判为「拒答」的 note（服务端生成，不依赖模型措辞）
+#: **已废弃**（R4-M3 / ADR D-104）：产品里不再有"拒答"，保留此常量只为兼容旧引用点，
+#: 新代码请用 `UNGROUNDED_NOTE` / `UNAVAILABLE_NOTE`。
 ABSTAIN_NOTE = "论文中没有足够的已验证证据支持回答；已按 Evidence Gate 拒绝进入事实层。"
+
+#: 低置信回答的 note（R4-M3：没有"拒答"，只有"低置信"）
+UNGROUNDED_NOTE = (
+    "没有可整体通过证据校验的回答；已给出**如实说明 + 最接近的原文片段**"
+    "（片段逐字来自论文原文，但未通过证据校验，仅供参考）。"
+)
+UNAVAILABLE_NOTE = "生成模型当前不可用，无法给出完整回答；以下是已知信息与如实说明（可稍后重试）。"
+EXTRACTIVE_FALLBACK_NOTE = (
+    "模型草稿未通过证据校验，已改用**论文原文抽取**作答（逐字原文，未改写）。"
+)
 
 #: 拒答**正文**模板：空白正文在界面上就是"什么都没有"，用户读成"问答坏了"（REFACTOR_PLAN M7）。
 NOT_MENTIONED_TPL = (
@@ -55,6 +66,10 @@ NOT_MENTIONED_TPL = (
 ABSTAIN_TPL = (
     "我在这篇论文里没有找到能支撑这个问题的原文证据，所以不能给出结论"
     "（本产品只依据论文原文作答，不编造）。可以换一种更具体的问法试试。"
+)
+UNAVAILABLE_TPL = (
+    "生成模型当前不可用，我暂时没法给出完整回答（不会用编造的内容顶替）。"
+    "你可以稍后重试；如果问题指向这篇论文的某个具体对象，我仍然会如实告诉你论文里有没有提到它。"
 )
 ABSTAIN_HINT_TPL = "\n\n与问题最接近的原文片段（{where}，仅供参考、未通过证据校验）：{snippet}"
 NOT_MENTIONED_NOTE = "论文中没有出现问题所问的对象；按『不拿别的相关内容顶替』如实作答（mode=not_mentioned）。"
@@ -115,9 +130,10 @@ def answer(
         if general is not None:
             _persist(scope, general, source_digest, key)
             return general
-        # 模型不可用：给如实说明（**不要把闲聊说成"论文没提到 X"**——那不是论文问题）
-        record = _abstained(scope, question, warnings).model_copy(
-            update={"text": ArtifactText(text=ABSTAIN_TPL, spans=[])}
+        # 模型不可用：如实说明（**不要把闲聊说成"论文没提到 X"**——那不是论文问题）
+        # R4-M3：`unavailable` 是"如实说明"，不是拒答（决策 1）。
+        record = _ungrounded(
+            scope, question, warnings, hits=(), model_available=False,
         )
         _persist(scope, record, source_digest, key)
         return record
@@ -137,8 +153,8 @@ def answer(
             return general
         # 不是论文问题、模型又不可用 → 如实说明即可。
         # **不能**掉进"论文中没有提到 X"（那句话会误导：它根本不是论文问题）。
-        record = _abstained(scope, question, warnings).model_copy(
-            update={"text": ArtifactText(text=ABSTAIN_TPL, spans=[])}
+        record = _ungrounded(
+            scope, question, warnings, hits=hits, model_available=False,
         )
         _persist(scope, record, source_digest, key)
         return record
@@ -154,25 +170,33 @@ def answer(
                 message=f"检索为空，且问题所问的对象（{obj}）未出现在原文中，按『论文未提及』如实作答",
                 stage="qa",
             ))
-            record = _abstained(scope, question, warnings, reason="object_absent", hits=hits)
+            record = _ungrounded(
+                scope, question, warnings, reason="object_absent", hits=hits,
+            )
         else:
             general = _general_answer(scope, question, ctx, warnings)
-            record = general if general is not None else _ensure_readable(
-                _abstained(scope, question, warnings), question, hits
+            record = general if general is not None else _ungrounded(
+                scope, question, warnings, hits=hits, model_available=False,
             )
+        record = _ensure_readable(record, question, hits)
         _persist(scope, record, source_digest, key)
         return record
 
-    # ---- 阶段 2.6：问题问的**具体对象**不在原文里 → 直接拒答（ADR-0066）
+    # ---- 阶段 2.6：问题问的**具体对象**不在原文里 → 如实说明"未提及"（ADR-0066 / R4-M3）
     # 不能靠"提示词请模型别答"：实测模型仍会拿"用了 8 块 GPU"去答"用了 Kubernetes 吗"。
     # 这条判据是确定性的，且只针对"像具体对象"的词，不会误伤"用了什么数据集"这类问题。
+    #
+    # R4-M3（决策 1）：**不再拒答**——判据保留为 `not_mentioned` 的确定性证据，
+    # 并附一条"最接近的原文片段"（决策 2，逐字、标注未通过证据校验）。
     if _object_absent_from_hits(question, hits):
         warnings.append(Warning(
             code="question_object_absent",
-            message="问题所问的对象在检索到的原文中没有出现，按无证据拒答（不拿别的相关内容顶替）",
+            message="问题所问的对象在检索到的原文中没有出现，按『论文未提及』如实作答（不拿别的相关内容顶替）",
             stage="qa",
         ))
-        record = _abstained(scope, question, warnings, reason="object_absent", hits=hits)
+        record = _ungrounded(
+            scope, question, warnings, reason="object_absent", hits=hits,
+        )
         _persist(scope, record, source_digest, key)
         return record
 
@@ -185,7 +209,38 @@ def answer(
     decision = gate.assess(draft_text, sentences, mode=_mode_for(draft_text, sentences))
 
     if not decision.grounded and not sentences:
-        record = _abstained(scope, question, warnings, hits=hits)
+        # R4-M3（决策 1）：**不再拒答**。先试抽取式兜底——用检索到的**原文**作答
+        # （逐字、可定位，不是编造）；连原文片段都拿不到才退回低置信的如实说明。
+        ex_text, ex_sentences = _extractive_draft(scope, question, hits, ctx, warnings)
+        if ex_sentences:
+            ex_decision = gate.assess(ex_text, ex_sentences, mode="extractive")
+            warnings.append(Warning(
+                code="extractive_fallback",
+                message="模型草稿未通过证据校验，已改用检索原文抽取作答",
+                stage="qa",
+            ))
+            record = AnswerRecord(
+                scope=scope,
+                id=_answer_id(scope.revision_id, question),
+                question=question,
+                text=_artifact_text(ex_text, ex_sentences),
+                statements=list(ex_sentences),
+                evidence=_evidence_records(scope, ex_sentences),
+                grounded=ex_decision.grounded,
+                confidence=ex_decision.confidence,
+                note=EXTRACTIVE_FALLBACK_NOTE,
+                mode="extractive",
+                model_snapshot_id=_snapshot_id(ctx),
+                usage=usage,
+                warnings=warnings,
+            )
+            record = _ensure_readable(record, question, hits)
+            _persist(scope, record, source_digest, key)
+            return record
+        record = _ungrounded(
+            scope, question, warnings, hits=hits,
+            model_available=bool(_snapshot_id(ctx)),
+        )
         _persist(scope, record, source_digest, key)
         return record
 
@@ -202,7 +257,8 @@ def answer(
                 "模型未给出整体结论（answer 为空），本回答由**通过证据校验的事实句**组成，"
                 "因此不整体标为 grounded。"
             ) + (f"（{decision.reason}）" if decision.reason else "")
-        mode = "abstained" if not sentences else mode
+        # R4-M3：这里**不再**把"没有句子"改写成 abstained —— 无句子且未 grounded 的分支
+        # 已在上面提前返回（抽取式兜底 / 低置信如实说明）。mode 保持 `_draft` 的实际来源。
 
     record = AnswerRecord(
         scope=scope,
@@ -242,11 +298,26 @@ def _ensure_readable(
         "qa 空答案不变量触发：question=%r mode=%s 命中=%d（已补兜底文案）",
         (question or "")[:60], record.mode, len(list(hits or [])),
     )
+    # R4-M3：兜底也不再产 `abstained`（该取值已从产品语义删除）。
+    # 能点名对象 → not_mentioned；拿得到逐字原文 → extractive；否则如实说明 unavailable。
+    if absent:
+        mode = "not_mentioned"
+        note = NOT_MENTIONED_NOTE
+    elif _closest_snippet(hits):
+        mode = "extractive"
+        note = UNGROUNDED_NOTE
+    else:
+        mode = "unavailable"
+        note = UNAVAILABLE_NOTE
     return record.model_copy(update={
-        "text": ArtifactText(text=_abstain_body(question, hits, absent=absent), spans=[]),
-        "note": record.note or (NOT_MENTIONED_NOTE if absent else ABSTAIN_NOTE),
+        "text": ArtifactText(
+            text=_ungrounded_body(question, hits, absent=absent, model_available=False),
+            spans=[],
+        ),
+        "note": record.note or note,
         "grounded": False,
-        "mode": "not_mentioned" if absent else "abstained",
+        "confidence": "Low",
+        "mode": mode,
     })
 
 
@@ -1202,38 +1273,61 @@ def _evidence_records(scope: Scope, sentences: Sequence[VerifiedStatement]) -> L
         return []
 
 
-def _abstained(
+def _ungrounded(
     scope: Scope,
     question: str,
     warnings: List[Warning],
     *,
     reason: str = "no_evidence",
     hits: Sequence[RetrievalHit] = (),
+    model_available: bool = True,
 ) -> AnswerRecord:
-    """无证据的合法拒答：grounded=False，**不补造证据**，但**必须有可读正文**。
+    """没有可整体提交的证据时的**有信息回答**（R4-M3，ADR D-104）。
 
-    真实缺陷（REFACTOR_PLAN M7，实测 2026-09-12）：这里以前产出 ``text=""``，
-    前端只渲染 statements/answer 文本 → 用户看到的是"无证据支持"外加一片空白，
-    读起来就是"问答坏了、根本没有调用到模型"。拒答也要把话说清楚。
+    为什么改：决策 1「拒答直接彻底消失」——这里以前产 `mode="abstained"`（拒答），
+    现在改为三种**如实且有信息**的形态，并用 `confidence` 表达可靠度：
+
+    - ``not_mentioned``：能确定性点名"论文没提到 X"（对象缺席是**确定性判据**，保留）；
+    - ``extractive``：拿得到一条**逐字来自原文**的片段（决策 2 允许附，但必须标注未通过校验）；
+    - ``unavailable``：模型不可用，如实说明（不硬编内容）。
+
+    纪律：`grounded` 恒为 False（没有通过 Evidence Gate 的事实句），
+    片段**不是 evidence**、不进引用列表（`_closest_snippet` 只产出文本）。
     """
     absent = reason == "object_absent"
+    body = _ungrounded_body(question, hits, absent=absent, model_available=model_available)
+    if absent:
+        mode = "not_mentioned"
+        note = NOT_MENTIONED_NOTE
+    elif _closest_snippet(hits):
+        mode = "extractive"
+        note = UNGROUNDED_NOTE
+    else:
+        mode = "unavailable" if not model_available else "general"
+        note = UNAVAILABLE_NOTE if not model_available else UNGROUNDED_NOTE
     return AnswerRecord(
         scope=scope,
         id=_answer_id(scope.revision_id, question),
         question=question,
-        text=ArtifactText(text=_abstain_body(question, hits, absent=absent), spans=[]),
+        text=ArtifactText(text=body, spans=[]),
         statements=[], evidence=[],
         grounded=False,
         confidence="Low",
-        note=NOT_MENTIONED_NOTE if absent else ABSTAIN_NOTE,
-        mode="not_mentioned" if absent else "abstained",
+        note=note,
+        mode=mode,   # type: ignore[arg-type]
         usage=Usage(),
         warnings=warnings,
     )
 
 
-def _abstain_body(question: str, hits: Sequence[RetrievalHit], *, absent: bool) -> str:
-    """拒答正文：点名"没提到什么"或解释"为什么答不了"，并给一条最接近的原文线索。"""
+def _ungrounded_body(
+    question: str,
+    hits: Sequence[RetrievalHit],
+    *,
+    absent: bool,
+    model_available: bool = True,
+) -> str:
+    """低置信回答正文：点名"没提到什么" / 如实说明，并附一条最接近的原文片段。"""
     if absent:
         objects = _absent_objects(question, hits)
         if not objects:
@@ -1244,9 +1338,13 @@ def _abstain_body(question: str, hits: Sequence[RetrievalHit], *, absent: bool) 
                 objects = [obj]
         if objects:
             # 用**问句里的原始写法**回显（词表里是小写，直接回显会变成「kubernetes」）
+            # R4-M3（决策 2）：即便点名了"未提及"，也允许再附一条最接近的原文片段——
+            # 用户明确拍板"可以附"。片段逐字来自原文并标注未通过证据校验。
             return NOT_MENTIONED_TPL.format(
                 obj="、".join(_original_form(question, t) for t in objects[:3])
-            )
+            ) + _closest_snippet(hits)
+    if not model_available:
+        return UNAVAILABLE_TPL
     return ABSTAIN_TPL + _closest_snippet(hits)
 
 
@@ -1345,7 +1443,7 @@ def _row_to_answer(row) -> Optional[AnswerRecord]:
             "grounded": bool(row.grounded),
             "confidence": row.confidence or "Low",
             "note": row.note or "",
-            "mode": row.mode or "generated",
+            "mode": _legacy_mode(row.mode, row.note),
             "model_snapshot_id": row.model_snapshot_id,
             "usage": row.usage or {},
             "warnings": row.warnings or [],
@@ -1358,9 +1456,31 @@ def _row_to_answer(row) -> Optional[AnswerRecord]:
 
 
 def _mode_for(text: str, sentences: Sequence[VerifiedStatement]) -> str:
+    """喂给 `answer_gate.assess` 的形态标记。
+
+    R4-M3：**不再返回 `abstained`**（该取值已从产品语义删除，决策 1）——
+    无句子的情形由 `answer()` 显式选择 extractive / not_mentioned / general / unavailable。
+    """
     if not sentences:
-        return "abstained"
+        return "extractive"
     return "generated"
+
+
+def _legacy_mode(mode: Optional[str], note: Optional[str]) -> str:
+    """历史行 `mode` 的读取期映射（ADR D-104 / R4 规划 Q1）。
+
+    为什么不迁移 DB：答案缓存键含 question+snapshot+source_digest，历史行的内容仍然是
+    当时的真实产出；改历史等于改事实。这里只在**读取投影处**映射，新问新写不再产生旧值。
+
+    - 旧 ``not_mentioned`` → 原样（它本来就不是拒答）；
+    - 旧 ``abstained`` → note 里点名了"没有提到"则 `not_mentioned`，否则 `unavailable`
+      （旧 abstained 的两种成因正是"对象缺席"与"没找到证据/模型不可用"）。
+    """
+    if not mode or mode == "abstained":
+        text = note or ""
+        absent = ("没有提到" in text) or ("没有出现问题所问的对象" in text)
+        return "not_mentioned" if absent else "unavailable"
+    return mode
 
 
 def _snapshot(ctx: Optional[CallContext]):

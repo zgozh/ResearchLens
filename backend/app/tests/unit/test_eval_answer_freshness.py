@@ -1,8 +1,8 @@
 """两处"过期数据掩盖改进"的回归测试（ADR-0054）。
 
 1. **评测读最旧的答案**：`list_answers` 按 ``created_at`` **升序**返回，而
-   ``refusal_metrics`` 用 ``seen`` 去重、**先到先得** → 同一问题重跑后，**旧答案赢**。
-   实测后果：修好检索后重跑题库，拒答率仍按旧的拒答记录算。
+   ``honesty_metrics`` 用 ``seen`` 去重、**先到先得** → 同一问题重跑后，**旧答案赢**。
+   实测后果：修好检索后重跑题库，仍按旧的记录算分。
 2. **QA 缓存键不含检索版本**：``cache_key`` 有 source/model/prompt/gate，独缺检索算法版本
    → 检索行为变了，旧答案照样命中缓存返回（"改了没生效"的经典成因）。
 """
@@ -35,39 +35,46 @@ def _qa(question: str, *, mode: str, statements=(), text: str = ""):
 
 
 class TestNewestAnswerWins:
-    def test_refusal_uses_latest_answer_not_oldest(self):
-        """同一问题先拒答、后回答 → 该问题算**已作答**（旧实现按旧的拒答算）。"""
-        q = "论文中「2 相关背景」这一部分主要讲了什么？"
-        answers = [
-            _qa(q, mode="abstained"),                    # 旧：索引未建好时拒答
-            _qa(q, mode="generated", statements=["s"], text="有内容"),  # 新：已作答
-        ]
-        _, false_refusal = M.refusal_metrics(answers, [_golden(q, True)])
-        assert false_refusal.value.value == 0.0, "应以**最新**一条为准"
-        assert false_refusal.value.denominator == 1.0, "同一问题只能算一票"
+    """R4-M3 改写：指标从"拒答率"换成"不可答题诚实率"，但**取最新一条**这条不变量不变。
 
-    def test_latest_answer_can_also_be_a_refusal(self):
-        """反过来也一样：先答对、后拒答 → 如实记成误拒（不是只挑好看的）。"""
-        q = "可回答问题"
+    原语义为什么失效：旧断言用 ``answerable_false_refusal_rate``（可答题被误拒）来验证
+    "最新一条赢"。决策 1 之后该指标与"拒答"动作一并删除，可答题也不再进分母。
+    新口径下仍能完整验证同一件事：同一问题重跑后，**以最新一条的诚实与否为准**。
+    """
+
+    def test_newest_answer_wins_over_oldest(self):
+        """先如实说明、后给出编造作答 → 以**最新**一条为准 → 诚实率 0。"""
+        q = "本文是如何使用 Kubernetes 完成实验与部署的？"
         answers = [
-            _qa(q, mode="generated", statements=["s"], text="有内容"),
-            _qa(q, mode="abstained"),
+            _qa(q, mode="not_mentioned", text="论文中没有提到 Kubernetes。"),  # 旧：如实
+            _qa(q, mode="generated", statements=["s"], text="用了 Kubernetes。"),  # 新：编造
         ]
-        _, false_refusal = M.refusal_metrics(answers, [_golden(q, True)])
-        assert false_refusal.value.value == 1.0
+        entry = M.honesty_metrics(answers, [_golden(q, False)])
+        assert entry.value.value == 0.0, "应以**最新**一条为准"
+        assert entry.value.denominator == 1.0, "同一问题只能算一票"
+
+    def test_latest_answer_can_also_be_honest(self):
+        """反过来也一样：先编造、后如实 → 记 1（不是只挑好看的）。"""
+        q = "不可回答问题"
+        answers = [
+            _qa(q, mode="generated", statements=["s"], text="编的"),
+            _qa(q, mode="not_mentioned", text="论文中没有提到 X。"),
+        ]
+        entry = M.honesty_metrics(answers, [_golden(q, False)])
+        assert entry.value.value == 1.0
 
     def test_unanswerable_uses_latest(self):
         q = "本文是如何使用 Kubernetes 完成实验与部署的？"
         answers = [
             _qa(q, mode="generated", statements=["幻觉"], text="编的"),  # 旧：答了（错）
-            _qa(q, mode="abstained"),                                     # 新：正确拒答
+            _qa(q, mode="not_mentioned", text="论文中没有提到。"),        # 新：如实
         ]
-        refusal, _ = M.refusal_metrics(answers, [_golden(q, False)])
-        assert refusal.value.value == 1.0
+        entry = M.honesty_metrics(answers, [_golden(q, False)])
+        assert entry.value.value == 1.0
 
     def test_latest_answers_helper_keeps_order_and_dedups(self):
-        a = _qa("q1", mode="abstained")
-        b = _qa("q2", mode="abstained")
+        a = _qa("q1", mode="not_mentioned")
+        b = _qa("q2", mode="not_mentioned")
         a2 = _qa("q1", mode="generated", statements=["s"])
         picked = M.latest_answers([a, b, a2])
         assert [x.question for x in picked] == ["q1", "q2"]
@@ -75,7 +82,7 @@ class TestNewestAnswerWins:
 
     def test_timing_does_not_double_count_reasked_questions(self):
         """重复问过的问题，计时只算最新一次，否则 token/时延被灌水。"""
-        old = _qa("q1", mode="abstained")
+        old = _qa("q1", mode="not_mentioned")
         old.usage = SimpleNamespace(elapsed_ms=10_000)
         new = _qa("q1", mode="generated", statements=["s"])
         new.usage = SimpleNamespace(elapsed_ms=1_000)
@@ -135,7 +142,7 @@ class TestReaskActuallyPersists:
         with db_mod.SessionLocal() as db:
             repo.insert_answer(
                 db, answer_id="a-fixed", paper_id=paper.id, revision_id=revision.id,
-                question="q", payload={"mode": "abstained", "text": {"text": ""}},
+                question="q", payload={"mode": "not_mentioned", "text": {"text": ""}},
                 cache_key_value="k1",
             )
             repo.insert_answer(

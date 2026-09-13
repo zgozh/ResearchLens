@@ -2009,3 +2009,59 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
 3. **完整导入的现场复验**：`stage_started` 去重由 4 条单测覆盖，尚未在真实导入中现场确认。
 4. **`anchor_region_hit_rate` 永远不可测**（原文无坐标矩形，拒绝编造 IoU）—— 设计选择。
 5. **金标集仍是 AI 起草的 proxy**：`overall_score` 需人工确认后才有值。
+
+---
+
+## D-104 产品决策：**拒答退出产品语义**，可靠程度由置信度表达（R4-M3）
+
+- **谁要求的**：用户原话——"拒答直接彻底消失，反正有置信度说明。"（并明确"可以附"最接近的原文片段）
+- **推翻了什么**：
+  - **D-65** 的"对象缺失 → 直接拒答"**用法**（判据本身保留为 `not_mentioned` 的确定性证据）；
+  - `AnswerMode` 里的 `abstained` 取值（**从契约删除**，不再可能被新代码产出）；
+  - 拒答类指标：`answerable_false_refusal_rate` **删除**；`unanswerable_refusal_rate` 更名
+    `unanswerable_honesty_rate`（口径 = 不可答题如实说明率）。详见 D-106。
+  - `docs/ARCHITECTURE.md` 的「无证据支持 → "模型未在论文中找到直接依据"（禁止编造）」改写。
+- **为什么**：实测 paper 11 上三个默认问题里「这篇论文哪里最值得质疑？」走的是
+  `mode=abstained / confidence=Low`（`qa/service.py` 阶段 3 的 `not grounded and not sentences` 分支），
+  用户看到的是"被拒答/被中断"，而不是"一个低置信度的回答"。拒答把"我们没有把握"表达成了
+  "我们不回答"，对用户没有信息量。
+- **新的四处（原拒答路径）**：
+  1. 模型不可用（闲聊/非论文问题兜底）→ `unavailable`（如实说明 + 已知信息，可重试）；
+  2. 检索为空：能点名对象 → `not_mentioned`；抽不出对象 → `general`；
+  3. **对象确实不在原文**（`_object_absent_from_hits`，确定性判据保留）→ `not_mentioned`
+     **并附逐字原文片段**（决策 2）；
+  4. 模型草稿全被 gate 拒 → **抽取式兜底** `extractive`（逐字原文）；连片段都没有 → `general`/`unavailable`。
+- **保留的纪律（没有被一起推翻）**：
+  1. `grounded` 语义**一字不改**（仍 = 逐句通过 Evidence Gate）——放宽它会让
+     `unsupported_fact_escape_rate` 失守；
+  2. 引文/片段必须**逐字**来自原文块，且片段**不是 evidence**（不进引用列表、不参与 grounded）；
+  3. `not_evaluated` 不许写成 `0`。
+- **代价**：不可答题更可能被"答"出来（抽取式兜底）。缓解 = `_object_absent_from_hits` 这条
+  确定性判据仍前置拦截（"问 Kubernetes 却拿 8 块 GPU 顶"这类答非所问进不来），
+  且诚实率指标（D-106）会把它量化出来。
+- **实测**：后端 `pytest` **917 passed / 0 failed**（基线 900 + 新增 18，无丢失）。
+
+---
+
+## D-106 拒答类指标重定义（R4-M3 配套）
+
+- **`answerable_false_refusal_rate` 删除**：它测的是"可答题被误拒"，而决策 1 之后**拒答动作不存在**，
+  留着它就是一个恒为 0 的绿条 —— 那是假指标（违反"不编造、不凑数"）。
+- **`unanswerable_refusal_rate` → `unanswerable_honesty_rate`**：口径改为"对 golden 不可答的问题，
+  系统有没有**如实说明没有依据**"。命中的形态：`not_mentioned` / `general` /
+  （`extractive` 且未 grounded）/ `unavailable`；对不可答题给出 `grounded=True` 的生成作答 = **不命中**。
+- **完整同步清单**（漏一处就留下一个永远显示"未评测"的空格子，已逐项完成）：
+  | 位置 | 改动 |
+  |---|---|
+  | `backend/app/contracts/evaluation.py::METRIC_NAMES` | 删旧 + 加新 |
+  | `backend/app/modules/evaluation/metrics.py` | `OVERALL_WEIGHTS` 键名、`_is_refusal`→`_is_honest_unanswerable`、`refusal_metrics`→`honesty_metrics`、`__all__` |
+  | `backend/app/modules/evaluation/service.py::_compute_entries` | 只写 `unanswerable_honesty_rate` |
+  | 后端测试 | `test_evaluation.py` / `test_eval_metric_reporting.py` / `test_eval_answer_freshness.py` / `test_ai_judge_evaluation.py` 按新语义改写（**改写而非删除**，每条注明原语义为何失效） |
+  | `frontend/components/views/EvalView.tsx`、`frontend/lib/evalMetrics.ts` | **待 R4-M5 落地时同步**（见该模块） |
+  | `scripts/acceptance/verify_metrics_live.py` | **待 R4-M10 同步** |
+- **历史报告怎么办**：不迁移。旧报告是时间点快照，改它等于改历史；读取端对旧名做别名映射
+  （R4 规划 Q3），新报告只产新名。
+- **历史 `mode='abstained'` 行怎么办**：**DB 不动**，在读取投影处（`service._row_to_answer` →
+  `_legacy_mode`）映射：带"对象缺席"note → `not_mentioned`，否则 → `unavailable`。
+  实测真实历史形态：旧代码里 `mode='abstained'` **只**由"没找到证据"产出（对象缺席那条路产的
+  是 `not_mentioned`），所以绝大多数历史行落 `unavailable`。

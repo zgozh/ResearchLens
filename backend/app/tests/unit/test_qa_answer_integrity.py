@@ -111,7 +111,12 @@ class TestPaperRelevanceIsWidened:
 
 
 class TestAbstainIsNeverEmpty:
-    """拒答也必须有内容：空白 = 用户眼里的"问答坏了"。"""
+    """**任何回答都不得留空**：空白 = 用户眼里的"问答坏了"。
+
+    R4-M3 改写：以前断言 `mode == "abstained"`。决策 1 删除了"拒答"这一档，
+    本类验证的**内核**（正文非空、不伪造证据、grounded=False、note 可读）完全不变，
+    只是允许的形态换成新 mode 表里那几个"如实说明"档。
+    """
 
     def test_no_hits_abstain_has_readable_text(self, real_scope, monkeypatch):
         from app.contracts.qa import QARequest
@@ -121,12 +126,13 @@ class TestAbstainIsNeverEmpty:
         rec = qs.answer(
             real_scope, QARequest(question="本文的核心创新点是什么？"), new_ctx(real_scope)
         )
-        assert rec.mode == "abstained", rec.mode
-        assert rec.text.text.strip(), "拒答正文不得为空"
-        assert len(rec.text.text.strip()) >= 15, f"拒答正文太短：{rec.text.text!r}"
-        assert not rec.statements and not rec.evidence, "拒答不得伪造证据"
+        assert rec.mode in ("not_mentioned", "extractive", "general", "unavailable"), rec.mode
+        assert rec.mode != "abstained", "该取值已从产品语义删除"
+        assert rec.text.text.strip(), "正文不得为空"
+        assert len(rec.text.text.strip()) >= 15, f"正文太短：{rec.text.text!r}"
+        assert not rec.statements and not rec.evidence, "不得伪造证据"
         assert rec.grounded is False
-        assert (rec.note or "").strip(), "拒答必须给出可读的 note 说明"
+        assert (rec.note or "").strip(), "必须给出可读的 note 说明"
 
     def test_absent_object_is_not_mentioned_and_names_the_object(self, real_scope, monkeypatch):
         from app.contracts.qa import QARequest
@@ -146,7 +152,7 @@ class TestAbstainIsNeverEmpty:
         assert rec.grounded is False and not rec.evidence
 
     def test_blank_draft_abstain_has_text(self, real_scope, monkeypatch):
-        """模型给了 claims 但一句都没过 gate、且抽取兜底也空 → 仍必须有正文。"""
+        """模型给了 claims 但一句都没过 gate、抽取兜底也空 → 仍必须有正文。"""
         from app.contracts.ai import Usage
         from app.contracts.qa import QARequest
         from app.modules.qa import service as qs
@@ -160,11 +166,12 @@ class TestAbstainIsNeverEmpty:
             lambda *a, **k: ([_hit("Table 2 summarizes our results.", vector=0.5)], []),
         )
         monkeypatch.setattr(qs, "_llm_draft", lambda *a, **k: ("", [], Usage()))
+        monkeypatch.setattr(qs, "_extractive_draft", lambda *a, **k: ("", []))
         rec = qs.answer(
             real_scope, QARequest(question="本文的核心创新点是什么？"), new_ctx(real_scope)
         )
-        assert rec.text.text.strip(), "拒答正文不得为空"
-        assert rec.mode in ("abstained", "not_mentioned"), rec.mode
+        assert rec.text.text.strip(), "正文不得为空"
+        assert rec.mode in ("not_mentioned", "extractive", "general", "unavailable"), rec.mode
         assert not rec.statements
 
     def test_abstain_does_not_invent_quotes(self, real_scope, monkeypatch):

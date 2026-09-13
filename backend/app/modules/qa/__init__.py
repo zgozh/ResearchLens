@@ -2,7 +2,8 @@
 
 流程固定：``retrieve → 可选 rerank → draft → 逐句 gate``。
 ``grounded=true`` 仅当答案有实质内容 + 所有事实句有验证通过的证据 + 无未支持推断；
-**纯拒答 = false**；**绝不按「未出现拒答词」判定**；**绝不从 Section.summary 补造证据**。
+**没有"拒答"这一档**（R4-M3 / ADR D-104）：所有问题都有回答，靠 ``confidence`` 表达可靠度；
+**绝不按「未出现拒答词」判定**；**绝不从 Section.summary 补造证据**。
 事件顺序：先 citation 后 sentence，最后恰好一个 final 或 error。
 
 API:
@@ -14,8 +15,8 @@ API:
 from .answer_gate import assess, publishable_sentences  # noqa: F401
 from .legacy import answer_question  # noqa: F401
 from .service import (  # noqa: F401
-    ABSTAIN_NOTE,
     ALGORITHM_VERSION,
+    UNGROUNDED_NOTE,
     answer,
     build_bank,
 )
@@ -31,6 +32,6 @@ __all__ = [
     "EventEncoder",
     "assess",
     "publishable_sentences",
-    "ABSTAIN_NOTE",
+    "UNGROUNDED_NOTE",
     "ALGORITHM_VERSION",
 ]

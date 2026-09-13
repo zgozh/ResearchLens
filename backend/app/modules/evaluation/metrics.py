@@ -32,12 +32,13 @@ from app.contracts.evaluation import (
 #: 相似度判定阈值（中文 bigram + 拉丁词/数字混合）
 SIM_THRESHOLD = 0.42
 
-#: overall_score 的权重（§5.9 固定公式）
+#: overall_score（现在=「AI 质量评分（自动）」）的权重（§5.9 固定公式）。
+#: R4-M3 只改了第四项的**名字**（拒答率 → 诚实率），权重与公式结构不变。
 OVERALL_WEIGHTS = {
     "support_precision": 0.4,
     "quote_exact_rate": 0.2,
     "anchor_page_accuracy": 0.2,
-    "unanswerable_refusal_rate": 0.2,
+    "unanswerable_honesty_rate": 0.2,
 }
 
 _CJK = "\u4e00-\u9fff\u3400-\u4dbf"
@@ -309,30 +310,58 @@ def anchor_region_hit_rate(checks: Sequence[NavigationCheck]) -> MetricEntry:
                        method="iou>=0.5 / checks_with_iou")
 
 
-def _is_refusal(answer) -> bool:
-    """这次回答**是否拒答**（未交付任何内容）。
+def _is_honest_unanswerable(answer) -> bool:
+    """这次回答**是否如实说明"没有可用的论文依据"**（R4-M3，ADR D-106）。
 
-    为什么不用 ``grounded``（真实缺陷，live 实测）：``grounded=False`` 只表示
-    "未完全核验通过"（有句子但存在未验证推断 / 引用恢复过），**不等于拒答**。
-    ``qa.service`` 自己的定义是"无句子才算拒答"。此前用 ``grounded is False`` 当判据，
-    导致 paper 1 里一条 ``mode=generated``、**交付了 3 条答案句**的回答被计入
-    "可回答却被误拒"，``answerable_false_refusal_rate`` 从 0 虚报成 0.5
-    （paper 2：0 → 0.25；paper 3：0.25 → 0.75）。
+    为什么改名字与语义：决策 1 之后产品里**不再有"拒答"这个动作** ——
+    所有问题都有回答 + 置信度。于是旧指标
+    ``unanswerable_refusal_rate``（"不可答题被正确拒答的比例"）测的行为消失了，
+    改为衡量**诚实性**：对真正不可答的问题，系统有没有如实说明"论文没有依据"，
+    而不是生成一段看不出问题的内容。
+
+    判据（可解释、不靠措辞猜）：
+
+    - ``not_mentioned``：点名"论文未提及"——**如实**；
+    - ``general``：明确标注"未使用论文原文证据"——**如实**；
+    - ``extractive`` 且未 grounded：交付的是逐字原文片段、并标注未通过证据校验——**如实**；
+    - 其余（尤其 ``grounded=True`` 的生成作答）→ **不算如实**（对不可答题生成了内容）。
+
+    ``answerable_false_refusal_rate`` 已删除：它测的是"可答题被误拒"，
+    该行为随决策 1 一并消失，留一个恒为 0 的绿条就是假指标。
     """
     mode = getattr(answer, "mode", None)
+    if mode == "not_mentioned":
+        return True
+    if mode == "general":
+        return True
+    if mode == "extractive":
+        return not bool(getattr(answer, "grounded", False))
+    if mode == "unavailable":
+        return True
     if mode:
-        # ``not_mentioned``（"论文中没有提到 X"）也是拒答：它同样没交付任何论文内容。
-        return mode in ("abstained", "not_mentioned")
-    # 没有 mode 字段（旧记录）→ 退化为"是否交付内容"：无句子且无文本才算拒答
+        return False
+    # 没有 mode 字段（旧记录）→ 退化为"是否交付了论文内容"：
+    # 没有句子也没有正文 = 旧式空白拒答，仍算如实；有内容却无 mode 无法判定 → 不算。
     statements = getattr(answer, "statements", None) or []
     text = getattr(getattr(answer, "text", None), "text", "") or ""
     return not statements and not str(text).strip()
 
 
-def refusal_metrics(answers: Sequence, golden_questions: Sequence[GoldenQuestion]):
-    """unanswerable_refusal_rate / answerable_false_refusal_rate。
+#: 旧名兼容（历史报告/测试里仍有引用）；语义已随 R4-M3 变更，新代码用上面那个。
+_is_refusal = _is_honest_unanswerable
 
-    **只在有 golden questions 时才有分母**：不可回答题被正确拒答 = 命中。
+
+def honesty_metrics(answers: Sequence, golden_questions: Sequence[GoldenQuestion]):
+    """``unanswerable_honesty_rate``（R4-M3 / ADR D-106）。
+
+    **只在有 golden questions 时才有分母**：对**不可回答**的问题如实说明"论文没有依据" = 命中。
+
+    为什么不再是"拒答率"：决策 1 之后没有拒答动作，所有问题都有回答 + 置信度；
+    旧口径测的行为消失，继续用它就是"测一个已经不存在的动作"。新口径衡量**诚实性**
+    （见 ``_is_honest_unanswerable``）。
+
+    为什么只返回一个指标：``answerable_false_refusal_rate``（"可答题被误拒"）**删除** ——
+    它测的行为同样随决策 1 消失，留一个恒为 0 的绿条是假指标（不编造、不凑数）。
 
     配对口径：先按 ``question_id``/``golden_id``，再按**问题文本**回退匹配
     （答案常常只带 question 文本，不带 golden id —— 不匹配会让分母恒为 0，
@@ -341,9 +370,7 @@ def refusal_metrics(answers: Sequence, golden_questions: Sequence[GoldenQuestion
     by_id = {q.id: q for q in golden_questions}
     by_text = {(q.question or "").strip(): q for q in golden_questions}
     unans_total = 0
-    unans_refused = 0
-    ans_total = 0
-    ans_false_refused = 0
+    unans_honest = 0
     seen: set = set()
 
     for answer in latest_answers(answers):
@@ -355,29 +382,25 @@ def refusal_metrics(answers: Sequence, golden_questions: Sequence[GoldenQuestion
         if meta is None or meta.id in seen:
             continue
         seen.add(meta.id)
-        refused = _is_refusal(answer)
-        if not meta.answerable:
-            unans_total += 1
-            if refused:
-                unans_refused += 1
-        else:
-            ans_total += 1
-            if refused:
-                ans_false_refused += 1
+        if meta.answerable:
+            continue
+        unans_total += 1
+        if _is_honest_unanswerable(answer):
+            unans_honest += 1
 
-    refusal = (
-        ratio_entry("unanswerable_refusal_rate", unans_refused, unans_total,
-                    method="correct_refusal / unanswerable_questions")
-        if unans_total else not_evaluated(
-            "unanswerable_refusal_rate", method="无不可回答问题样本", unit="ratio")
+    if not unans_total:
+        return not_evaluated(
+            "unanswerable_honesty_rate", method="无不可回答问题样本", unit="ratio")
+    return ratio_entry(
+        "unanswerable_honesty_rate", unans_honest, unans_total,
+        method="honest_unanswerable / unanswerable_questions",
     )
-    false_refusal = (
-        ratio_entry("answerable_false_refusal_rate", ans_false_refused, ans_total,
-                    method="false_refusal / answerable_questions")
-        if ans_total else not_evaluated(
-            "answerable_false_refusal_rate", method="无可回答问题样本", unit="ratio")
-    )
-    return refusal, false_refusal
+
+
+#: 旧名兼容：历史调用点按二元组解包会拿到 ``None`` 的第二项（该指标已删除）。
+def refusal_metrics(answers: Sequence, golden_questions: Sequence[GoldenQuestion]):
+    """**已废弃**（ADR D-106）：请用 ``honesty_metrics``。第二项恒为 None。"""
+    return honesty_metrics(answers, golden_questions), None
 
 
 def _question_id_of(answer) -> Optional[str]:
@@ -549,6 +572,7 @@ __all__ = [
     "anchor_page_accuracy",
     "anchor_region_hit_rate",
     "refusal_metrics",
+    "honesty_metrics",
     "timing_metrics",
     "token_metrics",
     "source_asset_coverage",

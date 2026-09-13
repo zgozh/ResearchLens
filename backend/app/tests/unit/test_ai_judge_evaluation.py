@@ -141,7 +141,9 @@ class TestAiOverallScore:
                    status.get("precision", "proxy")),
             _entry("quote_exact_rate", 1.0, status.get("quote", "measured")),
             _entry("anchor_page_accuracy", 1.0, status.get("anchor", "measured")),
-            _entry("unanswerable_refusal_rate", 1.0, status.get("refusal", "measured")),
+            # R4-M3 / ADR D-106：第四项核心指标由 `unanswerable_refusal_rate`
+            # 更名 `unanswerable_honesty_rate`（权重与公式不变）。
+            _entry("unanswerable_honesty_rate", 1.0, status.get("refusal", "measured")),
         ]
         return EvaluationReport(scope=_SCOPE, id="r1", metrics=entries)
 

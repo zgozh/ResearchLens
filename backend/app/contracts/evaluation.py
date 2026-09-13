@@ -154,8 +154,10 @@ METRIC_NAMES: List[str] = [
     "support_precision",
     "support_recall",
     "unsupported_fact_escape_rate",
-    "unanswerable_refusal_rate",
-    "answerable_false_refusal_rate",
+    # R4-M3 / ADR D-106：`unanswerable_refusal_rate` 更名（产品里不再有"拒答"动作，
+    # 口径改为"对不可答题是否如实说明没有依据"）；`answerable_false_refusal_rate` 删除
+    # （它测的"可答题被误拒"行为已不存在，留着就是恒 0 的假指标）。
+    "unanswerable_honesty_rate",
     "qa_first_verified_ms",
     "qa_total_ms",
     "ingest_ms",

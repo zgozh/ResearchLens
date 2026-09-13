@@ -124,7 +124,12 @@ class TestGeneralAnswer:
         assert qs._completion_text(CompletionResult(value={"a": 1}, mode="json_object")) == ""
 
     def test_paper_question_without_evidence_still_abstains(self, real_scope, monkeypatch):
-        """**不编造**这条纪律不变：问了论文但检索不到证据 → 仍如实拒答。"""
+        """**不编造**这条纪律不变：问了论文但检索不到证据 → 如实说明，绝不编内容。
+
+        R4-M3 改写：以前断言 `mode == "abstained"`（拒答）。决策 1 删除了"拒答"这一档，
+        改为断言落到新的如实说明形态 —— 但**内核断言全部保留**：
+        grounded=False、无 statements、无 evidence（不许拿别的内容顶替）。
+        """
         from app.contracts.qa import QARequest
         from app.modules.qa import service as qs
 
@@ -132,20 +137,26 @@ class TestGeneralAnswer:
         rec = qs.answer(
             real_scope, QARequest(question="本文的核心创新点是什么？"), new_ctx(real_scope)
         )
-        assert rec.mode == "abstained", f"论文问题无证据必须拒答，实际 {rec.mode}"
+        assert rec.mode != "abstained", "该取值已从产品语义删除（决策 1）"
+        assert rec.mode in ("not_mentioned", "extractive", "general", "unavailable"), rec.mode
+        assert rec.grounded is False, "无证据不得 grounded"
+        assert not rec.statements and not rec.evidence, "不得编造证据"
+        assert rec.text.text.strip(), "必须给出可读正文"
 
-    def test_no_llm_means_abstain_not_fabrication(self, real_scope, monkeypatch):
-        """没有模型时不能硬编通用答案。"""
+    def test_no_llm_means_unavailable_not_fabrication(self, real_scope, monkeypatch):
+        """没有模型时不能硬编答案 → 如实说明 `unavailable`。"""
         from app.contracts.qa import QARequest
         from app.modules.qa import service as qs
 
         monkeypatch.setattr(qs, "_retrieve", lambda *a, **k: ([], []))
         rec = qs.answer(
             real_scope, QARequest(question="你好"), new_ctx(real_scope))
-        assert rec.mode == "abstained"
+        assert rec.mode == "unavailable", f"模型不可用应如实说明，实际 {rec.mode}"
+        assert rec.grounded is False
+        assert rec.text.text.strip()
 
-    def test_general_answer_is_not_a_refusal_in_metrics(self):
-        """评测口径：``general`` 不是拒答（既不算误拒，也不算正确拒答）。"""
+    def test_general_answer_is_not_counted_in_honesty_denominator(self):
+        """评测口径：可答题不进诚实率分母（`general` 也不是"误拒"）。"""
         from app.contracts.evaluation import GoldenQuestion
         from app.modules.evaluation import metrics as M
 
@@ -153,10 +164,12 @@ class TestGeneralAnswer:
         answer = SimpleNamespace(question=q, mode="general", statements=[],
                                  text=SimpleNamespace(text="解释"), grounded=False,
                                  warnings=[], usage=SimpleNamespace(elapsed_ms=1))
-        _, false_refusal = M.refusal_metrics(
+        entry = M.honesty_metrics(
             [answer], [GoldenQuestion(id="g1", scope=SCOPE, question=q, answerable=True)]
         )
-        assert false_refusal.value.value == 0.0, "通用回答不该被算成'可答却拒答'"
+        assert entry.value.status == "not_evaluated", (
+            "可答题不进分母 → 无样本即 not_evaluated（不是 0）"
+        )
 
 
 class TestEmptyDraftNoteIsClear:

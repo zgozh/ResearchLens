@@ -166,15 +166,19 @@ def test_heartbeat_while_generating(monkeypatch):
 
 
 def test_empty_answer_text_is_reported_not_silent(monkeypatch):
-    """拒答模型也必须给出可读文本：空正文会被前端当成"没有内容"。"""
+    """空正文模型也必须给出可读文本：空正文会被前端当成"没有内容"。
+
+    R4-M3：`abstained` 已不是合法 mode（决策 1），改用 `unavailable`；
+    **断言内核不变** —— final 仍必须恰好一个、legacy.answer 非空、note 解释原因。
+    """
     from app.modules.qa import service as svc
 
-    monkeypatch.setattr(svc, "answer", lambda *a, **k: _record(mode="abstained", text=""))
+    monkeypatch.setattr(svc, "answer", lambda *a, **k: _record(mode="unavailable", text=""))
     frames = _drive(stream_mod.stream(SCOPE, QARequest(question="q"), new_ctx(SCOPE)))
     final = [f for f in frames if f[0] == "final"]
     assert len(final) == 1, frames
     legacy = final[0][1]["legacy"]
-    assert legacy["answer"].strip(), "final.legacy.answer 不得为空（拒答要有话说）"
+    assert legacy["answer"].strip(), "final.legacy.answer 不得为空（必须有话说）"
     assert legacy["note"].strip(), "空正文时 note 必须解释原因"
 
 

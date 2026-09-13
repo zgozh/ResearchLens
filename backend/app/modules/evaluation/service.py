@@ -216,11 +216,11 @@ def _compute_entries(
     entries["anchor_page_accuracy"] = M.anchor_page_accuracy(checks)
     entries["anchor_region_hit_rate"] = M.anchor_region_hit_rate(checks)
 
-    # ---- 拒答
+    # ---- 不可答题的**诚实率**（R4-M3 / ADR D-106；旧 `*_refusal_*` 指标已删除）
     golden_questions = list(golden_set.questions) if golden_set is not None else []
-    refusal, false_refusal = M.refusal_metrics(list(input.answers or []), golden_questions)
-    entries["unanswerable_refusal_rate"] = refusal
-    entries["answerable_false_refusal_rate"] = false_refusal
+    entries["unanswerable_honesty_rate"] = M.honesty_metrics(
+        list(input.answers or []), golden_questions
+    )
 
     # ---- 资产覆盖
     entries["source_asset_coverage"] = M.source_asset_coverage(list(input.media or []))

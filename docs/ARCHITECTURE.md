@@ -122,7 +122,10 @@ AI Presenter：
 Grounded Q&A：
   → POST /api/papers/{id}/qa {question}
   → Answer + Evidence(Page/Content) + Confidence
-  → 无证据支持 → "模型未在论文中找到直接依据"（禁止编造）
+  → **没有"拒答"这一档**（R4-M3 / ADR D-104）：所有问题都返回回答，
+     没有可用证据时如实说明"论文未提及/没有依据"或给出逐字原文片段，
+     并附**最接近的原文片段**（标注未通过证据校验）；可靠程度由 confidence 表达。
+     依然**禁止编造**：不拿别的相关内容顶替，片段逐字来自原文。
 
 Evaluation：
   → GET /api/papers/{id}/evaluation → real computed metrics

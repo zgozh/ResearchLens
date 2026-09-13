@@ -109,7 +109,13 @@ def world():
 
 class TestGroundedSemantics:
     def test_unanswerable_question_abstains(self, world):
-        """题库外的不可回答题：无证据 → abstained / grounded=False，不是异常。"""
+        """题库外的不可回答题：无证据 → 如实说明 + grounded=False，不是异常。
+
+        R4-M3 改写：以前断言 ``mode in ("abstained", "not_mentioned")``。
+        `abstained` 已从产品语义删除（决策 1：没有拒答，只有低置信回答），
+        这里改为断言"落在新的如实说明形态里"。**断言的内核没变**：
+        不得冒出 statements/evidence（片段不是证据），正文必须可读。
+        """
         from app.modules import qa
 
         scope = world["scope"]
@@ -118,16 +124,15 @@ class TestGroundedSemantics:
             new_ctx(scope),
         )
         assert record.grounded is False
-        assert record.mode in ("abstained", "not_mentioned")
+        assert record.mode in ("not_mentioned", "extractive", "general", "unavailable"), \
+            f"实际 {record.mode}"
         assert record.statements == []
         assert record.evidence == []
         # REFACTOR_PLAN M7：拒答**不再留空正文**——空白气泡会被用户读成"问答坏了"。
-        # 现在必须给出如实说明（且不冒充证据：statements/evidence 仍为空）。
-        assert record.text.text.strip(), "拒答必须给出可读正文"
-        assert not record.evidence, "拒答正文不是证据，不得进 evidence 列表"
+        assert record.text.text.strip(), "必须给出可读正文"
 
     def test_abstention_never_grounded(self, world):
-        """**拒答绝不能被判 grounded=true**（哪怕文本里没有拒答词）。"""
+        """**未 grounded 的回答绝不能被判 grounded=true**（哪怕文本里没有拒答词）。"""
         from app.modules import qa
 
         scope = world["scope"]
@@ -136,10 +141,8 @@ class TestGroundedSemantics:
             new_ctx(scope),
         )
         assert record.grounded is False
-        assert record.mode in ("abstained", "extractive", "generated")
-        # 关键红线：纯拒答不得 grounded
-        if record.mode == "abstained":
-            assert record.grounded is False
+        assert record.mode != "abstained", "该取值已从产品语义删除"
+        assert record.mode in ("general", "unavailable", "not_mentioned", "extractive")
 
     def test_bank_without_evidence_is_not_grounded(self, world):
         """题库无证据时 grounded=false（不得只按"未出现拒答词"判定）。"""
@@ -238,10 +241,18 @@ class TestPartialAndExtrapolation:
 
 class TestGateUnit:
     def test_gate_abstained_false(self):
+        """R4-M3：`abstained` 已不是合法 mode，改用新的"无内容"形态验证同一红线。
+
+        原断言 ``gate.assess("", [], mode="abstained")`` 的**内核**是"空答案绝不 grounded"；
+        现在用 ``extractive``（无句子时的新形态）验证，语义不变。
+        """
         from app.modules.qa import answer_gate as gate
 
-        d = gate.assess("", [], mode="abstained")
+        d = gate.assess("", [], mode="extractive")
         assert d.grounded is False
+        # 即便有人拿历史值进来，也绝不允许判 grounded（向后兼容的防御）
+        d_legacy = gate.assess("", [], mode="abstained")
+        assert d_legacy.grounded is False
 
     def test_gate_no_rejection_word_but_no_evidence(self):
         """没有拒答词但没有证据 → 仍必须 False。"""

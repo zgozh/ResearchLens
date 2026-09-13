@@ -15,7 +15,21 @@ from .common import ContractModel, Id, RevisionId, Scope, Warning
 from .evidence import ArtifactText, EvidenceRecord, VerifiedStatement
 
 Confidence = Literal["High", "Medium", "Low"]
-AnswerMode = Literal["generated", "extractive", "cached", "abstained", "general", "not_mentioned"]
+
+#: 回答形态（R4-M3，ADR D-104）：**没有"拒答"这一档**——所有问题都有回答，靠 `confidence` 表达可靠度。
+#:
+#: - ``generated``     有证据作答（是否 grounded 由 Evidence Gate 判，见 `answer_gate`）
+#: - ``extractive``    抽取式作答（逐字原文块 / 逐字原文片段）
+#: - ``general``       通用回答（**未使用论文证据**，note 必须写明）
+#: - ``not_mentioned`` 论文未提及所问对象（如实说明，属"有信息的回答"而非拒答）
+#: - ``cached``        缓存命中
+#: - ``unavailable``   模型不可用（如实说明 + 已知信息，可重试）
+#:
+#: ``abstained`` 已从产品语义删除（决策 1）。历史行由 `qa.service._row_to_answer` 在读取处映射，
+#: 新代码**不可能**再产出该取值。
+AnswerMode = Literal[
+    "generated", "extractive", "cached", "general", "not_mentioned", "unavailable",
+]
 StreamEventType = Literal["meta", "status", "citation", "sentence", "final", "error"]
 StreamStage = Literal["retrieving", "reranking", "drafting", "verifying", "degraded"]
 

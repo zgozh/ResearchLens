@@ -84,19 +84,22 @@ def _statement(scope, *, text, evidence_ids=(), display_class="verified_fact"):
     )
 
 
-def _answer(scope, *, question, grounded, evidence=(), usage=None, warnings=()):
+def _answer(scope, *, question, grounded, evidence=(), usage=None, warnings=(),
+            mode=None):
     from app.contracts.ai import Usage
     from app.contracts.evidence import ArtifactText
     from app.contracts.qa import AnswerRecord
 
     import uuid
 
+    # R4-M3：`abstained` 不再是合法 mode —— 未 grounded 的默认形态改为 `not_mentioned`
+    # （"如实说明论文没有依据"，正是诚实率要计命中的形态）。
     return AnswerRecord(
         scope=scope, id=f"an-{uuid.uuid4().hex[:10]}", question=question,
         text=ArtifactText(text="回答内容" if grounded else "", spans=[]),
         statements=[], evidence=list(evidence),
         grounded=grounded, confidence="High" if grounded else "Low",
-        note="", mode="generated" if grounded else "abstained",
+        note="", mode=mode or ("generated" if grounded else "not_mentioned"),
         usage=usage or Usage(), warnings=list(warnings),
     )
 
@@ -166,12 +169,17 @@ class TestEmptyAndNoDenominator:
         assert precision is not None and precision.value == 1.0
 
 
-# =============================================================== 拒答
+# =============================================================== 不可答题诚实率
+#
+# R4-M3 / ADR D-106 改写：本类此前叫 `TestRefusal`，断言"拒答率"。
+# 原语义为什么失效：决策 1 删除了"拒答"这个动作（所有问题都有回答 + 置信度），
+# `abstained` 已从 `AnswerMode` 移除，`answerable_false_refusal_rate` 一并删除。
+# 新口径 = **诚实率**：对不可答的问题，系统有没有如实说明"论文没有依据"。
 
 
-class TestRefusal:
-    def test_all_refused_with_unanswerable_golden(self, world):
-        """全部拒答（且真值全为不可回答）：unanswerable_refusal_rate = 1.0。"""
+class TestHonesty:
+    def test_all_honest_with_unanswerable_golden(self, world):
+        """不可答题全部如实说明（not_mentioned）→ unanswerable_honesty_rate = 1.0。"""
         from app.modules import evaluation
 
         scope = world["scope"]
@@ -180,7 +188,7 @@ class TestRefusal:
             for i in range(3)
         ]
         answers = [
-            _answer(scope, question=q.question, grounded=False)
+            _answer(scope, question=q.question, grounded=False, mode="not_mentioned")
             for q in questions
         ]
         report = evaluation.compute(
@@ -190,13 +198,32 @@ class TestRefusal:
             ),
             new_ctx(scope),
         )
-        refusal = report.metric("unanswerable_refusal_rate")
-        assert refusal is not None
-        assert refusal.value == 1.0
-        assert refusal.denominator == 3
+        honesty = report.metric("unanswerable_honesty_rate")
+        assert honesty is not None
+        assert honesty.value == 1.0
+        assert honesty.denominator == 3
 
-    def test_answerable_false_refusal_detected(self, world):
-        """可回答题被拒答 → answerable_false_refusal_rate 上升。"""
+    def test_fabricated_answer_on_unanswerable_scores_zero(self, world):
+        """不可答题却给了 grounded 的生成作答 → 诚实率 0（这是新口径要抓的失败）。"""
+        from app.modules import evaluation
+
+        scope = world["scope"]
+        questions = [
+            GoldenQuestion(id="q1", scope=scope, question="不可回答", answerable=False),
+        ]
+        answers = [_answer(scope, question="不可回答", grounded=True, mode="generated")]
+        report = evaluation.compute(
+            EvaluationInput(
+                scope=scope, answers=answers,
+                golden=_golden(scope, questions=questions),
+            ),
+            new_ctx(scope),
+        )
+        metric = report.metric("unanswerable_honesty_rate")
+        assert metric is not None and metric.value == 0.0
+
+    def test_false_refusal_metric_is_deleted_not_zero(self, world):
+        """`answerable_false_refusal_rate` 必须**不存在**（删掉，不是留成恒 0）。"""
         from app.modules import evaluation
 
         scope = world["scope"]
@@ -211,18 +238,19 @@ class TestRefusal:
             ),
             new_ctx(scope),
         )
-        metric = report.metric("answerable_false_refusal_rate")
-        assert metric is not None and metric.value == 1.0
+        assert report.metric("answerable_false_refusal_rate") is None, (
+            "该指标测的行为已不存在，留着就是假指标"
+        )
 
     def test_no_golden_questions_means_not_evaluated(self, world):
-        """没有 golden 问题 → 拒答率无分母 → not_evaluated。"""
+        """没有 golden 问题 → 诚实率无分母 → not_evaluated（不是 0）。"""
         from app.modules import evaluation
 
         scope = world["scope"]
         report = evaluation.compute(
             EvaluationInput(scope=scope), new_ctx(scope),
         )
-        metric = report.metric("unanswerable_refusal_rate")
+        metric = report.metric("unanswerable_honesty_rate")
         assert metric is not None and metric.status == "not_evaluated"
         assert metric.value is None
 
@@ -393,7 +421,8 @@ class TestOverallScore:
                 entry("support_precision", 0.5),
                 entry("quote_exact_rate", 1.0),
                 entry("anchor_page_accuracy", 0.0),
-                entry("unanswerable_refusal_rate", 1.0),
+                # R4-M3：第四项由"拒答率"更名"不可答题诚实率"，权重与公式不变。
+                entry("unanswerable_honesty_rate", 1.0),
             ],
         )
         # 100 × (0.4*0.5 + 0.2*1.0 + 0.2*0.0 + 0.2*1.0) = 100 × 0.6 = 60
@@ -415,7 +444,7 @@ class TestOverallScore:
                 entry("support_precision", 1.0),
                 entry("quote_exact_rate", 1.0),
                 entry("anchor_page_accuracy", 1.0),
-                # unanswerable_refusal_rate 缺失
+                # unanswerable_honesty_rate 缺失（R4-M3 更名后）
             ],
         )
         assert compute_overall(report) is None

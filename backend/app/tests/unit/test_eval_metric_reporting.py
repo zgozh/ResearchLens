@@ -64,58 +64,83 @@ def _golden(question: str, answerable: bool):
                           answerable=answerable)
 
 
-# ------------------------- 0. 「拒答」的判据（不是 grounded=False）
+# ------------------------- 0. 「不可答题是否如实」的判据（R4-M3 改写）
 
 
-class TestRefusalPredicate:
-    """``grounded=False`` 只表示"未完全核验通过"，**不等于拒答**。
+class TestHonestyPredicate:
+    """R4-M3 / ADR D-106：**"拒答"这个动作已被产品删除**（决策 1）。
 
-    实测（live，3 篇真实论文）：``refusal_metrics`` 用 ``grounded is False`` 当拒答，
-    于是 paper 1 里一条 ``mode=generated``、**交付了 3 条答案句**的回答被算成"误拒"，
-    ``answerable_false_refusal_rate`` 被虚报成 0.5（实际 0）。拒答的真判据是
-    ``mode == "abstained"``（``qa/service.py`` 也这么定义：无句子才叫拒答）。
+    原语义为什么失效：本类此前断言 ``mode == "abstained"`` 才算"正确拒答"、
+    ``answerable_false_refusal_rate`` 衡量"可答题被误拒"。决策 1 之后所有问题都有
+    回答 + 置信度，`abstained` 从 `AnswerMode` 删除，**两个指标测的行为都不存在了**：
+    ``answerable_false_refusal_rate`` 直接删除（留着就是恒 0 的假指标），
+    ``unanswerable_refusal_rate`` 更名 ``unanswerable_honesty_rate``，
+    口径改为"对不可答的问题，系统有没有如实说明论文没有依据"。
+
+    保留的原判据内核：**不能拿"grounded=False"当"没回答"** —— 交付了内容就是交付了。
     """
 
-    def test_delivered_but_not_fully_grounded_is_not_a_refusal(self):
-        """交付了句子、只是没完全核验通过 → **不算误拒**（当前实现会算，故先失败）。"""
-        q = "可回答问题"
-        answers = [
-            _qa(q, mode="generated", statements=["s1", "s2", "s3"], text="有内容",
-                grounded=False),
-        ]
-        _, false_refusal = M.refusal_metrics(answers, [_golden(q, True)])
-        assert false_refusal.value.status == "measured"
-        assert false_refusal.value.value == 0.0, "交付了答案却记成误拒 = 指标失真"
-        assert false_refusal.value.numerator == 0.0
-
-    def test_abstained_counts_as_false_refusal(self):
-        q = "可回答问题"
-        answers = [_qa(q, mode="abstained", statements=[], text="", grounded=False)]
-        _, false_refusal = M.refusal_metrics(answers, [_golden(q, True)])
-        assert false_refusal.value.value == 1.0
-        assert false_refusal.value.numerator == 1.0
-
-    def test_abstained_counts_as_correct_refusal_on_unanswerable(self):
+    def test_extractive_is_honest_when_not_grounded(self):
+        """抽取式且未整体 grounded → 交付的是逐字原文并标注未过校验 = **如实**。"""
         q = "不可回答问题"
-        answers = [_qa(q, mode="abstained", statements=[], text="", grounded=False)]
-        refusal, _ = M.refusal_metrics(answers, [_golden(q, False)])
-        assert refusal.value.value == 1.0
-
-    def test_extractive_mode_is_delivery_not_refusal(self):
-        q = "可回答问题"
         answers = [_qa(q, mode="extractive", statements=["s"], text="原文", grounded=False)]
-        _, false_refusal = M.refusal_metrics(answers, [_golden(q, True)])
-        assert false_refusal.value.value == 0.0
+        entry = M.honesty_metrics(answers, [_golden(q, False)])
+        assert entry.value.status == "measured"
+        assert entry.value.value == 1.0
+        assert entry.value.denominator == 1
+
+    def test_extractive_but_grounded_is_not_honest(self):
+        """抽取式**却 grounded**：等于对不可答题生成了内容 → 不算如实。"""
+        q = "不可回答问题"
+        answers = [_qa(q, mode="extractive", statements=["s"], text="原文", grounded=True)]
+        entry = M.honesty_metrics(answers, [_golden(q, False)])
+        assert entry.value.value == 0.0
+
+    def test_not_mentioned_counts_as_honest(self):
+        q = "不可回答问题"
+        answers = [_qa(q, mode="not_mentioned", statements=[], text="论文中没有提到 X。",
+                       grounded=False)]
+        entry = M.honesty_metrics(answers, [_golden(q, False)])
+        assert entry.value.value == 1.0
+
+    def test_general_counts_as_honest(self):
+        """通用回答明确标注"未使用论文证据" → 如实。"""
+        q = "不可回答问题"
+        answers = [_qa(q, mode="general", statements=[], text="通用解释", grounded=False)]
+        entry = M.honesty_metrics(answers, [_golden(q, False)])
+        assert entry.value.value == 1.0
+
+    def test_generated_on_unanswerable_is_not_honest(self):
+        """对不可答题给出了 grounded 的生成作答（胡说）→ 0 分。"""
+        q = "不可回答问题"
+        answers = [_qa(q, mode="generated", statements=["s"], text="论文用了 Kubernetes。",
+                       grounded=True)]
+        entry = M.honesty_metrics(answers, [_golden(q, False)])
+        assert entry.value.value == 0.0
+
+    def test_answerable_only_means_not_evaluated(self):
+        """只有可答题时没有分母 → not_evaluated（**不是 0**，决策底线 1）。"""
+        q = "可回答问题"
+        answers = [_qa(q, mode="generated", statements=["s"], text="内容", grounded=True)]
+        entry = M.honesty_metrics(answers, [_golden(q, True)])
+        assert entry.value.status == "not_evaluated"
+        assert entry.value.value is None
 
     def test_mode_missing_falls_back_to_delivery_check(self):
-        """没有 ``mode`` 字段时按"是否交付内容"判：有句子/有文本就不是拒答。"""
-        q = "可回答问题"
+        """没有 ``mode`` 字段（旧记录）时按"是否交付内容"判。"""
+        q = "不可回答问题"
         noisy = SimpleNamespace(question=q, statements=["s"], grounded=False)
         empty = SimpleNamespace(question=q, statements=[], grounded=False)
-        _, only_delivered = M.refusal_metrics([noisy], [_golden(q, True)])
-        assert only_delivered.value.value == 0.0
-        _, only_empty = M.refusal_metrics([empty], [_golden(q, True)])
-        assert only_empty.value.value == 1.0
+        assert M.honesty_metrics([noisy], [_golden(q, False)]).value.value == 0.0
+        assert M.honesty_metrics([empty], [_golden(q, False)]).value.value == 1.0
+
+    def test_false_refusal_metric_is_gone(self):
+        """`answerable_false_refusal_rate` 必须**删除**而不是留成恒 0 的绿条。"""
+        q = "可回答问题"
+        answers = [_qa(q, mode="generated", statements=["s"], text="有内容", grounded=False)]
+        first, second = M.refusal_metrics(answers, [_golden(q, True)])
+        assert first.name == "unanswerable_honesty_rate", "旧名已更名"
+        assert second is None, "第二项（误拒率）已删除"
 
 
 # ------------------------------------------------- 1. proxy 必须如实呈现
