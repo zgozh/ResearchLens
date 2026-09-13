@@ -131,8 +131,34 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
     }
     if (stream.state === 'failed' && !streamDoneRef.current) {
       streamDoneRef.current = true;
-      // SSE 不可用 → 降级到非流式 api.qa()
+      // 失败也要**先按 answer_id 取回**（服务端在发 final 前就落库了，连接断了不代表答案没了），
+      // 取不回再降级到非流式 POST /qa —— 最后才提示可重试。
+      const meta = stream.events.find((e) => e.type === 'meta');
+      const failedAnswerId = (meta?.data as QAMeta | undefined)?.answer_id;
       const q = streamQuestion;
+      if (failedAnswerId && scope) {
+        setStreamQuestion('');
+        void api
+          .qaAnswer(scope.paper_id, failedAnswerId)
+          .then((r) => {
+            if (r.status === 'completed' && r.legacy) {
+              setMsgs([
+                ...msgs,
+                { role: 'user', text: q },
+                {
+                  role: 'assistant',
+                  text: r.legacy.answer,
+                  resp: { ...r.legacy, note: '连接中断，已从服务端取回完整结果。' },
+                  streamed: true,
+                },
+              ]);
+              return;
+            }
+            void askFallback(q);
+          })
+          .catch(() => void askFallback(q));
+        return;
+      }
       setStreamQuestion('');
       void askFallback(q);
     }
@@ -201,8 +227,8 @@ export function QAView({ scope, accent, detail, onNavigate, messages, onMessages
                 confidence: c.confidence ?? 0,
               })),
               note: partial
-                ? '本次回答被中断（未收到完整结果），以上是已生成的部分；可以再问一次。'
-                : '本次回答被中断或超时，没有生成内容；请再问一次或换一种问法。',
+                ? '这次连接中断了（未收到完整结果），以上是已生成的部分；已为你保留。'
+                : '这次没能拿到完整结果，已保留你的问题，可以点「重试」再问一次。',
               mode: 'interrupted',
             },
             sentences,
