@@ -16,9 +16,12 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
+
+log = logging.getLogger("researchlens.qa.service")
 
 from app.contracts.ai import Usage
 from app.contracts.common import CallContext, Scope, Warning
@@ -105,6 +108,20 @@ def answer(
             record = record.model_copy(update={"mode": "cached"})
             return record
 
+    # ---- 阶段 1.5：闲聊/问候 → 通用回答，**不触发检索**（R3-M4）
+    # 规则前置：问候语去检索论文既浪费一次云调用，又容易被无关命中带偏。
+    if _is_chitchat(question):
+        general = _general_answer(scope, question, ctx, warnings)
+        if general is not None:
+            _persist(scope, general, source_digest, key)
+            return general
+        # 模型不可用：给如实说明（**不要把闲聊说成"论文没提到 X"**——那不是论文问题）
+        record = _abstained(scope, question, warnings).model_copy(
+            update={"text": ArtifactText(text=ABSTAIN_TPL, spans=[])}
+        )
+        _persist(scope, record, source_digest, key)
+        return record
+
     # ---- 阶段 2：检索（无写事务；检索内部亦不写）
     hits, rwarnings = _retrieve(scope, question, top_k, ctx)
     warnings.extend(rwarnings)
@@ -112,12 +129,39 @@ def answer(
     # ---- 阶段 2.5：与论文无关的问题走**通用回答**（ADR-0057）
     # 用户要的是"不受限问答"：只有聊到论文相关的东西才去查论文；
     # 不相干的问题（闲聊/领域常识）不该因为"检索不到证据"被拒答。
-    # 但**问了论文却没有证据时仍然拒答**——不编造这条纪律不变。
+    # **但"问了论文却没有证据"这条也放开了**（R3-M4）：见阶段 2.55。
     if not _is_paper_related(question, hits):
         general = _general_answer(scope, question, ctx, warnings)
         if general is not None:
             _persist(scope, general, source_digest, key)
             return general
+        # 不是论文问题、模型又不可用 → 如实说明即可。
+        # **不能**掉进"论文中没有提到 X"（那句话会误导：它根本不是论文问题）。
+        record = _abstained(scope, question, warnings).model_copy(
+            update={"text": ArtifactText(text=ABSTAIN_TPL, spans=[])}
+        )
+        _persist(scope, record, source_digest, key)
+        return record
+
+    # ---- 阶段 2.55：检索为空也要**放开**（R3-M4，用户原话"直接完全放开"）
+    # 能抽出具体对象 → `not_mentioned`（点名"论文中没有提到 X"，如实且有用）；
+    # 抽不出对象 → 通用回答（标注"未使用论文原文"）；模型也不可用 → 兜底文案（仍非空）。
+    if not hits:
+        obj = _extract_object(question)
+        if obj:
+            warnings.append(Warning(
+                code="question_object_absent",
+                message=f"检索为空，且问题所问的对象（{obj}）未出现在原文中，按『论文未提及』如实作答",
+                stage="qa",
+            ))
+            record = _abstained(scope, question, warnings, reason="object_absent", hits=hits)
+        else:
+            general = _general_answer(scope, question, ctx, warnings)
+            record = general if general is not None else _ensure_readable(
+                _abstained(scope, question, warnings), question, hits
+            )
+        _persist(scope, record, source_digest, key)
+        return record
 
     # ---- 阶段 2.6：问题问的**具体对象**不在原文里 → 直接拒答（ADR-0066）
     # 不能靠"提示词请模型别答"：实测模型仍会拿"用了 8 块 GPU"去答"用了 Kubernetes 吗"。
@@ -183,19 +227,26 @@ def answer(
 def _ensure_readable(
     record: AnswerRecord, question: str, hits: Sequence[RetrievalHit]
 ) -> AnswerRecord:
-    """兜底不变量：**任何**落库答案都必须有可读内容（正文或句子）。
+    """兜底**不变量**（M5/R3）：任何落库答案都必须有可读内容（正文或句子）。
 
-    空白正文在界面上就是一片空白，用户读成"问答根本不能用"（REFACTOR_PLAN M7）。
-    这里只在"既没有正文、也没有任何句子"时补一段如实的说明，绝不补造论文内容。
+    空白正文在界面上就是一片空白，用户读成"问答根本不能用"。
+    不变量被触发 = 上游有 bug，**必须记告警日志**；但绝不能把空白交给用户。
+    兜底文案严禁出现"没有生成内容"字样（与前端文案纪律一致）。
     """
     body = (record.text.text or "").strip() if record.text is not None else ""
     if body or record.statements:
         return record
+    obj = _extract_object(question)
+    absent = bool(obj)
+    log.warning(
+        "qa 空答案不变量触发：question=%r mode=%s 命中=%d（已补兜底文案）",
+        (question or "")[:60], record.mode, len(list(hits or [])),
+    )
     return record.model_copy(update={
-        "text": ArtifactText(text=_abstain_body(question, hits, absent=False), spans=[]),
-        "note": record.note or ABSTAIN_NOTE,
+        "text": ArtifactText(text=_abstain_body(question, hits, absent=absent), spans=[]),
+        "note": record.note or (NOT_MENTIONED_NOTE if absent else ABSTAIN_NOTE),
         "grounded": False,
-        "mode": "abstained",
+        "mode": "not_mentioned" if absent else "abstained",
     })
 
 
@@ -375,6 +426,66 @@ _GENERIC_ACADEMIC = frozenset({
     "意义", "影响", "流程", "步骤", "架构", "结构", "性能", "效果", "优点", "缺点",
     "依据", "证据", "原文", "章节", "内容", "观点", "思想", "设计", "实现", "改进",
 })
+
+
+#: 闲聊/问候：**规则前置**，不触发检索（R3-M4）。
+#: 为什么：问候语去检索论文既浪费一次云调用，又会被无关命中带偏；
+#: 用户要的是"不受限问答"，闲聊就该直接用通用回答。
+_CHITCHAT_RE = re.compile(
+    r"^\s*(你好|您好|哈喽|hello|hi|hey|嗨|在吗|早上好|晚上好|下午好|谢谢|感谢|多谢|"
+    r"你是谁|你叫什么|介绍一下你(自己)?|你能做什么|你会做什么|再见|拜拜)\b",
+    re.I,
+)
+
+#: 从问题里抽"具体对象"（名词短语）——**不依赖检索结果**，供"检索为空"时判断
+#: 该回 `not_mentioned`（点名"论文没提到 X"）还是该走通用回答。
+_OBJECT_STOPWORDS = frozenset({
+    "论文", "本文", "该文", "这篇", "那篇", "作者", "结论", "内容", "文章", "研究",
+    "什么", "哪个", "哪些", "怎么", "如何", "为什么", "是否", "有没有", "提到",
+    "这篇论文", "主要", "核心", "整体", "大概", "简单", "详细",
+})
+
+
+def _is_chitchat(question: str) -> bool:
+    """是不是问候/闲聊（不指向论文内容）。"""
+    text = (question or "").strip()
+    if not text:
+        return False
+    if _CHITCHAT_RE.search(text):
+        return True
+    # 纯短句且不含学术话题词 → 当闲聊（如"天气不错"）
+    return len(text) <= 12 and not _PAPER_HINT_RE.search(text) and not _PAPER_TOPIC_RE.search(text)
+
+
+def _extract_object(question: str) -> Optional[str]:
+    """抽出问题问的**具体对象**（不依赖检索）。抽不出返回 None。
+
+    判据与 `_absent_objects` 一致：拉丁词（≥3 字符）或 ≥3 字且不含泛化学术词的中文词。
+    保留问句里的原始写法（"量子计算"而不是被切碎的词）。
+    """
+    text = (question or "").strip()
+    if not text:
+        return None
+    candidates: List[str] = []
+    # 引号里的内容优先（"论文提到『X』了吗"）
+    for quoted in re.findall(r"[「『\"“]([^」』\"”]{2,40})[」』\"”]", text):
+        candidates.append(quoted.strip())
+    # 拉丁词（≥3 字符）
+    candidates.extend(re.findall(r"[A-Za-z][A-Za-z0-9_.\-]{2,}", text))
+    # 中文名词：用 _query_terms 切，再过滤泛化词
+    for term in _query_terms(text):
+        if term.isascii():
+            continue
+        if len(term) < 3 or term in _OBJECT_STOPWORDS or term in _GENERIC_ACADEMIC:
+            continue
+        if any(g in term for g in _GENERIC_ACADEMIC):
+            continue
+        candidates.append(term)
+    if not candidates:
+        return None
+    # 最长优先（"量子计算" 优于 "量子"）
+    best = sorted(set(candidates), key=len, reverse=True)[0]
+    return best or None
 
 
 def _absent_objects(question: str, hits: Sequence[RetrievalHit]) -> List[str]:
@@ -1125,6 +1236,12 @@ def _abstain_body(question: str, hits: Sequence[RetrievalHit], *, absent: bool) 
     """拒答正文：点名"没提到什么"或解释"为什么答不了"，并给一条最接近的原文线索。"""
     if absent:
         objects = _absent_objects(question, hits)
+        if not objects:
+            # 检索为空时 `_absent_objects` 无从比较 —— 但仍然要**点名**问题里的对象
+            # （R3-M4：用户要的是"论文没有提到 X"这种有信息量的回答，不是空白拒答）
+            obj = _extract_object(question)
+            if obj:
+                objects = [obj]
         if objects:
             # 用**问句里的原始写法**回显（词表里是小写，直接回显会变成「kubernetes」）
             return NOT_MENTIONED_TPL.format(
