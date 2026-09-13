@@ -1656,3 +1656,31 @@ M9 投影层收敛（把 `schemas/adapters.py` 与五处 `modules/*/legacy.py` �
 - **测试**：新增 `test_qa_policy_open.py`（10 条：闲聊不触发检索 ×4、检索为空两档、
   通用回答标注、不变量补文案、不变量不误触发、兜底文案不含禁用字样）。
   后端全量 **821 passed / 0 failed**（较上一轮 +10）。
+
+## D-88 M2 证据 verdict 四分类：别把"系统主动排除"说成"证据不足"
+
+- **问题**：paper 7 实测 `verified 64 / unverified 6 / rejected 2 / contested 1`，
+  界面上那 9 条非 verified **全被写成"未支持"**，语义被压平：
+  - 6 条其实是**系统主动排除的非研究发现**（参考文献 `[15] …`、Google 许可声明）；
+  - 1 条是**真矛盾**（原文 β₁=0.9、陈述写 0）；
+  - 2 条是**有支持但未过其他检查**（`semantic=supports` 而 `decision=rejected`）。
+  把它们都叫"证据不足"是误导 —— 用户会以为"系统没能证明"，实际是系统**拒绝**收录。
+- **修法**：`frontend/lib/evidenceVerdict.ts` 作分类规则唯一真相（优先级：非研究发现 →
+  矛盾 → supports+rejected → 其余回落 insufficient；未知组合**不抛错、reasons 一条不丢**；
+  裸字符串 reasons 解析"码：文案"）+ `components/evidence/VerdictBadge.tsx`
+  （四色标签 + 可展开看后端理由原文）。已接入 `PresenterView` 的断言选择面板
+  （那里有 canonical statements 的 `validation`）。
+- **测试**：`npm run test:verdict` 11 条（四类各一例、**反向断言 non_claim 不得显示"证据不足"**、
+  未知组合回落且 reasons 不丢、落地验证不渲染徽标、空入参返回 null、理由逐字相等）。
+- **如实说明**：分类库与徽标已完成并测试；**更深的接线**（ClaimView / GraphView 证据链、
+  QAView 逐句）还需把 `validation` 载荷透传到那几个面板，属 M2 剩余部分。
+
+## D-89 M9 评测口径分栏：AI 分不再顶替人工位
+
+- **问题**：`EvalView` 用 `shownScore = 人工分 ?? AI 分` —— AI 分数**直接占在人工位上**，
+  只加了一行小字说明。用户看到"综合评分 86"很容易读成"论文评分 86 分"。
+- **修法**：两个口径**彻底分开**：主位只显示人工真值口径（未确认时显示"**未确认**"
+  而不是 AI 数字），AI 口径单独成卡并明确标"**AI 评分（非人工真值）**"，
+  文案写明"不等于人工真值分，也不与上面的综合评分互相顶替"。
+- **测试/验证**：`tsc --noEmit` 通过；`npm run test:lib` 六套（rich 25 / graph 9 / media 6 /
+  policy 7 / eval 12 / verdict 11）+ 展示路径门禁全绿；前端重建后 200。
