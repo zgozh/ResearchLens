@@ -284,6 +284,32 @@ def page_only_candidate(page_ref: locator.PageRef, *, anchor_id: str = "") -> Ca
 
 # --------------------------------------------------------------- 语义 gate
 
+#: 「语义未判定」的成因关键词 → 细分 reason code（R4-M1 / 需求 A）。
+#:
+#: 为什么需要：界面上那一个「未判定」原本压着四种成因，用户看不出该去配模型、
+#: 该重试、还是该接受"这篇论文确实没证据"。分类**只认 message 里的确定性关键词**
+#: （由 `semantic.judge` 产出），不猜措辞。
+_SEMANTIC_CAUSE_CODES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("未配置", "未设置", "no llm"), "semantic_unavailable"),
+    (("timeout", "timed out", "deadline", "超时"), "semantic_timeout"),
+    (("调用失败", "未返回结果", "输出非法", "为空", "无法判定"), "semantic_failed"),
+)
+
+
+def semantic_unavailable_code(message: str) -> str:
+    """把「语义未判定」的原因文案分类成机器可读的 reason code（R4-M1）。
+
+    返回受控集合内的码；**认不出来时回落 ``external_unavailable``**（旧的兜底码）——
+    分类器不认识某个文案，绝不能升级成"没有原因"。
+    """
+    text = (message or "").strip().lower()
+    if not text:
+        return "external_unavailable"
+    for keywords, code in _SEMANTIC_CAUSE_CODES:
+        if any(k in text for k in keywords):
+            return code
+    return "external_unavailable"
+
 
 def semantic_verdict(
     draft: StatementDraft, evidence_text: str, gate: GateInput
@@ -444,7 +470,9 @@ def assess(
         reasons.append(_reason("unsupported_entailment", semantic_msg,
                                [c.block_id for c in candidates if c.block_id]))
     else:
-        reasons.append(_reason("external_unavailable", semantic_msg,
+        # R4-M1：`unreviewed` 的码细分到成因（未配置 / 超时 / 失败），
+        # 认不出来的文案仍回落 `external_unavailable`（不丢原因）。
+        reasons.append(_reason(semantic_unavailable_code(semantic_msg), semantic_msg,
                                [c.block_id for c in candidates if c.block_id]))
 
     # ---------- ⑥ decision ----------
@@ -650,4 +678,5 @@ __all__ = [
     "candidate_to_segment",
     "build_evidence_record",
     "build_anchor",
+    "semantic_unavailable_code",
 ]

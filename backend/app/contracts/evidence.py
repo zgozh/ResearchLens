@@ -84,6 +84,14 @@ class ValidationReason(ContractModel):
         "coordinate_missing", "unsupported_entailment", "numeric_mismatch",
         "qualifier_missing", "contradiction", "budget_exhausted",
         "external_unavailable", "passed",
+        # R4-M1（需求 A）：把"语义未判定"这一条**细分到成因**，因为界面上的
+        # 「未判定」原本把四种完全不同的情况压成一个状态：
+        #   · semantic_unavailable —— 未配置 LLM（用户可操作：去配 Key）
+        #   · semantic_timeout     —— 调用超时 / 超过 deadline（用户可操作：重试）
+        #   · semantic_failed      —— 调用失败（其他异常）/ 未返回结果 / 输出非法
+        # 全是**新增**码（expand-first）：旧码 `external_unavailable` 保留为兜底，
+        # 历史数据不受影响。
+        "semantic_unavailable", "semantic_timeout", "semantic_failed",
     ]
     message: str = ""
     block_ids: List[BlockId] = Field(default_factory=list)

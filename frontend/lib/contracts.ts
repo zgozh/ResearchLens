@@ -401,6 +401,10 @@ export type ValidationReasonCode =
   | 'contradiction'
   | 'budget_exhausted'
   | 'external_unavailable'
+  // R4-M1（需求 A）：把「语义未判定」细分到成因，界面才能告诉用户该配模型还是该重试。
+  | 'semantic_unavailable'
+  | 'semantic_timeout'
+  | 'semantic_failed'
   | 'passed';
 
 export interface ValidationReason {

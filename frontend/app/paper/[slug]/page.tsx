@@ -23,6 +23,7 @@ import { Logo } from '@/components/Logo';
 import { Badge, GlassCard, Kicker, Spinner } from '@/components/ui';
 import { Timeline } from '@/components/Timeline';
 import { EvidenceDrawer } from '@/components/evidence/EvidenceDrawer';
+import type { CapabilityState } from '@/lib/evidenceStates';
 import { MapView } from '@/components/views/MapView';
 import { MethodView } from '@/components/views/MethodView';
 import { ClaimView } from '@/components/views/ClaimView';
@@ -329,6 +330,11 @@ export default function Workspace() {
 
   const mediaIndex: MediaIndexEntry[] = manifest?.media_index ?? [];
   const assets = manifest?.assets ?? [];
+  // R4-M1：证据抽屉要区分「尚未抽取」与「确无关联证据」，判据取自 manifest.capabilities
+  // （claims 域状态）—— 这是页面本来就拿得到、却一直没人用的现成信号。
+  const claimsCapabilityState: CapabilityState =
+    (manifest?.capabilities?.find((c) => c.name === 'claims')?.state as CapabilityState)
+    ?? 'unknown';
 
   const title = manifest?.paper?.title || detail?.title || '';
   const domain = manifest?.paper?.domain || detail?.domain || '';
@@ -485,6 +491,7 @@ export default function Workspace() {
                 open={!!selectedClaimId}
                 onClose={() => setSelectedClaimId(undefined)}
                 onNavigate={(t) => jumpToPaper(t.anchor_id)}
+                claimsState={claimsCapabilityState}
               />
             </div>
           )}
